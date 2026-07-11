@@ -296,7 +296,7 @@ function startNextServer(): Promise<void> {
 
     const child = spawn(
       'node',
-      [nextBin, 'start', '-p', String(PORT)],
+      [nextBin, 'start', '-H', '127.0.0.1', '-p', String(PORT)],
       {
         cwd: serverCwd,
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 import os
 import sys
 
+# Configuração de rede segura (loopback + CORS allowlist)
+from network_config import NETWORK_HOST, CORS_OPTIONS
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger("volatility_api")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, **CORS_OPTIONS)  # Allowlist estrita de origens locais
 
 # Configurações
 MT5_PATH = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"  # Ajuste conforme necessário
@@ -274,4 +277,4 @@ if __name__ == '__main__':
     print("=" * 60)
     
     # Iniciar servidor
-    app.run(host='0.0.0.0', port=5555, debug=False, use_reloader=False)
+    app.run(host=NETWORK_HOST, port=5555, debug=False, use_reloader=False)

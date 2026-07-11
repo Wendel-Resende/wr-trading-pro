@@ -15,12 +15,18 @@ import math
 import os
 import sys
 
+# Configuração de rede segura (loopback + CORS allowlist)
+from network_config import NETWORK_HOST, CORS_OPTIONS
+
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("spread_api")
 
 # Adiciona o diretório Projeto_spread ao path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Projeto_spread'))
+
+app = Flask(__name__)
+CORS(app, **CORS_OPTIONS)  # Allowlist estrita de origens locais
 
 # Importa lista de pares do arquivo pares_acoes.py
 try:
@@ -31,7 +37,7 @@ except ImportError as e:
     PARES_COMPLETOS = []
 
 app = Flask(__name__)
-CORS(app)  # Permite requisições do frontend
+CORS(app, **CORS_OPTIONS)  # Allowlist estrita de origens locais
 
 @dataclass
 class AssetCache:
@@ -684,4 +690,4 @@ def get_status_ativos():
 
 if __name__ == '__main__':
     logger.info("Iniciando API de Spread B3...")
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host=NETWORK_HOST, port=5000, debug=False, use_reloader=False)
