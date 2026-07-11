@@ -6,6 +6,7 @@ Servidor WebSocket que faz a ponte entre a API do MetaTrader 5 e a aplicação N
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Set, Any
 import websockets
@@ -1086,6 +1087,22 @@ class MT5Bridge:
         logger.info(f"  TP: {tp}")
         logger.info(f"  Comment: {comment}")
         
+        # Kill switch: bloqueia envio de ordens reais quando desabilitado.
+        # Variável de ambiente WR_TRADING_ENABLED deve ser 'true' para operar.
+        # Padrão: desabilitado (fail-closed) — nenhuma ordem real sem autorização explícita.
+        trading_enabled = os.environ.get('WR_TRADING_ENABLED', 'false').lower() in ('true', '1', 'yes')
+        if not trading_enabled:
+            logger.warning("Envio de ordens BLOQUEADO por kill switch (WR_TRADING_ENABLED != 'true')")
+            await self.broadcast({
+                'type': 'ERROR',
+                'data': {
+                    'message': 'Operação de ordem desabilitada (kill switch ativo). Defina WR_TRADING_ENABLED=true para operar.',
+                    'code': 'TRADING_DISABLED',
+                },
+                'timestamp': datetime.now().isoformat(),
+            })
+            return
+        
         # Validações básicas
         if not symbol:
             logger.error("Símbolo não fornecido")
@@ -1318,8 +1335,24 @@ class MT5Bridge:
         logger.info(f"Request final de ordem: {request}")
         logger.info(f"Enviando ordem para MT5...")
         
-        logger.info(f"=== ENVIAND ORDEM PARA MT5 ===")
-        logger.info(f"Request: {request}")
+        logger.info(f"=== VERIFICANDO ORDEM (order_check) ===")
+        check = mt5.order_check(request)
+        if check is None or check.retcode != 0:
+            error_code = check.retcode if check else mt5.last_error()
+            logger.error(f"order_check falhou: {error_code}")
+            await self.broadcast({
+                'type': 'ERROR',
+                'data': {
+                    'message': f'Ordem rejeitada pela verificação prévia do broker: {error_code}',
+                    'code': 'ORDER_CHECK_FAILED',
+                    'mt5_code': error_code if isinstance(error_code, int) else None,
+                },
+                'timestamp': datetime.now().isoformat(),
+            })
+            return
+
+        logger.info(f"=== ENVIANDO ORDEM PARA MT5 ===")
+        logger.info(f"Request: {redacted_str(request)}")
         
         result = mt5.order_send(request)
         
