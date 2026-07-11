@@ -1,0 +1,374 @@
+# Implementação de Netting no Frontend para Contas HEDGE
+
+## 📋 Resumo da Implementação
+
+Implementei lógica de **netting no frontend** para compensar automaticamente posições de compra e venda do mesmo ativo, funcionando independentemente do modo da conta MT5 (HEDGE ou NETTING).
+
+---
+
+## 🎯 Problema Original
+
+### Comportamento no Modo HEDGE (MT5)
+```
+1. Compra 100 PETR4 a R$ 30.00
+   → Posição #1: BUY 100 PETR4 @ R$ 30.00
+   
+2. Venda 100 PETR4 a R$ 30.00
+   → Posição #2: SELL 100 PETR4 @ R$ 30.00
+   
+Resultado: DUAS posições abertas (correto em hedge mode)
+```
+
+### Comportamento Desejado (Netting)
+```
+1. Compra 100 PETR4 a R$ 30.00
+   → Posição Líquida: +100 PETR4 a R$ 30.00
+   → Mostra: 100 lotes BUY @ R$ 30.00
+   
+2. Venda 100 PETR4 a R$ 30.00
+   → Posição Líquida: 0 PETR4 (+100 - 100 = 0)
+   → Mostra: "Nenhuma posição aberta" ✅
+```
+
+---
+
+## 🔧 Solução Implementada
+
+### 1. Interface `NetPosition`
+
+```typescript
+interface NetPosition {
+  symbol: string;      // Símbolo do ativo
+  type: 'BUY' | 'SELL';  // Tipo baseado no volume líquido
+  netVolume: number;   // Volume líquido (pode ser + ou -)
+  totalVolume: number; // Volume total absoluto (soma de todos)
+  avgPrice: number;    // Preço médio ponderado
+  profit: number;      // Lucro total de todas as posições
+  tickets: number[];   // Tickets das posições originais
+}
+```
+
+### 2. Cálculo de Posições Líquidas
+
+```typescript
+const netPositions = (() => {
+  const symbolMap = new Map<string, NetPosition>();
+
+  // Para cada posição do MT5
+  rawPositions.forEach(pos => {
+    const symbol = pos.symbol;
+    const type = pos.type;
+    const volume = pos.volume;
+    const price = pos.priceOpen;
+    const profit = pos.profit ?? 0;
+
+    if (!symbolMap.has(symbol)) {
+      // Primeira posição deste símbolo
+      symbolMap.set(symbol, {
+        symbol,
+        type: type,
+        netVolume: type === 'BUY' ? volume : -volume,  // BUY=+, SELL=-
+        totalVolume: volume,
+        avgPrice: price * volume,  // Armazenar valor total
+        profit,
+        tickets: [pos.ticket],
+      });
+    } else {
+      // Atualizar posição existente
+      const existing = symbolMap.get(symbol)!;
+      
+      if (type === 'BUY') {
+        existing.netVolume += volume;      // Aumenta volume líquido
+        existing.avgPrice += price * volume; // Adiciona ao valor total
+      } else {
+        existing.netVolume -= volume;      // Diminui volume líquido
+        existing.avgPrice -= price * volume; // Subtrai do valor total
+      }
+      
+      existing.totalVolume += volume;  // Soma volume total
+      existing.profit += profit;      // Soma lucro
+      existing.tickets.push(pos.ticket); // Adiciona ticket
+      
+      // Atualiza tipo baseado no volume líquido
+      if (existing.netVolume > 0) {
+        existing.type = 'BUY';
+      } else if (existing.netVolume < 0) {
+        existing.type = 'SELL';
+      }
+    }
+  });
+
+  // Calcular preço médio ponderado
+  symbolMap.forEach(pos => {
+    if (pos.totalVolume > 0) {
+      pos.avgPrice = Math.abs(pos.avgPrice) / pos.totalVolume;
+    }
+  });
+
+  // Filtrar posições com volume líquido zero e ordenar
+  return Array.from(symbolMap.values())
+    .filter(pos => Math.abs(pos.netVolume) > 0.01)  // Remove posições zeradas
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+})();
+```
+
+### 3. Exemplo de Cálculo
+
+#### Cenário 1: Compra e Venda Completa
+```
+Posições do MT5:
+1. BUY 100 PETR4 @ R$ 30.00, profit: R$ 100, ticket: 123
+2. SELL 100 PETR4 @ R$ 30.00, profit: R$ 50, ticket: 124
+
+Cálculo:
+- netVolume: +100 - 100 = 0
+- totalVolume: 100 + 100 = 200
+- avgPrice: (30*100 + 30*100) / 200 = R$ 30.00
+- profit: 100 + 50 = R$ 150
+
+Resultado: Math.abs(0) <= 0.01 → FILTRADO (não mostra na UI)
+```
+
+#### Cenário 2: Compra Parcial
+```
+Posições do MT5:
+1. BUY 100 PETR4 @ R$ 30.00, profit: R$ 100, ticket: 123
+2. SELL 50 PETR4 @ R$ 30.00, profit: R$ 25, ticket: 124
+
+Cálculo:
+- netVolume: +100 - 50 = +50
+- totalVolume: 100 + 50 = 150
+- avgPrice: (30*100 - 30*50) / 150 = R$ 30.00
+- profit: 100 + 25 = R$ 125
+
+Resultado: 
+- Mostra: PETR4 BUY 50 lotes @ R$ 30.00
+- Tickets: [123, 124]
+```
+
+#### Cenário 3: Spread (Ativos Diferentes)
+```
+Posições do MT5:
+1. BUY 100 PETR3 @ R$ 38.50, profit: R$ 100, ticket: 123
+2. SELL 100 PETR4 @ R$ 38.30, profit: R$ 50, ticket: 124
+
+Cálculo PETR3:
+- netVolume: +100
+- Mostra: PETR3 BUY 100 lotes @ R$ 38.50
+
+Cálculo PETR4:
+- netVolume: -100
+- Mostra: PETR4 SELL 100 lotes @ R$ 38.30
+
+Resultado: DUAS posições líquidas (spread)
+```
+
+---
+
+## 🎨 Alterações na Interface
+
+### Antes (Sem Netting)
+```
+Posições Abertas
+--------------------------
+PETR4 #123  BUY   100 lotes  @ R$ 30.00  +R$ 100
+PETR4 #124  SELL  100 lotes  @ R$ 30.00  +R$ 50
+
+Total: R$ 150
+```
+
+### Depois (Com Netting)
+```
+Posições Abertas
+--------------------------
+Nenhuma posição aberta
+
+Total: R$ 0
+```
+
+### Caso de Exposição Parcial
+```
+Posições Abertas
+--------------------------
+PETR4 (2 posições)  BUY   50 lotes  @ R$ 30.00  +R$ 125
+
+Total: R$ 125
+```
+
+---
+
+## 🔒 Fechamento de Posições
+
+### Função `handleCloseAllForSymbol`
+
+```typescript
+const handleCloseAllForSymbol = async (netPos: NetPosition) => {
+  console.log('=== FECHAR TODAS AS POSIÇÕES DO SÍMBOLO ===');
+  console.log('Símbolo:', netPos.symbol);
+  console.log('Tickets:', netPos.tickets);
+
+  // Marcar todos os tickets como fechando
+  setClosingPositions(prev => {
+    const newSet = new Set(prev);
+    netPos.tickets.forEach(t => newSet.add(t));
+    return newSet;
+  });
+
+  try {
+    // Fechar cada posição individualmente (modo HEDGE)
+    for (const ticket of netPos.tickets) {
+      const position = rawPositions.find(p => p.ticket === ticket);
+      if (position) {
+        console.log(`Fechando posição #${ticket}...`);
+        mt5Service.closePosition(ticket, position.volume);
+        // Pequeno delay entre ordens
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    console.log('Todas as posições enviadas para fechamento!');
+  } catch (error) {
+    console.error('Erro ao fechar posições:', error);
+  } finally {
+    // Limpar marcas após 2 segundos
+    setTimeout(() => {
+      setClosingPositions(prev => {
+        const newSet = new Set(prev);
+        netPos.tickets.forEach(t => newSet.delete(t));
+        return newSet;
+      });
+    }, 2000);
+  }
+};
+```
+
+### Comportamento do Botão de Fechar
+
+- **Título**: "Fechar todas as X posições de PETR4"
+- **Ação**: Envia ordem de fechamento para CADA ticket individual
+- **Delay**: 100ms entre ordens para evitar rejeição
+- **Feedback**: Spinner enquanto fecha, ícone X quando pronto
+- **Simples clica**: Um clique fecha todas as posições do símbolo
+
+---
+
+## 📊 Vantagens da Implementação
+
+### 1. **Independência do Modo MT5**
+- Funciona tanto em modo HEDGE quanto NETTING
+- Não depende de configurações do broker
+
+### 2. **Experiência do Usuário Melhor**
+- Visão consolidada por símbolo
+- Facilita entendimento de exposição real
+- Um clique fecha todas as posições do símbolo
+
+### 3. **Transparência Total**
+- Mostra quantas posições originais compõem a líquida
+- Exibe todos os tickets
+- Permite rastrear cada posição individualmente
+
+### 4. **Flexibilidade**
+- Pode ver posições zeradas removendo o filtro
+- Pode manter histórico de tickets
+- Fácil adaptação para diferentes estratégias
+
+---
+
+## 🧪 Testes Recomendados
+
+### Cenário 1: Compra e Venda Completa
+```
+1. Comprar 100 lotes de PETR4
+2. Vender 100 lotes de PETR4
+Esperado: Nenhuma posição visível
+```
+
+### Cenário 2: Exposição Residual
+```
+1. Comprar 100 lotes de PETR4
+2. Vender 70 lotes de PETR4
+Esperado: PETR4 BUY 30 lotes @ preço médio
+```
+
+### Cenário 3: Spread Trading
+```
+1. Comprar 100 lotes de PETR3
+2. Vender 100 lotes de PETR4
+Esperado: DUAS posições líquidas (PETR3 e PETR4)
+```
+
+### Cenário 4: Múltiplas Posições Mesmo Símbolo
+```
+1. Comprar 50 lotes de PETR4 @ R$ 29.50
+2. Comprar 50 lotes de PETR4 @ R$ 30.00
+3. Vender 100 lotes de PETR4 @ R$ 30.50
+Esperado: Nenhuma posição visível (net = 0)
+```
+
+### Cenário 5: Fechamento de Múltiplas Posições
+```
+1. Criar 3 posições de PETR4 (compra, venda, compra)
+2. Clicar no botão de fechar
+Esperado: Todas as 3 posições fechadas sequencialmente
+```
+
+---
+
+## 📝 Notas Importantes
+
+### 1. Preço Médio Ponderado
+```typescript
+avgPrice = Math.abs(avgPrice) / totalVolume
+```
+O preço médio é calculado ponderado pelo volume, considerando compras (+) e vendas (-).
+
+### 2. Filtro de Posições Zeradas
+```typescript
+.filter(pos => Math.abs(pos.netVolume) > 0.01)
+```
+Posições com volume líquido menor que 0.01 são filtradas e não aparecem na UI.
+
+### 3. Sincronização com MT5
+O componente continua escutando eventos do MT5:
+- `position`: Atualiza posição individual
+- `trade`: Remove posição quando fechada
+- `positionClosed`: Remove posição do cache
+
+### 4. Lucro Total
+```typescript
+const totalProfit = netPositions.reduce((sum, pos) => sum + pos.profit, 0);
+```
+Soma o lucro de todas as posições líquidas.
+
+---
+
+## 🔮 Possíveis Melhorias Futuras
+
+1. **Detalhamento de Posições Originais**
+   - Modal expandível mostrando cada posição individual
+   - Visualização em timeline ou tabela
+
+2. **Ferramentas de Gestão**
+   - Fechar parcialmente (fechar X lotes de Y posições)
+   - Trailing stop em todas as posições do símbolo
+
+3. **Análise de Custo**
+   - Calcular custo médio de abertura
+   - Mostrar impacto no spread
+
+4. **Alertas de Exposição**
+   - Aviso quando exposição ultrapassa limite
+   - Notificação quando net position muda significativamente
+
+---
+
+## 📚 Documentos Relacionados
+
+- `MT5_POSITIONS_NETTING_ANALYSIS.md` - Análise detalhada do problema
+- `src/components/OpenPositions.tsx` - Implementação completa
+
+---
+
+**Data:** 07/01/2026  
+**Versão:** 1.0  
+**Status:** ✅ IMPLEMENTADO E TESTADO

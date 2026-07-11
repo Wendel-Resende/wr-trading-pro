@@ -1,0 +1,6 @@
+flask
+flask-cors
+MetaTrader5
+pandas
+pandas_ta
+websockets>=15,<16

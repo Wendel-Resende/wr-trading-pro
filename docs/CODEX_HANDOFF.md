@@ -1,0 +1,792 @@
+# CODEX_HANDOFF — WR Trading Pro
+
+Última atualização: 2026-05-20
+
+## Pausa 2026-05-20 — retomar subida ao GitHub
+
+### Estado ao pausar
+
+- Projeto estruturalmente limpo para preparar GitHub.
+- `ProfitDLL/` deve permanecer no projeto, por decisão do usuário, pois contém referência de uso da DLL.
+- `estudo/` e `monitoramento_acoes/` foram removidos por decisão do usuário; eram exemplos/dados antigos e a funcionalidade já foi incorporada na plataforma.
+- `.env` permanece local, ignorado e fora do Git.
+- `.env.example` foi criado para subir ao GitHub sem credenciais reais.
+- Valores reais antigos de MT5 foram removidos do conteúdo rastreado atual.
+- Ainda há risco de credenciais no histórico Git local antigo; antes do primeiro push, limpar histórico se o remoto não deve receber esses commits antigos.
+
+### O que foi feito nesta rodada
+
+- Auditoria estrutural com `analyze-project`, `architecture` e `architect-review`.
+- Uso de sub-agentes para varredura de arquivos soltos, untracked, artefatos e referências reais no código.
+- Remoção de artefatos grandes e temporários:
+  - `codex-electron-check/`
+  - `codex-electron-check-fixed/`
+  - `codex-electron-check-final/`
+  - `graphify-out/`
+  - `agent_workspace/`
+  - caches Python
+- Organização de docs e scripts exploratórios em `docs/archive/`.
+- Mesclagem do histórico do banco legado de opções para o banco canônico `data/options/options_data.db`.
+- Remoção do banco legado duplicado `python/options/options_data.db`.
+- Sanitização de docs legadas com credenciais MT5 reais.
+- Criação de `.env.example`.
+- Atualização de `package.json` para incluir `agents/**/*` no pacote Electron.
+
+### Verificações já aprovadas
+
+- `npm run build`: aprovado.
+- `npm run electron:compile`: aprovado.
+- `py_compile` dos serviços Python principais: aprovado.
+- Banco `data/options/options_data.db`:
+  - `integrity ok`
+  - `scans`: 11
+  - `options`: 138
+  - opções órfãs: 0
+
+### Próxima sessão
+
+1. Revisar `git status --short`.
+2. Revisar se todos os arquivos novos/organizados devem entrar no commit.
+3. Limpar histórico Git local para remover credenciais antigas antes do primeiro push.
+4. Criar ou conectar repositório GitHub remoto.
+5. Fazer commit final de organização/segurança.
+6. Subir para GitHub.
+
+## Retomada 2026-05-20 — seguranca de credenciais `.env`
+
+### O que foi feito
+
+- Verificado que `.env` existe localmente, esta ignorado por `.gitignore` e nao esta rastreado pelo Git.
+- Criado `.env.example` com as mesmas chaves esperadas, mas sem senhas, tokens ou chaves reais.
+- Confirmado que `.env.example` nao esta ignorado e deve ser versionado como template seguro.
+- `git grep` nao encontrou mais os valores reais antigos de MT5 no conteudo rastreado atual.
+
+### Decisao
+
+- `.env` e `.env.local` ficam sempre locais e ignorados.
+- `.env.example` e o arquivo que deve subir para o GitHub.
+- Antes do primeiro push, ainda e necessario limpar o historico Git se o remoto nao deve receber credenciais antigas que ja apareceram em commits locais anteriores.
+
+### Arquivos alterados nesta retomada
+
+- `.env.example`
+- `docs/CODEX_HANDOFF.md`
+
+## Retomada 2026-05-20 — auditoria estrutural antes do GitHub
+
+### O que foi feito
+
+- Executada a sequência de skills solicitada:
+  - `analyze-project`: inventário de estrutura, `git status`, arquivos untracked, artefatos, tamanhos e referências.
+  - `architecture`: definição de estrutura alvo e trade-offs de versionamento/arquivamento.
+  - `architect-review`: revisão de riscos antes de apagar ou mover arquivos.
+- Usados sub-agentes de exploração somente leitura para:
+  - classificar arquivos untracked e artefatos locais;
+  - verificar referências reais no código para pastas/arquivos candidatos a limpeza.
+- Criado `docs/PROJECT_CLEANUP_AUDIT.md` com classificação e plano de execução.
+
+### Achados principais
+
+- Encontrados três diretórios `codex-electron-check*`, cada um com cerca de 1 GB, como artefatos de validação Electron.
+- Confirmado que `data/options/options_data.db` é o banco runtime canônico local e deve permanecer ignorado pelo Git.
+- Confirmado que `python/options/options_data.db` é banco legado duplicado e candidato a remoção.
+- Confirmado que `agents/` é usado por `/api/agents`, mas o pacote Electron atual não inclui `agents/**/*` em `package.json`.
+- Confirmado que scripts exploratórios em `python/options/test_*.py` não são runtime e seriam incluídos no pacote Electron por estarem dentro de `python/**/*`.
+- Detectado risco crítico antes do GitHub: docs legadas rastreadas contêm exemplos com credenciais reais de MT5. Elas precisam ser sanitizadas e, como já estão em commits locais, o histórico deve ser limpo antes do primeiro push se essas credenciais não puderem ir ao GitHub.
+
+### Arquivos alterados nesta retomada
+
+- `docs/PROJECT_CLEANUP_AUDIT.md`
+- `docs/CODEX_HANDOFF.md`
+
+### Verificações executadas
+
+- `git status --short`
+- `git diff --ignore-cr-at-eol --stat`
+- `git ls-files`
+- `git ls-files --others --exclude-standard`
+- `git check-ignore -v ...`
+- Varredura de tamanhos por diretório.
+- Busca por referências com `rg`.
+- Busca de padrões sensíveis em arquivos rastreados e não rastreados, sem expor valores de `.env`.
+
+### Próximo passo
+
+- Plano aprovado e executado pelo usuário.
+
+### Limpeza executada apos aprovacao
+
+- Sanitizadas credenciais reais de MT5 em docs legadas rastreadas:
+  - `docs/legacy/CHART_DATA_ANALYSIS.md`
+  - `docs/legacy/MT5_CONNECTION_DEBUG.md`
+  - `docs/legacy/MT5_CONNECTION_FIX.md`
+  - `docs/legacy/MT5_DEBUG_GUIDE.md`
+  - `docs/legacy/MT5_INTEGRATION_GUIDE.md`
+  - `docs/legacy/TROUBLESHOOTING.md`
+- `git grep` nao encontrou mais os valores reais antigos de login/senha/servidor MT5 no conteudo atual.
+- Movidos docs e scripts exploratorios para pastas organizadas:
+  - docs LLM para `docs/archive/llm-evaluations/`
+  - docs MT5 `.NOT_USED` para `docs/archive/mt5/`
+  - divergencias de opcoes para `docs/archive/options/`
+  - scripts exploratorios `test_mt5_*` para `docs/archive/options/manual-checks/`
+  - status ProfitDLL para `docs/profitdll/`
+- Removidos artefatos locais/gerados:
+  - `codex-electron-check/`
+  - `codex-electron-check-fixed/`
+  - `codex-electron-check-final/`
+  - `codex_ws_check.py`
+  - `.obsidian/`
+  - `2026-05-15.md`
+  - `Sem título.canvas`
+  - `graphify-out/`
+  - `agent_workspace/`
+  - `models/`
+  - caches Python `__pycache__/`
+- Atualizado `.gitignore`:
+  - `.obsidian/`
+  - `*.canvas`
+  - `20??-??-??.md`
+  - `/archive/` e `/scripts/` agora so ignoram pastas da raiz, permitindo `docs/archive/` versionado.
+- Atualizado `package.json` para incluir `agents/**/*` no pacote Electron, pois `/api/agents` depende da pasta `agents/`.
+
+### Validacao do banco de opcoes
+
+- Antes de remover `python/options/options_data.db`, foi comparado com o banco canonico `data/options/options_data.db`.
+- Banco legado tinha 1 scan antigo de `PETR4` com 53 opcoes.
+- Esse historico foi importado para `data/options/options_data.db`.
+- Depois da importacao:
+  - `PRAGMA integrity_check = ok`
+  - `scans`: 11
+  - `options`: 138
+  - opcoes orfas: 0
+  - `PETR4` tem 2 scans historicos:
+    - `2026-05-10T17:17:12.755313`, spot `46.01`
+    - `2026-05-13T18:44:12.228Z`, spot `44.83`
+- Removido o banco legado duplicado `python/options/options_data.db` depois da importacao.
+
+### Verificacoes executadas apos limpeza
+
+- `npm run build`: aprovado.
+- `npm run electron:compile`: aprovado.
+- `C:\Users\rwres\anaconda3\envs\IA_Day_Trading\python.exe -m py_compile python\options\scanner_opcoes.py python\spread_api.py python\mt5_bridge.py python\profitdll_bridge.py python\volatility_api.py`: aprovado.
+- Caches Python recriados pelo `py_compile` foram removidos novamente.
+
+### Pendencias antes do GitHub
+
+- Decisao do usuario: manter `ProfitDLL/`, pois contem a referencia de como usar a DLL.
+- Decisao do usuario: remover `estudo/` e `monitoramento_acoes/`, pois eram exemplos/dados antigos e a funcionalidade ja foi incorporada na plataforma.
+- Removidos:
+  - `estudo/`
+  - `monitoramento_acoes/`
+- Como credenciais reais ja existiram em commits locais, limpar o historico Git antes do primeiro push se o remoto nao deve receber esse historico antigo.
+
+## Retomada 2026-05-20 — inspeção dos arquivos `codex-*.log`
+
+### O que foi verificado
+
+- Lidos `CLAUDE.md`, `BUILD_STATUS.md` e este handoff antes da tarefa, conforme `AGENTS.md`.
+- Não foram encontrados arquivos chamados exatamente `codex.log`.
+- Foram encontrados 36 arquivos `*codex*.log` na raiz do projeto, somando cerca de 15,9 KB.
+- Os arquivos têm data de `2026-05-11` e nomes como:
+  - `codex-next-stdout.log`
+  - `codex-spread-stderr.log`
+  - `codex-final-mt5-stderr.log`
+  - `codex-final-vol-stdout.log`
+
+### Conclusão
+
+- Esses logs foram gerados durante validações anteriores do pacote Electron/Next/Python, quando os serviços foram iniciados em background e suas saídas foram redirecionadas para arquivos.
+- O conteúdo confirma que eles registram stdout/stderr de:
+  - Next.js em `localhost:3001`;
+  - `mt5_bridge.py` em `8766`;
+  - `spread_api.py` em `5000`;
+  - `volatility_api.py` em `5555`.
+- Eles são artefatos temporários de verificação, não fazem parte do código-fonte nem da configuração funcional do app.
+
+### Arquivos alterados nesta retomada
+
+- `docs/CODEX_HANDOFF.md`
+
+### Próximos passos recomendados
+
+1. Remover os `codex-*.log` da raiz se o usuário autorizar.
+2. Manter `*.log` no `.gitignore` para evitar que esse tipo de artefato entre no Git.
+
+### Limpeza executada após autorização
+
+- O usuário autorizou excluir os logs temporários do Codex.
+- Removidos 36 arquivos `*codex*.log` da raiz do projeto.
+- Total removido: 15.899 bytes.
+- Verificação após remoção: `Get-ChildItem -Force -File -Filter *codex*.log` não retornou arquivos.
+- `.gitignore` já continha `*.log`, então nenhuma nova regra foi necessária para logs.
+
+## Retomada 2026-05-20 — atualização global do Codex CLI
+
+### O que foi feito
+
+- Lidos `CLAUDE.md`, `BUILD_STATUS.md` e este handoff antes da tarefa, conforme `AGENTS.md`.
+- Executado `npm install -g @openai/codex` para atualizar o Codex CLI global.
+- Versão global anterior identificada:
+  - `@openai/codex@0.130.0`
+- Versão global após atualização:
+  - `@openai/codex@0.132.0`
+  - `codex-cli 0.132.0`
+
+### Arquivos alterados nesta retomada
+
+- `docs/CODEX_HANDOFF.md`
+
+### Verificações executadas
+
+- `git status --short`: worktree já tinha várias mudanças pendentes antes desta tarefa.
+- `npm list -g @openai/codex --depth=0`: antes `0.130.0`, depois `0.132.0`.
+- `npm install -g @openai/codex`: concluído, `changed 2 packages in 10s`.
+- `codex --version`: retornou `codex-cli 0.132.0`.
+
+### Observações
+
+- O npm emitiu aviso de cleanup `EPERM` ao tentar remover uma pasta temporária antiga em `C:\Users\rwres\AppData\Roaming\npm\node_modules\@openai\.codex-rLvboW6U`, envolvendo `codex.exe`.
+- A atualização principal foi aplicada e a versão ativa do CLI foi confirmada como `0.132.0`.
+- O npm também avisou que há versão mais nova do próprio npm: `11.10.0 -> 11.15.0`; isso não foi atualizado porque a tarefa solicitada era apenas `@openai/codex`.
+
+### Próximos passos recomendados
+
+1. Se quiser limpar a pasta temporária `.codex-rLvboW6U`, feche processos `codex.exe` ativos e remova manualmente depois.
+2. Atualizar o npm global separadamente somente se isso for desejado.
+
+### Git status relevante
+
+- Antes da tarefa, o worktree já estava sujo com várias alterações rastreadas e arquivos untracked.
+- Esta retomada alterou apenas `docs/CODEX_HANDOFF.md`.
+
+## Retomada 2026-05-12 — decisão de dados dentro do repositório
+
+### Decisão arquitetural do usuário
+
+- O projeto WR Trading Pro tem como limite arquitetural a pasta:
+  - `C:\Users\rwres\OneDrive\Área de Trabalho\AI\wr_trade_pro_`
+- Dados locais, bancos SQLite, runtime state e persistência da plataforma não devem ser salvos em `AppData`/`Roaming`.
+- O app é uma plataforma de operação B3 com: Dashboard, Ordens, Portfólio, Previsões ML, Modelos ML, Spread B3, Opções, Monitoramento, Agentes e Admin.
+- O fluxo atual usa dados via MT5, mas o plano é migrar para ProfitDLL/Data Solutions quando houver assinatura/chave.
+
+## Retomada 2026-05-12 — verificação da origem `python/options`
+
+### O que foi verificado
+
+- O diretório `python/options` foi a origem da funcionalidade de Opções.
+- `dashboard_opcoes_(versao base apoio).py` é a referência funcional mais completa: Dash v4, SQLite, ranking por score, volatilidade, P.Exerc, filtros e capital dinâmico.
+- `dashboard_opcoes.py` é uma versão Dash menor/variante de referência.
+- `scanner_opcoes.py` era o scanner CLI e foi atualizado para absorver os pontos documentados em `DIVERGENCIAS_SCANNER_vs_DASHBOARD.md`.
+- `src/services/optionsService.ts` é a conversão TypeScript usada pela plataforma React/Electron.
+
+### Conclusão técnica
+
+- A plataforma preservou a lógica essencial nascida em `python/options`:
+  - letras B3 `A-H` para CALL e `J-R` para PUT;
+  - `parseStrike` genérico;
+  - `determineType` genérico;
+  - anualização em base 365;
+  - volatilidade D1;
+  - probabilidade simplificada de exercício;
+  - ranking por anualizado/segurança/spread;
+  - persistência SQLite.
+- A plataforma melhorou a integração:
+  - UI nativa em Next/React em vez de Dash separado;
+  - persistência via Electron no banco oficial `data/options/options_data.db`;
+  - scanner Python e UI agora apontam para o mesmo banco interno do projeto.
+
+### Correção feita nesta verificação
+
+- Encontrada divergência na plataforma TypeScript:
+  - `getOptionSymbols()` filtrava sufixos por `F`, `FUT`, `FI`, `WDO`, `DOL`.
+  - Isso podia excluir opções válidas com letra de mês `F`, `M` ou `W`.
+- Corrigido `src/services/optionsService.ts` para validar símbolos usando `determineType(s) !== 'UNKNOWN' && parseStrike(s) > 0`, alinhando melhor com o módulo Python.
+
+### Verificações executadas
+
+- Inventário de `python/options`.
+- Leitura de `README.md`, `DIVERGENCIAS_SCANNER_vs_DASHBOARD.md`, `dashboard_opcoes_(versao base apoio).py`, `scanner_opcoes.py` e `src/services/optionsService.ts`.
+- `npm run build`: aprovado.
+- `python -m py_compile python/options/scanner_opcoes.py`: aprovado.
+
+## Retomada 2026-05-12 — atualização do executável `release/win-unpacked`
+
+### O que foi feito
+
+- Confirmado que o executável antigo em `release/win-unpacked/WR Trade Pro.exe` ainda era de `2026-05-04` e usava código antigo.
+- Confirmado que `release/win-unpacked/resources/app/electron/dist/main.js` antigo ainda apontava o banco de opções para `app.getPath('userData')`.
+- Executados:
+  - `npm run build`: aprovado.
+  - `npm run electron:compile`: aprovado.
+  - `npx electron-builder --win --dir`: primeira tentativa falhou por lock temporário em `release/win-unpacked/resources/app/python`.
+  - Listagem de processos não encontrou plataforma/serviços antigos segurando a pasta.
+  - Segunda tentativa de `npx electron-builder --win --dir`: aprovada.
+- Após validação, percebido que app empacotado poderia resolver a raiz como `release/win-unpacked/resources/app`, o que salvaria em uma cópia dentro do pacote.
+- Corrigido `electron/main.ts`: quando `app.isPackaged`, a raiz do projeto é descoberta primeiro a partir da pasta do executável (`process.execPath`), fazendo o `.exe` em `release/win-unpacked` subir até `wr_trade_pro_`.
+- Reexecutados:
+  - `npm run electron:compile`: aprovado.
+  - `npm run build`: aprovado.
+  - `npx electron-builder --win --dir`: aprovado.
+
+### Resultado
+
+- Novo executável atualizado:
+  - `release/win-unpacked/WR Trade Pro.exe`
+  - timestamp validado: `2026-05-12 17:57:04`
+- Código empacotado atualizado:
+  - `release/win-unpacked/resources/app/electron/dist/main.js`
+  - timestamp validado: `2026-05-12 17:56:18`
+- `main.js` empacotado contém:
+  - `findNearestProjectRoot(path.dirname(process.execPath))`
+  - `APP_DATA_DIR = path.join(PROJECT_ROOT, 'data')`
+  - `OPTIONS_DATA_DIR = path.join(APP_DATA_DIR, 'options')`
+  - `DB_PATH = path.join(OPTIONS_DATA_DIR, 'options_data.db')`
+- Simulação da descoberta de raiz a partir de `release/win-unpacked` confirmou:
+  - `PROJECT_ROOT=C:\Users\rwres\OneDrive\Área de Trabalho\AI\wr_trade_pro_`
+  - `DB=C:\Users\rwres\OneDrive\Área de Trabalho\AI\wr_trade_pro_\data\options\options_data.db`
+
+### Próximos passos recomendados
+
+1. Abrir `release/win-unpacked/WR Trade Pro.exe`.
+2. Fazer um scan na aba Opções.
+3. Confirmar que `data/options/options_data.db` teve `LastWriteTime` atualizado e recebeu o novo scan.
+
+## Retomada 2026-05-12 — regra OTM para Opções
+
+### O que foi verificado
+
+- Usuário fez um scan novo pela aba Opções.
+- Banco oficial `data/options/options_data.db` foi atualizado em `2026-05-12 18:00:20`.
+- Último scan salvo:
+  - `scan_id`: 32
+  - ativo: `BBAS3`
+  - `scanned_at`: `2026-05-12T21:00:20.231Z`
+  - spot: `21.36`
+  - opções salvas: 20
+  - CALL: 10
+  - PUT: 10
+- Foi detectado que esse scan ainda continha:
+  - 2 CALLs com strike menor/igual ao spot.
+  - 3 PUTs com strike maior/igual ao spot.
+
+### Correção aplicada
+
+- Ajustado `src/services/optionsService.ts` para descartar opções não OTM antes de ranquear/salvar:
+  - CALL só entra se `strike > spot`.
+  - PUT só entra se `strike < spot`.
+- Ajustado `python/options/scanner_opcoes.py` com a mesma regra:
+  - descarta CALL com `strike <= spot`.
+  - descarta PUT com `strike >= spot`.
+- Registros antigos no banco permanecem como histórico; próximos scans devem seguir a regra nova.
+
+### Verificações executadas
+
+- `npm run build`: aprovado.
+- `npm run electron:compile`: aprovado.
+- `python -m py_compile python/options/scanner_opcoes.py`: aprovado.
+- `npx electron-builder --win --dir`: primeira tentativa falhou porque o `WR Trade Pro.exe` estava aberto e bloqueou `d3dcompiler_47.dll`; depois dos processos fecharem, a segunda tentativa foi aprovada.
+- Novo executável:
+  - `release/win-unpacked/WR Trade Pro.exe`
+  - timestamp validado: `2026-05-12 18:05:39`
+
+### Próximo teste recomendado
+
+1. Abrir novamente `release/win-unpacked/WR Trade Pro.exe`.
+2. Fazer novo scan em Opções.
+3. Conferir no banco se o novo `scan_id` tem:
+   - `CALL` sempre com `strike > spot`.
+   - `PUT` sempre com `strike < spot`.
+
+## Retomada 2026-05-12 — alinhamento inicial do módulo de opções
+
+### O que foi feito
+
+- Alterado `electron/main.ts` para descobrir a raiz do projeto `wr_trade_pro_` e usar `data/` como pasta de dados local.
+- O banco oficial de opções do app passou a ser:
+  - `data/options/options_data.db`
+- O handler `get-user-data-path` agora retorna a pasta interna `data/`, não `app.getPath('userData')`.
+- `ensureOptionsDB()` cria `data/options/` automaticamente.
+- Alterado `python/options/scanner_opcoes.py` para usar o mesmo banco:
+  - `PROJECT_ROOT / data / options / options_data.db`
+- Criado `data/README.md` documentando a regra: sem `AppData` como fonte de verdade.
+- Atualizados `.gitignore`, `CLAUDE.md`, `BUILD_STATUS.md`, `python/options/README.md` e este handoff.
+- Copiado o banco antigo de `C:\Users\rwres\AppData\Roaming\wr-trade-pro\options_data.db` para `data/options/options_data.db`, sem apagar o original.
+- Banco copiado validado:
+  - `PRAGMA integrity_check = ok`
+  - `scans`: 8
+  - `options`: 62
+  - schema migrado para conter `cabe_capital` e `cabe_10k`
+
+### Arquivos alterados nesta retomada
+
+- `.gitignore`
+- `CLAUDE.md`
+- `BUILD_STATUS.md`
+- `data/README.md`
+- `docs/CODEX_HANDOFF.md`
+- `electron/main.ts`
+- `electron/dist/main.js`
+- `electron/dist/main.js.map`
+- `python/options/README.md`
+- `python/options/scanner_opcoes.py`
+
+### Verificações executadas
+
+- `npm run electron:compile`: aprovado.
+- `python -m py_compile python/options/scanner_opcoes.py`: aprovado.
+- `npm run build`: aprovado.
+- Validação SQLite em `data/options/options_data.db`: `integrity ok`, 8 scans, 62 opções.
+
+### Próximos passos recomendados
+
+1. Testar manualmente a aba Opções no Electron e confirmar que novos scans aparecem em `data/options/options_data.db`.
+2. Quando o usuário autorizar, remover manualmente o banco antigo de `AppData` para eliminar vestígio fora do repositório.
+3. Padronizar outros bancos/arquivos runtime do projeto sob `data/` se forem encontrados.
+4. Antes da migração ProfitDLL/Data Solutions, definir subpastas claras em `data/market/`, `data/options/`, `data/logs/` ou equivalente.
+
+### O que foi feito
+
+- Lidos `CLAUDE.md`, `BUILD_STATUS.md` e este handoff antes das alterações, conforme `AGENTS.md`.
+- Aplicada a sequência registrada para a bagunça de opções:
+  - `analyze-project`: inventário do fluxo real de opções e pontos de persistência.
+  - `architecture`: avaliação da decisão de dados locais e trade-offs.
+  - `architect-review`: revisão de risco antes de mexer em schema/persistência.
+- Confirmada a divergência principal:
+  - Electron/UI usa `app.getPath('userData')/options_data.db` com coluna `cabe_capital`.
+  - Scanner CLI usa `python/options/options_data.db` com coluna `cabe_10k`.
+- Corrigido alinhamento de cálculo na UI:
+  - `anualizar()` em `src/services/optionsService.ts` agora usa base 365, alinhada ao scanner Python.
+  - `calcExerciseProb()` para PUT agora usa `Phi(d)`, alinhado ao scanner Python.
+  - `selectedSymbols` agora é preenchido para permitir `UNSELECT_SYMBOL` após o scan.
+- Aplicada migração compatível de schema:
+  - `electron/main.ts` cria/migra `cabe_10k` e `cabe_capital`.
+  - `python/options/scanner_opcoes.py` cria/migra `cabe_10k` e `cabe_capital`.
+  - Inserts passam a gravar as duas colunas, sem apagar histórico nem mover bancos.
+
+### Arquivos alterados nesta retomada
+
+- `src/services/optionsService.ts`
+- `electron/main.ts`
+- `electron/dist/main.js`
+- `electron/dist/main.js.map`
+- `python/options/scanner_opcoes.py`
+- `docs/CODEX_HANDOFF.md`
+
+### Verificações executadas
+
+- `npm run build`: aprovado.
+- `npm run electron:compile`: aprovado.
+- `python -m py_compile python/options/scanner_opcoes.py`: aprovado.
+- `git diff --ignore-cr-at-eol --stat`: revisado; ainda há ruído/pendências anteriores no worktree.
+
+### Próximos passos recomendados
+
+1. Decidir explicitamente a arquitetura do banco de opções:
+   - manter `userData` como local oficial do app desktop; ou
+   - usar um caminho configurável/visível no projeto para ambiente local; ou
+   - criar `WR_OPTIONS_DB_PATH`/config e documentar o fluxo.
+2. Migrar/conciliar dados existentes entre `C:\Users\rwres\AppData\Roaming\wr-trade-pro\options_data.db` e `python/options/options_data.db` somente após essa decisão.
+3. Revisar o campo `cabe_capital`/`cabe_10k`: hoje Electron grava `1` para as opções salvas; o próximo ajuste ideal é enviar o capital usado no scan e calcular a coluna com base nele.
+4. Rodar teste manual da aba Opções com MT5 conectado para comparar PETR4/RENT3 entre UI e scanner.
+
+### Git status relevante
+
+- Worktree já estava sujo antes desta retomada.
+- Novas alterações funcionais desta retomada: `src/services/optionsService.ts`, `electron/main.ts`, `electron/dist/main.js`, `electron/dist/main.js.map`, `python/options/scanner_opcoes.py`.
+- `docs/CODEX_HANDOFF.md` permanece untracked e foi atualizado.
+
+## Retomada 2026-05-11 — rodada técnica Electron/Python
+
+### O que foi feito
+
+- Validado o fluxo desktop empacotado sem abrir janela GUI: Next.js production server + serviços Python iniciados a partir da pasta empacotada.
+- Identificado e corrigido bug crítico no `mt5_bridge.py`: `websockets 9.1` quebrava no Python 3.13 quando um cliente conectava (`Lock.__init__() got an unexpected keyword argument 'loop'`).
+- Ambiente Conda `IA_Day_Trading` atualizado para `websockets 15.0.1`.
+- `mt5_bridge.py` e `profitdll_bridge.py` alterados para usar `websockets.legacy.server.serve`, preservando o handler atual.
+- `spread_api.py` e `volatility_api.py` passaram a usar `debug=False` e `use_reloader=False` para evitar processos filhos Flask soltos quando usados pelo Electron.
+- Criado pacote de validação em `codex-electron-check-final/win-unpacked/WR Trade Pro.exe`.
+- `.gitignore` atualizado para ignorar artefatos locais `codex-electron-check*/` e `codex_ws_check.py`.
+
+### Arquivos alterados nesta rodada
+
+- `.gitignore`
+- `BUILD_STATUS.md`
+- `docs/CODEX_HANDOFF.md`
+- `python/mt5_bridge.py`
+- `python/profitdll_bridge.py`
+- `python/requirements.txt`
+- `python/spread_api.py`
+- `python/volatility_api.py`
+
+### Verificações executadas
+
+- `npm run build`: aprovado.
+- `npm run electron:compile`: aprovado.
+- `npx electron-builder --win --dir --config.directories.output=codex-electron-check-final`: aprovado, gerou `win-unpacked`.
+- `python -m py_compile python/mt5_bridge.py python/profitdll_bridge.py python/spread_api.py python/volatility_api.py`: aprovado.
+- Validação do pacote final:
+  - `http://127.0.0.1:3001` retornou `200`.
+  - `http://127.0.0.1:5000` retornou `404` na raiz, esperado para Flask sem rota `/`.
+  - `http://127.0.0.1:5555` retornou `404` na raiz, esperado para Flask sem rota `/`.
+  - `ws://127.0.0.1:8766` conectou com sucesso.
+  - Após encerrar processos de teste, restaram apenas conexões `TIME_WAIT`, sem listeners ativos em `3001`, `8766`, `5000` ou `5555`.
+
+### Observações
+
+- O teste de abrir a janela real do `.exe` foi recusado pelo usuário/sandbox, então a validação foi feita pelos processos equivalentes iniciados a partir da pasta empacotada.
+- `web3 5.31.4` ainda declara dependência antiga `websockets<10`; `openbb-core` e `yfinance` exigem versões novas. Para este app, `websockets 15.0.1` é a escolha correta por compatibilidade com Python 3.13 e com a ponte MT5 após ajuste para `legacy.server`.
+- O pacote final de teste está em `codex-electron-check-final/`; é artefato local ignorado pelo Git.
+
+### Próximos passos recomendados
+
+1. Testar manualmente abrindo `codex-electron-check-final/win-unpacked/WR Trade Pro.exe`.
+2. Se a janela abrir bem, gerar o pacote oficial em `release/` ou ajustar o instalador NSIS.
+3. Considerar mover o caminho Python hardcoded do Electron para configuração/env, antes de distribuir para outra máquina.
+4. Commitar as correções do desktop/Python separadamente das mudanças pendentes de `python/options/`.
+
+## Estado atual confirmado
+
+## Retomada 2026-05-12 — filtro de pares ideais no Spread B3
+
+### O que foi feito
+
+- Mantida a lista principal de pares em `python/Projeto_spread/pares_acoes.py` sem alterações.
+- Ajustado após validação do usuário: o campo `Ganho Mínimo Personalizado` agora participa do status `Ideal`; se não houver oportunidade histórica atingindo o ganho mínimo escolhido, o par não é marcado como ideal.
+- Implementado em `python/spread_api.py` um filtro estatístico para classificar pares da estratégia de Spread B3:
+  - histórico alinhado por datas comuns entre os dois ativos;
+  - correlação de retornos/preços;
+  - z-score do spread assinado contra a média histórica;
+  - meia-vida estimada de reversão à média;
+  - cruzamentos da média no período;
+  - score de 0 a 100;
+  - sinal/direção de entrada (`Vender A e comprar B` ou `Comprar A e vender B`).
+- Ajustada a lógica de oportunidades históricas para considerar a direção do spread no dia de entrada, e não apenas vender sempre o primeiro ativo.
+- Atualizado o frontend da busca de pares para mostrar:
+  - ranking `Top 5 - Pares Ideais`;
+  - score;
+  - z-score/correlação;
+  - spread atual/medio e spread atual assinado;
+  - meia-vida de reversão;
+  - maior ganho histórico;
+  - direção sugerida;
+  - status operacional `Ideal Forte`, `Ideal Limite`, `Acompanhar` ou `Fraco`.
+- Classificação operacional implementada:
+  - `Ideal Forte`: par ideal com score >= 75, correlação >= 0.65 e meia-vida <= 25 pregões;
+  - `Ideal Limite`: passou nos filtros mínimos, mas não nos critérios fortes;
+  - `Acompanhar`: tem oportunidade/sinal, mas falhou algum filtro estatístico;
+  - `Fraco`: sem sinal operacional suficiente.
+- Evitada a análise duplicada: a tela agora chama a API uma vez e cria o ranking localmente a partir do mesmo resultado.
+- Regerado o executável oficial em `release/win-unpacked/WR Trade Pro.exe`.
+
+### Arquivos alterados nesta rodada
+
+- `python/spread_api.py`
+- `src/types/spread.ts`
+- `src/services/spreadService.ts`
+- `src/components/SpreadPairsFinder.tsx`
+- `BUILD_STATUS.md`
+- `docs/CODEX_HANDOFF.md`
+
+### Verificações executadas
+
+- `C:\Users\rwres\anaconda3\envs\IA_Day_Trading\python.exe -m py_compile python\spread_api.py`: aprovado.
+- `npm run build`: aprovado.
+- Teste sintético de `SpreadCalculator.calcular_qualidade_par(...)`: retornou score, sinal e direção de entrada sem erro.
+- `npx electron-builder --win --dir`: aprovado, atualizou `release/win-unpacked`.
+- Verificado que `release/win-unpacked/resources/app/python/spread_api.py` contém `calcular_qualidade_par`, `direcao_entrada` e `min_correlacao_filtro`.
+- `release/win-unpacked/WR Trade Pro.exe` atualizado em `2026-05-12 19:37:51`.
+
+### Próximos passos recomendados
+
+1. Abrir `release/win-unpacked/WR Trade Pro.exe`, ir em Spread B3 e rodar `Encontrar Melhores Pares` com MT5 conectado.
+2. Ajustar os limites do filtro após observar resultados reais:
+   - correlação mínima atual: `0.55`;
+   - z-score mínimo atual: `1.00`;
+   - meia-vida máxima atual: `45` pregões;
+   - histórico mínimo atual: `60` pregões.
+3. Em uma próxima melhoria, adicionar controles na tela para o usuário calibrar esses filtros sem alterar código.
+
+### Git status relevante
+
+- A retomada mexeu nos arquivos listados acima.
+- Já havia várias mudanças pendentes anteriores no projeto; nada foi apagado e nenhum commit foi criado.
+
+## Retomada 2026-05-12 — verificação do banco de opções
+
+### O que foi feito
+
+- Inspecionado em modo somente leitura o banco `python/options/options_data.db`.
+- Confirmado `PRAGMA integrity_check = ok`.
+- Confirmadas tabelas:
+  - `scans`
+  - `options`
+  - `sqlite_sequence`
+- Contagens:
+  - `scans`: 1
+  - `options`: 53
+- Scan único encontrado:
+  - ativo `PETR4`
+  - `scanned_at`: `2026-05-10T17:17:12.755313`
+  - spot `46.01`
+- Qualidade básica:
+  - sem órfãos entre `options.scan_id` e `scans.id`
+  - sem símbolos nulos/vazios
+  - sem `bid`, `ask` ou `dte` negativos
+  - sem `ask < bid`
+  - sem `opt_type` vazio
+- Distribuição:
+  - `CALL`: 23 opções
+  - `PUT`: 30 opções
+
+### Divergência identificada
+
+- O banco em `python/options/options_data.db` tem a coluna `options.cabe_10k`.
+- O schema embutido no Electron em `electron/main.ts` usa `options.cabe_capital`.
+- Isso indica que existem dois formatos próximos, mas não idênticos:
+  - scanner CLI em `python/options/scanner_opcoes.py`: `cabe_10k`
+  - banco do app Electron em `app.getPath('userData')/options_data.db`: `cabe_capital`
+- Em 2026-05-12, com a plataforma WR Trade Pro aberta a partir de `release/win-unpacked/WR Trade Pro.exe`, o banco real de buscas da UI foi localizado em:
+  - `C:\Users\rwres\AppData\Roaming\wr-trade-pro\options_data.db`
+- Esse banco real do Electron tinha:
+  - `scans`: 8
+  - `options`: 62
+  - buscas recentes: `RENT3` em `2026-05-12T15:32:11.626Z` e `PETR4` em `2026-05-12T15:31:15.068Z`
+  - coluna `cabe_capital`, conforme `electron/main.ts`
+
+### Verificações executadas
+
+- Listagem de `python/options`.
+- Localização de bancos `.db`.
+- Inspeção SQLite via Python `sqlite3` em `mode=ro`.
+- `PRAGMA table_info`, `sqlite_master`, contagens, amostras e `PRAGMA integrity_check`.
+- Busca por referências a `cabe_10k`, `cabe_capital` e `options_data`.
+
+### Próximos passos recomendados
+
+1. Decidir se o banco CLI e o banco Electron devem compartilhar exatamente o mesmo schema.
+2. Se sim, padronizar `cabe_10k` versus `cabe_capital` com uma migração compatível.
+3. Usar `C:\Users\rwres\AppData\Roaming\wr-trade-pro\options_data.db` quando a dúvida for sobre buscas feitas pela plataforma desktop.
+
+### Intenção do usuário para próxima etapa
+
+O usuário considera incorreto o app gravar dados em `C:\Users\rwres\AppData\Roaming\wr-trade-pro` sem uma decisão arquitetural clara, porque o projeto principal está em `C:\Users\rwres\OneDrive\Área de Trabalho\AI\wr_trade_pro_`.
+
+Também há preocupação explícita com bagunça estrutural:
+
+- bancos de opções em locais diferentes;
+- schema divergente entre scanner Python e Electron (`cabe_10k` vs `cabe_capital`);
+- arquivos soltos em `python/options`;
+- artefatos temporários;
+- diferença entre scanner Python, UI Electron e persistência real;
+- nome interno `wr-trade-pro` criando diretório separado no AppData.
+
+Quando o usuário pedir para “arrumar a bagunça”, “organizar a arquitetura” ou semelhante, usar esta sequência de skills:
+
+1. `analyze-project` — inventário real do repositório, arquivos, bancos, artefatos e fluxos.
+2. `architecture` — definir arquitetura-alvo e limites claros entre app, serviços Python, dados locais, build e artefatos.
+3. `architect-review` — revisão crítica antes de modificar arquivos, apontando riscos e plano de migração.
+
+Não começar apagando/movendo arquivos. Primeiro mapear, propor plano e só executar após confirmação do usuário.
+
+### Git status relevante
+
+- Esta retomada alterou apenas `docs/CODEX_HANDOFF.md`.
+- O banco `python/options/options_data.db` foi apenas lido, não modificado.
+
+- Projeto: WR Trading Pro / WR Trade Pro.
+- Stack: Next.js 15 + React 19 + TypeScript + Prisma/SQLite + Electron + Python MT5 bridge.
+- `npm run build` passou na análise Codex em 2026-05-10.
+- `npm run electron:compile` passou na análise Codex em 2026-05-10.
+- O projeto NÃO usa mais `output: 'export'`; API routes dinâmicas são parte esperada da arquitetura.
+- `BUILD_STATUS.md` foi atualizado para refletir o estado real.
+- `AGENTS.md` existe na raiz e define o protocolo obrigatório de retomada: ler `CLAUDE.md`, `BUILD_STATUS.md` e este handoff antes de trabalhar.
+- Memória local do Codex atualizada em `C:\Users\rwres\.codex\memories\wr_trade_pro_context.md` para registrar que as skills `brainstorming` e `writing-plans` estão instaladas e ativas.
+
+## Commit recente
+
+- `17f7c9b docs: update build status and ignores`
+- Incluiu somente:
+  - `.gitignore`
+  - `BUILD_STATUS.md`
+
+## `.gitignore` recente
+
+Foram ignorados artefatos locais/gerados:
+
+- `release/`
+- `graphify-out/`
+- `agent_workspace/`
+- `python/options/options_data.db`
+
+## Atenção: Git status no WSL
+
+O WSL pode mostrar muitos arquivos como `M` por ruído de line ending CRLF/LF.
+Antes de concluir que houve mudança real, use:
+
+```bash
+git diff --ignore-cr-at-eol --stat
+```
+
+Em 2026-05-10, após o commit `17f7c9b`, o ruído CRLF/LF ainda aparecia em `git status`, mas o diff funcional relevante estava limpo fora dos arquivos intencionais.
+
+## Untracked deixados propositalmente fora do commit
+
+Avaliar antes de commitar:
+
+- `AGENTS.md`
+- `docs/CODEX_HANDOFF.md`
+- `electron/better-sqlite3.d.ts`
+- `python/options/DIVERGENCIAS_SCANNER_vs_DASHBOARD.md`
+- `python/options/dashboard_opcoes_(versao base apoio).py`
+- `python/options/test_mt5_options.py`
+- `python/options/test_mt5_options2.py`
+- `python/options/test_mt5_vale.py`
+
+Motivo: parecem candidatos a código/documentação úteis, não artefatos óbvios. `AGENTS.md` e este handoff são documentação operacional e provavelmente devem entrar no repositório quando o usuário pedir um commit.
+
+## Mudanças pendentes observadas na retomada atual
+
+`git status --short` em 2026-05-10:
+
+```text
+ M python/options/README.md
+ M python/options/scanner_opcoes.py
+?? AGENTS.md
+?? docs/CODEX_HANDOFF.md
+?? electron/better-sqlite3.d.ts
+?? python/options/DIVERGENCIAS_SCANNER_vs_DASHBOARD.md
+?? "python/options/dashboard_opcoes_(versao base apoio).py"
+?? python/options/test_mt5_options.py
+?? python/options/test_mt5_options2.py
+?? python/options/test_mt5_vale.py
+```
+
+Nesta retomada não houve alteração de código do app. Foram apenas lidos os arquivos de handoff/protocolo e atualizadas memórias/documentação operacional.
+
+## Verificações executadas nesta retomada
+
+- `Get-ChildItem -Recurse -Filter AGENTS.md`: confirmou `AGENTS.md` na raiz.
+- Leitura de `AGENTS.md`, `CLAUDE.md`, `BUILD_STATUS.md` e `docs/CODEX_HANDOFF.md`.
+- `git status --short`: status listado acima.
+- Não foram rodados `npm run build` nem `npm run electron:compile`, porque não houve mudança em TypeScript/Next/Electron nesta etapa.
+
+## Pontos técnicos identificados pelo Codex
+
+- Alguns serviços criam `new PrismaClient()` diretamente em vez de reutilizar `src/lib/prisma.ts`.
+- `mt5Service` ainda tem logs excessivos no browser/build.
+- Electron possui caminho hardcoded para `C:\Users\rwres\anaconda3\envs\IA_Day_Trading\python.exe`.
+- ProfitDLL está preparado como types/stub/bridge parcial, aguardando ativação/chave Nelogica.
+- Não há suíte de testes automatizada clara; build passa, mas comportamento não está coberto por testes.
+
+## Próximos passos recomendados
+
+1. Criar `.gitattributes` para estabilizar line endings Windows/WSL.
+2. Classificar os untracked de `python/options/` e decidir o que entra no repositório.
+3. Revisar `PrismaClient` duplicado e centralizar no singleton `src/lib/prisma.ts` se seguro.
+4. Reduzir logs ruidosos em `src/services/mt5Service.ts`.
+5. Parametrizar caminho Python no Electron via env/config em vez de hardcoded.
+6. Integrar ProfitDLL quando a chave Nelogica estiver disponível.
+
+## Regra de handoff
+
+Ao terminar qualquer sessão ou tarefa, atualize este arquivo com o novo estado. Ele é a memória operacional que o Codex deve ler no início de cada nova sessão.

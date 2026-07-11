@@ -1,0 +1,378 @@
+# Análise do Comportamento de Posições no MT5
+
+## 📋 Problema Identificado
+
+**Comportamento Atual (CORRETO em HEDGE Mode):**
+1. Compra de 100 ações de PETR4 a R$ 30.00
+   - Resultado: Posição #1: BUY 100 PETR4 @ R$ 30.00 ✅
+   
+2. Venda de 100 ações de PETR4 a R$ 30.00
+   - Resultado: Posição #2: SELL 100 PETR4 @ R$ 30.00 ✅
+   
+**Comportamento Desejado (Netting no Frontend):**
+1. Compra de 100 ações de PETR4 a R$ 30.00
+   - Posição Líquida: +100 PETR4 a R$ 30.00
+   - Valor: R$ 3.000,00 ✅
+   
+2. Venda de 100 ações de PETR4 a R$ 30.00
+   - Posição Líquida: 0 PETR4 (netting: +100 - 100 = 0)
+   - Valor: R$ 0,00 ✅
+
+**Confirmado:** A conta MT5 está em modo HEDGE, por isso cada ordem cria uma posição independente.
+
+---
+
+## 🔍 Análise do Código Atual
+
+### 1. MT5 Bridge Python (`mt5_bridge.py`)
+
+#### Como as ordens são enviadas:
+```python
+async def handle_send_order(self, data: Dict[str, Any]):
+    """Enviar ordem"""
+    # Envia ordem usando mt5.order_send() com TRADE_ACTION_DEAL
+    result = mt5.order_send(request)
+```
+
+#### Como as posições são obtidas:
+```python
+async def handle_get_positions(self, data: Dict[str, Any]):
+    """Obter posições"""
+    # Usa mt5.positions_get() que retorna posições abertas (com netting)
+    positions = mt5.positions_get()
+```
+
+#### Como os trades são obtidos:
+```python
+async def handle_get_history(self, data: Dict[str, Any]):
+    """Obter histórico de trades"""
+    # Usa mt5.history_deals_get() que retorna TODOS os trades executados
+    history = mt5.history_deals_get(from_dt, to_dt)
+```
+
+---
+
+### 2. MT5 Service TypeScript (`mt5Service.ts`)
+
+#### Cache de posições:
+```typescript
+private positionsCache: Map<number, MT5Position> = new Map();
+```
+
+#### Cache de trades:
+```typescript
+private tradesCache: Map<number, MT5Trade> = new Map();
+```
+
+#### Como as posições são atualizadas:
+```typescript
+private handlePositionMessage(data: any): void {
+  // Adiciona/atualiza posição no cache
+  this.positionsCache.set(position.ticket, position);
+  this.emit('position', position);
+}
+```
+
+#### Como os trades são processados:
+```typescript
+private handleTradeMessage(data: any): void {
+  // Adiciona/atualiza trade no cache
+  this.tradesCache.set(trade.ticket, trade);
+  this.emit('trade', trade);
+}
+```
+
+#### Como as posições são fechadas:
+```typescript
+closePosition(ticket: number, volume?: number): void {
+  // Envia comando para fechar posição específica
+  this.send({
+    type: 'CLOSE_POSITION',
+    data: { ticket, volume },
+  });
+}
+```
+
+---
+
+### 3. OpenPositions Component (`OpenPositions.tsx`)
+
+#### Como as posições são removidas do cache:
+```typescript
+const handleTrade = (trade: any) => {
+  console.log('Trade recebido:', trade);
+  // Se é um fechamento (entry === 1), remover a posição correspondente
+  if (trade.entry === 1 && trade.position) {
+    console.log('Fechamento de posição (trade):', trade.position);
+    setPositions(prev => prev.filter(p => p.ticket !== trade.position));
+  }
+};
+
+const handlePositionClosed = (ticket: number) => {
+  console.log('=== POSIÇÃO FECHADA ===');
+  console.log('Ticket:', ticket);
+  setPositions(prev => prev.filter(p => p.ticket !== ticket));
+};
+```
+
+---
+
+## 🎯 Como o MT5 Realmente Funciona
+
+### Modo de Netting vs Hedge
+
+**Netting Mode (Padrão em Contas de Varejo):**
+- Única posição por símbolo
+- Compra e venda se compensam automaticamente
+- Exemplo:
+  - Compra 100 PETR4 → Posição: +100
+  - Venda 100 PETR4 → Posição: 0 (fechada)
+  - Compra 50 PETR4 → Posição: +50
+  - Venda 100 PETR4 → Posição: -50
+
+**Hedge Mode (Disponível em algumas contas):**
+- Múltiplas posições por símbolo
+- Cada ordem cria uma posição independente
+- Precisa fechar cada posição individualmente
+
+---
+
+## 🔬 Como o Sistema Atual Deveria Funcionar
+
+### Cenário 1: Compra e Venda Completa do Mesmo Ativo
+
+```
+1. Usuário compra 100 PETR4 a R$ 30.00
+   → MT5 envia: DEAL (compra)
+   → MT5: position = +100 PETR4 @ 30.00
+   → Cache: positionsCache[ticket1] = {type: 'BUY', volume: 100, symbol: 'PETR4'}
+   → UI: Mostra 100 PETR4 @ 30.00
+
+2. Usuário vende 100 PETR4 a R$ 30.00
+   → MT5 envia: DEAL (venda)
+   → MT5: position = 0 PETR4 (FECHADA)
+   → MT5 envia: TRADE (entry=1, fechamento)
+   → Cache: handleTrade detecta entry=1 → Remove do cache
+   → UI: Mostra "Nenhuma posição aberta" ✅
+```
+
+### Cenário 2: Spread (Compra de Um, Venda de Outro)
+
+```
+1. Usuário compra 100 PETR3 a R$ 38.50
+   → MT5: position = +100 PETR3 @ 38.50
+   → Cache: positionsCache[ticket1] = {type: 'BUY', volume: 100, symbol: 'PETR3'}
+   → UI: Mostra 100 PETR3
+
+2. Usuário vende 100 PETR4 a R$ 38.30
+   → MT5: position = -100 PETR4 @ 38.30
+   → Cache: positionsCache[ticket2] = {type: 'SELL', volume: 100, symbol: 'PETR4'}
+   → UI: Mostra -100 PETR4
+
+Resultado: DUAS posições abertas (PETR3 e PETR4) ✅
+```
+
+---
+
+## 🐛 Possíveis Causas do Problema
+
+### Hipótese 1: Account em Modo Hedge
+Se a conta MT5 está em modo hedge, cada ordem cria uma posição independente.
+
+**Verificar:**
+```python
+# Em mt5_bridge.py
+account_info = mt5.account_info()
+print(f"FIFO Close: {account_info.fifoclose}")  # Se False, pode ser hedge mode
+```
+
+### Hipótese 2: Trades Não Estão Sendo Processados Corretamente
+Os eventos de trade podem não estar sendo enviados corretamente do MT5.
+
+**Verificar:**
+```python
+# Em mt5_bridge.py, no método simulate_market_data
+history = mt5.history_deals_get(from_dt, to_dt)
+for trade in history:
+    await self.broadcast({
+        'type': 'TRADE',
+        'data': trade._asdict(),
+        'timestamp': datetime.now().isoformat(),
+    })
+```
+
+### Hipótese 3: Cache de Posições Não Está Sendo Limpo
+O cache pode estar acumulando posições antigas que deveriam ter sido fechadas.
+
+**Verificar:**
+- `positionsCache` em `mt5Service.ts` pode ter posições que já foram fechadas
+- `handleTrade` pode não estar sendo chamado corretamente
+
+---
+
+## 🔧 Soluções Possíveis
+
+### Solução 1: Usar Apenas Posições do MT5 (Recomendado)
+Em vez de manter um cache local de posições, sempre usar as posições retornadas pelo MT5.
+
+**Vantagens:**
+- Sempre sincronizado com o estado real do MT5
+- O MT5 já faz o netting corretamente
+- Menos complexidade no código
+
+**Implementação:**
+```typescript
+// Em OpenPositions.tsx
+useEffect(() => {
+  const handleStateChange = (state: any) => {
+    if (state.state === 'CONNECTED') {
+      // Solicitar posições do MT5
+      mt5Service.getPositions();
+    }
+  };
+  
+  // Quando receber posições do MT5, usar diretamente
+  const handlePosition = (position: MT5Position) => {
+    // MT5 já fez o netting, apenas usar
+    setPositions(prev => {
+      const index = prev.findIndex(p => p.ticket === position.ticket);
+      if (index >= 0) {
+        const updated = [...prev];
+        updated[index] = position;
+        return updated;
+      }
+      return [position, ...prev];
+    });
+  };
+  
+  mt5Service.on('state', handleStateChange);
+  mt5Service.on('position', handlePosition);
+  
+  // Importante: Pedir posições periodicamente para sincronizar
+  const interval = setInterval(() => {
+    if (mt5Service.getConnectionState().state === 'CONNECTED') {
+      mt5Service.getPositions();
+    }
+  }, 5000); // A cada 5 segundos
+  
+  return () => {
+    clearInterval(interval);
+    mt5Service.off('state', handleStateChange);
+    mt5Service.off('position', handlePosition);
+  };
+}, []);
+```
+
+### Solução 2: Melhorar o Processamento de Trades
+Garantir que os trades de fechamento (entry=1) sejam processados corretamente.
+
+**Implementação:**
+```typescript
+// Em mt5Service.ts
+private handleTradeMessage(data: any): void {
+  const trade: MT5Trade = { ... };
+  
+  // Adicionar ao cache
+  this.tradesCache.set(trade.ticket, trade);
+  this.emit('trade', trade);
+  
+  // Se é um fechamento (entry === 1), remover a posição do cache
+  if (trade.entry === 1 && trade.position) {
+    console.log('Trade de fechamento detectado:', trade.position);
+    this.positionsCache.delete(trade.position);
+    this.emit('positionClosed', trade.position);
+  }
+}
+```
+
+### Solução 3: Atualizar Posições Periodicamente
+Além de eventos de trade, atualizar as posições periodicamente do MT5 para garantir sincronização.
+
+**Implementação:**
+```python
+# Em mt5_bridge.py
+async def simulate_market_data(self):
+    while True:
+        if self.is_connected and self.clients:
+            if MT5_AVAILABLE:
+                # Buscar posições atualizadas do MT5
+                positions = mt5.positions_get()
+                if positions:
+                    for position in positions:
+                        await self.broadcast({
+                            'type': 'POSITION',
+                            'data': position._asdict(),
+                            'timestamp': datetime.now().isoformat(),
+                        })
+                
+                # Buscar trades recentes
+                from_dt = datetime.now() - timedelta(minutes=5)
+                to_dt = datetime.now()
+                history = mt5.history_deals_get(from_dt, to_dt)
+                if history:
+                    for trade in history:
+                        await self.broadcast({
+                            'type': 'TRADE',
+                            'data': trade._asdict(),
+                            'timestamp': datetime.now().isoformat(),
+                        })
+        
+        await asyncio.sleep(1)  # Atualizar a cada segundo
+```
+
+---
+
+## 📊 Próximos Passos
+
+### Ações Necessárias (NÃO IMPLEMENTAR AINDA - APENAS ANALISAR):
+
+1. **Verificar o Modo da Conta MT5**
+   - Confirmar se a conta está em modo netting ou hedge
+   - Verificar configuração `fifoClose` da conta
+
+2. **Monitorar os Eventos de Trade**
+   - Adicionar logs detalhados para todos os trades recebidos
+   - Verificar se trades de fechamento (entry=1) estão sendo enviados
+
+3. **Verificar Sincronização do Cache**
+   - Comparar posições no cache vs posições no MT5
+   - Identificar discrepâncias
+
+4. **Testar Cenários de Netting**
+   - Comprar e vender o mesmo ativo completamente
+   - Comprar mais do que vender
+   - Vender mais do que comprar
+
+5. **Documentar o Comportamento Observado**
+   - Criar tabela com cenários testados
+   - Registrar o comportamento atual vs esperado
+
+---
+
+## 📝 Conclusão
+
+**Causa confirmada:** A conta MT5 está em modo **HEDGE**, onde cada ordem cria uma posição independente. Não há compensação automática de posições.
+
+**Como o MT5 funciona em modo HEDGE:**
+- Cada ordem cria uma nova posição independente
+- Posições de compra e venda do mesmo ativo coexistem
+- Precisa fechar cada posição individualmente
+- Exemplo:
+  - Compra 100 PETR4 → Posição #1: BUY 100
+  - Venda 100 PETR4 → Posição #2: SELL 100
+  - Resultado: DUAS posições abertas (correto em hedge mode)
+
+**Como implementar Netting no Frontend:**
+1. Agrupar todas as posições por símbolo
+2. Calcular posição líquida (net position) para cada símbolo
+3. Somar volumes de BUY (+) e SELL (-)
+4. Se net position = 0, não mostrar na interface
+5. Se net position > 0, mostrar como BUY
+6. Se net position < 0, mostrar como SELL (valor absoluto)
+
+**Solução recomendada:**
+Implementar lógica de netting no componente `OpenPositions` para calcular e mostrar posições líquidas por símbolo, independentemente do modo da conta MT5.
+
+---
+
+**Status:** ✅ PROBLEMA IDENTIFICADO - PRONTO PARA IMPLEMENTAR SOLUÇÃO

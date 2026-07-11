@@ -1,0 +1,315 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Asset {
+  id          String   @id @default(cuid())
+  symbol      String   @unique
+  name        String
+  type        String   // STOCK, ETF, CRYPTO, FOREX
+  exchange    String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  positions          Position[]
+  orders             Order[]
+  predictions        Prediction[]
+  marketData         MarketData[]
+  stockMonitoring    StockMonitoring[]
+}
+
+model Position {
+  id            String   @id @default(cuid())
+  assetId       String
+  asset         Asset    @relation(fields: [assetId], references: [id])
+  quantity      Int
+  avgPrice      Float
+  currentPrice  Float
+  pnl           Float    @default(0)
+  status        String   // OPEN, CLOSED
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+  
+  @@index([assetId])
+}
+
+model Order {
+  id          String   @id @default(cuid())
+  assetId     String
+  asset       Asset    @relation(fields: [assetId], references: [id])
+  type        String   // BUY, SELL
+  orderType   String   // MARKET, LIMIT, STOP
+  quantity    Int
+  price       Float?
+  status      String   // PENDING, FILLED, CANCELLED, REJECTED
+  createdAt   DateTime @default(now())
+  filledAt    DateTime?
+  
+  @@index([assetId])
+}
+
+model Prediction {
+  id            String   @id @default(cuid())
+  assetId       String
+  asset         Asset    @relation(fields: [assetId], references: [id])
+  modelType     String   // LSTM, GRU, TRANSFORMER, ENSEMBLE
+  prediction    String   // BUY, HOLD, SELL
+  confidence    Float
+  targetPrice   Float?
+  timeframe     String   // 1M, 5M, 15M, 1H, 1D
+  createdAt     DateTime @default(now())
+  
+  @@index([assetId])
+}
+
+model MarketData {
+  id          String   @id @default(cuid())
+  assetId     String
+  asset       Asset    @relation(fields: [assetId], references: [id])
+  timestamp   DateTime
+  open        Float
+  high        Float
+  low         Float
+  close       Float
+  volume      BigInt
+  
+  @@unique([assetId, timestamp])
+  @@index([assetId])
+  @@index([timestamp])
+}
+
+model TechnicalIndicator {
+  id          String   @id @default(cuid())
+  assetId     String
+  indicator   String   // RSI, MACD, BOLLINGER, SMA, EMA
+  value       Float
+  signal      String   // BUY, SELL, NEUTRAL
+  timestamp   DateTime @default(now())
+  
+  @@index([assetId])
+}
+
+model Alert {
+  id          String   @id @default(cuid())
+  type        String   // PRICE, VOLUME, INDICATOR, RISK
+  message     String
+  severity    String   // INFO, WARNING, CRITICAL
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model AIProvider {
+  id          String   @id @default(cuid())
+  name        String   @unique // OPENAI, DEEPSEEK, OLLAMA, QWEN, GROQ
+  apiKey      String?
+  endpoint    String?
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DataSource {
+  id          String   @id @default(cuid())
+  name        String   @unique // MOCK, B3, PROFITDLL, MT5
+  type        String
+  config      String   // JSON string with credentials/settings
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SystemMetrics {
+  id          String   @id @default(cuid())
+  metricName  String
+  value       Float
+  timestamp   DateTime @default(now())
+  
+  @@index([metricName])
+  @@index([timestamp])
+}
+
+model SpreadOrder {
+  id              String   @id @default(cuid())
+  assetId1        String
+  assetId2        String
+  type1           String   // BUY, SELL
+  type2           String   // BUY, SELL
+  quantity1       Int
+  quantity2       Int
+  price1          Float
+  price2          Float
+  spreadValue     Float
+  status          String   // PENDING, FILLED, CANCELLED, REJECTED
+  isAutomated     Boolean  @default(false)
+  automationTarget Float?
+  automationCondition String? // greater_than, less_than, equal_to
+  createdAt       DateTime @default(now())
+  filledAt        DateTime?
+  mt5OrderTicket1 Int?
+  mt5OrderTicket2 Int?
+  
+  @@index([assetId1])
+  @@index([assetId2])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Modelo para monitoramento de ações B3 (apenas monitoramento, sem envio de ordens)
+model StockMonitoring {
+  id                          String   @id @default(cuid())
+  assetId                     String
+  asset                       Asset    @relation(fields: [assetId], references: [id])
+  
+  // Dados fundamentais
+  stockType                   String   // ON, PN
+  composition                 Float    @default(1)
+  payoutEstatuto              Float?
+  dyMedia3Anos                Float?
+  
+  // Gatilhos de compra (indicadores para decisão)
+  gatilhoROE                  Float?
+  gatilhoVPA                  Float?
+  gatilhoLPA                  Float?
+  
+  // Preços de referência (cálculos da plataforma)
+  precoTeto                   Float?
+  precoTetoReajustado         Float?
+  
+  // Metas de posição
+  metaPapeis                  Int      @default(0)
+  investimentoNecessarioParaMeta Float?
+  
+  // Dados financeiros da empresa (entrada manual)
+  patrimonioLiquido           Float?
+  lucroLiquido                Float?
+  acoesEmitidas               BigInt?
+  vpa                         Float?
+  pVpa                        Float?
+  lpa                         Float?
+  precoLucro                  Float?
+  roe                         Float?
+  
+  // Projeção de dividendos
+  previsaoDividendoAnual      Float?
+  yieldOnCost                 Float?
+  
+  // Dados de posição (vêm do MT5)
+  precoAtual                  Float?
+  quantidadeAdquirida         Int      @default(0)
+  precoMedioCompra            Float?
+  valorInvestido              Float?
+  valorCarteira               Float?
+  resultado                   Float    @default(0)
+  participacaoCarteira        Float?
+  
+  // Status do monitoramento
+  status                      String   @default("NEUTRO") // COMPRA, VENDA, NEUTRO, ATENCAO
+  observacoes                 String?
+  
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+  
+  dividendMaps                DividendMap[]
+  alerts                      StockAlert[]
+  
+  @@index([assetId])
+  @@index([status])
+}
+
+// Mapa mensal de dividendos por ação
+model DividendMap {
+  id          String   @id @default(cuid())
+  stockId     String
+  jan         Float    @default(0)
+  fev         Float    @default(0)
+  mar         Float    @default(0)
+  abr         Float    @default(0)
+  mai         Float    @default(0)
+  jun         Float    @default(0)
+  jul         Float    @default(0)
+  ago         Float    @default(0)
+  set         Float    @default(0)
+  out         Float    @default(0)
+  nov         Float    @default(0)
+  dez         Float    @default(0)
+  total       Float    @default(0)
+  ano         Int
+  
+  stock       StockMonitoring @relation(fields: [stockId], references: [id])
+  
+  @@unique([stockId, ano])
+  @@index([stockId])
+}
+
+// Alertas específicos para monitoramento de ações
+model StockAlert {
+  id          String   @id @default(cuid())
+  stockId     String
+  stock       StockMonitoring @relation(fields: [stockId], references: [id])
+  
+  type        String   // PRICE, DIVIDEND, STATUS, PORTFOLIO
+  condition   String   // above, below, equals, changed_to
+  value       Float?
+  targetValue Float?
+  message     String
+  severity    String   // INFO, WARNING, CRITICAL
+  isActive    Boolean  @default(true)
+  isRead      Boolean  @default(false)
+  triggeredAt DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([stockId])
+  @@index([isActive])
+  @@index([isRead])
+  @@index([type])
+}
+
+// Relatórios de monitoramento de ações
+model StockReport {
+  id          String   @id @default(cuid())
+  name        String
+  type        String   // PORTFOLIO, PERFORMANCE, DIVIDENDS, STATUS
+
+  startDate   DateTime
+  endDate     DateTime
+
+  // Dados do relatório (JSON)
+  data        String   // JSON com dados do relatório
+
+  generatedBy String   // Sistema ou usuário
+
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+  @@index([startDate])
+  @@index([endDate])
+}
+
+// Cache de candles históricos do MT5 para o pipeline de ML
+model HistoricalCandle {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  timeframe String
+  time      DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+  createdAt DateTime @default(now())
+
+  @@unique([symbol, timeframe, time])
+  @@index([symbol, timeframe, time])
+}
