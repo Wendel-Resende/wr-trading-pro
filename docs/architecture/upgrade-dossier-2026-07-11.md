@@ -21,8 +21,9 @@
 - **Problema:** Sem validação de `Origin`, token ou vínculo sessão-conta. Estado MT5 é global e compartilhado entre clientes — um cliente faz login, todos operam a mesma conta. Cross-Site WebSocket Hijacking é possível.
 
 ### CR-4 — Senha MT5 exposta em logs
-- **Arquivos:** `python/mt5_bridge.py:111-115,171-174`, `src/services/mt5Service.ts:265-270`
-- **Problema:** Frontend serializa e registra toda mensagem; `LOGIN.data.password` entra no `console.log`. Bridge também registra `msg_data` completo incluindo senha, login, servidor e path.
+- **Arquivos:** `python/mt5_bridge.py:114` (loga `msg_data` completo do LOGIN incluindo senha), `src/services/mt5Service.ts:269` (`console.log('Enviando mensagem:', jsonMessage)` serializa LOGIN com senha)
+- **Problema:** Payload de autenticação completo registrado em logs. As linhas 171-174 do bridge mascaram a senha (`'***' if password`), mas o vazamento real está na linha 114 que loga `msg_data` inteiro. No frontend, `mt5Service.ts:269` registra toda mensagem WebSocket enviada.
+- **Correção confirmada pelo Fable 5:** Vazamento correto identificado; citação de linha ajustada de 171-174 para 114.
 
 ### CR-5 — Tipo de ordem desconhecido vira compra a mercado (fail-open)
 - **Arquivos:** `python/mt5_bridge.py:1072-1082`
@@ -154,16 +155,32 @@ Princípios:
 ### Fase 0 — Contenção operacional (primeiro incremento)
 Prioridade: eliminar riscos críticos sem quebrar funcionalidade atual.
 
-1. Bind Python em `127.0.0.1` + CORS allowlist estrita
-2. Token efêmero por sessão no WebSocket MT5 + validação de Origin
-3. Redator central de senha/token/api_key em todos os logs
-4. Rejeitar `ORDER_TYPE_BUY` como default — fail-closed
-5. Remover `NEXT_PUBLIC_*_API_KEY` — chaves só no backend
-6. Remover `local_url` e `api_key` do body do endpoint de agentes
-7. `getMockSuggestion()` → `NO_DECISION` + flag `mode=degraded`
-8. Sessão HttpOnly + middleware de autenticação nas APIs
-9. `sandbox: true` no Electron + `will-navigate` + `setWindowOpenHandler`
-10. Mover estado para `app.getPath('userData')`
+**Ordem revisada após revisão independente do Fable 5:**
+
+| Ordem | Item | Arquivo(s) | Esforço | Risco eliminado |
+|-------|------|-----------|---------|-----------------|
+| 1 | Fail-closed no tipo de ordem | `mt5_bridge.py:1081` | 1 linha | CR-5 (compra acidental) |
+| 2 | Redator central de segredos em logs | `mt5_bridge.py:114`, `mt5Service.ts:269` | Função pura | CR-4 (senha em logs) |
+| 3 | Bind `127.0.0.1` + CORS allowlist em TODOS os serviços | `spread_api.py`, `volatility_api.py`, `dashboard_opcoes.py:466`, `package.json:9,11`, `electron/main.ts` | Config | CR-2 (exposição LAN) |
+| 4 | Validação de Origin no WebSocket MT5 | `mt5_bridge.py` handshake | Pequeno | CR-3 parcial (CSWSH) |
+| 5 | Kill switch `WR_TRADING_ENABLED` (default false) + `mt5.order_check()` | `mt5_bridge.py` antes de `order_send` | ~10 linhas | Janela de ordens sem controle |
+| 6 | `getMockSuggestion()` → `NO_DECISION` + `mode=degraded` | `agents/route.ts:47-81,156-165,190-203` | Médio | CR-6 (mock vira decisão) |
+| 7 | Chaves LLM no backend + remover `api_key`/`local_url` do body (juntos) | `llmService.ts`, `agents/route.ts`, criar proxy server-side | Médio | A1+A2 (SSRF + chaves no bundle) |
+| 8 | Zod no `spread-orders` POST (mass assignment) | `spread-orders/route.ts` | Pequeno | A7 (estado controlado pelo cliente) |
+| 9 | Sessão HttpOnly + middleware de autenticação | Criar `src/middleware.ts`, cobrir 21 rotas | Grande | CR-1 (sem autenticação) |
+| 10 | Token efêmero no WebSocket derivado da sessão | `mt5_bridge.py` | Médio | CR-3 completo (token por sessão) |
+| 11 | `sandbox: true` + `will-navigate` + `setWindowOpenHandler` | `electron/main.ts` | Médio | M1+A4 (Electron hardening) |
+
+**Resolvido — item 10 original (mover estado para userData):**
+Decisão do usuário: manter regra do CLAUDE.md e excluir `data/` do sync do OneDrive. Nada será movido. Ação: criar arquivo `..onesyncignore` ou instrução documentada para excluir `data/` da sincronização do OneDrive.
+
+**Risco novo — credenciais em texto claro no banco:**
+`AIProvider.apiKey` e `DataSource.config` persistem segredos sem cifragem em `dev.db`, que está sob OneDrive. Remediação via `safeStorage` do Electron ou keyring do SO na Fase 1.
+
+**Roteiro de testes mínimo (Fase 0):**
+- Script de smoke manual documentado: login MT5, tick, ordem demo, spread, volatilidade
+- Testes unitários para o redator de logs (item 2) e mapeamento fail-closed (item 1) — funções puras
+- `npm run build` + `npm run electron:compile` após cada item que tocar TS/Electron
 
 ### Fase 1 — Contratos e portas de domínio
 - Introduzir interfaces: `InstrumentCatalog`, `MarketDataProvider`, `HistoricalBarsProvider`, `PortfolioProvider`, `ExecutionBroker`
@@ -237,11 +254,12 @@ model Issuer {
 
 model Instrument {
   id          String   @id @default(cuid())
+  issuer      Issuer?  @relation(fields: [issuerId], references: [id])
   issuerId    String?
   symbol      String   @unique
   exchange    String
   assetClass  String
-  shareClass  String?  // ON, PN, UNIT, FUTURE
+  shareClass  String?
   currency    String
   lotSize     Int?
   validFrom   DateTime?
@@ -250,6 +268,7 @@ model Instrument {
 
 model IngestionRun {
   id               String   @id @default(cuid())
+  source           DataSource @relation(fields: [sourceId], references: [id])
   sourceId         String
   startedAt        DateTime
   completedAt      DateTime?
@@ -265,9 +284,11 @@ model IngestionRun {
 
 model CvmFiling {
   id              String   @id @default(cuid())
+  issuer          Issuer   @relation(fields: [issuerId], references: [id])
   issuerId        String
+  ingestionRun    IngestionRun @relation(fields: [ingestionRunId], references: [id])
   ingestionRunId  String
-  documentType    String   // DFP, ITR, FRE
+  documentType    String
   cvmProtocol     String
   referenceDate   DateTime
   fiscalYear      Int
@@ -279,31 +300,44 @@ model CvmFiling {
   supersedesFilingId String?
   sourceUrl       String?
   rawSha256       String?
+  cvmFacts        CvmFact[]
 
   @@unique([issuerId, documentType, cvmProtocol])
+  @@unique([issuerId, documentType, referenceDate, versionNumber])
 }
 
 model CvmFact {
   id              String   @id @default(cuid())
+  filing          CvmFiling @relation(fields: [filingId], references: [id])
   filingId        String
+  issuer          Issuer   @relation(fields: [issuerId], references: [id])
   issuerId        String
-  statementType   String   // BPA, BPP, DRE, DFC_MD, DFC_MI, DVA, DRA
-  scope           String   // CONSOLIDATED, INDIVIDUAL
+  statementType   String
+  scope           String
   accountCode     String
   accountLabel    String
-  periodStart     DateTime?
+  periodStart     DateTime  // NÃO nullable — para INSTANT, periodStart = periodEnd
   periodEnd       DateTime
-  valueDecimal    Decimal
+  valueRaw        BigInt    // BigInt (não Decimal) — SQLite armazena como INTEGER de 64 bits, exato
+  scalePow        Int       // expoente decimal: valor real = valueRaw * 10^scalePow
   currency        String
-  scale           String   // UNIT, THOUSAND, MILLION
-  durationType    String   // INSTANT, DURATION
-  validFrom       DateTime // = publishedAt
+  scale           String    // metadado de auditoria: UNIT, THOUSAND, MILLION (escala original do arquivo)
+  durationType    String    // INSTANT, DURATION
+  validFrom       DateTime  // = publishedAt (knowledgeTime)
   validTo         DateTime?
   qualityFlagsJson String?
 
   @@unique([filingId, statementType, scope, accountCode, periodStart, periodEnd])
+  @@index([issuerId, accountCode, periodEnd, validFrom])
 }
 ```
+
+**Correções aplicadas após revisão do Fable 5:**
+1. `Decimal` → `BigInt` + `scalePow`: SQLite não tem decimal nativo; `Decimal` vira REAL (float IEEE 754) e perde exatidão. `BigInt` é INTEGER de 64 bits, exato.
+2. `periodStart` não nullable: no SQLite, `NULL ≠ NULL` em índices únicos, então fatos INSTANT (BPA/BPP) ficariam sem proteção contra duplicata. Convenção: `periodStart = periodEnd` para INSTANT.
+3. `@relation` explícitas em todas as FKs para integridade referencial.
+4. Índice `@@index([issuerId, accountCode, periodEnd, validFrom])` para as-of join sem full scan.
+5. `@@unique` adicional em `CvmFiling` contra duplicação de versões por bug de ingestão.
 
 Migração incremental:
 1. Criar novas tabelas aditivamente (não remover as atuais)
