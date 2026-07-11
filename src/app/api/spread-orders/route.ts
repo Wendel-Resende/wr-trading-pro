@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { stringifyBigInt } from '@/lib/bigint-serializer';
+import { z } from 'zod';
+
+const spreadOrderCreateSchema = z.object({
+  symbol1: z.string().trim().regex(/^[A-Z0-9]{4,12}$/i, 'Símbolo 1 inválido').transform(v => v.toUpperCase()),
+  symbol2: z.string().trim().regex(/^[A-Z0-9]{4,12}$/i, 'Símbolo 2 inválido').transform(v => v.toUpperCase()),
+  type1: z.enum(['BUY', 'SELL']),
+  type2: z.enum(['BUY', 'SELL']),
+  quantity1: z.number().int().positive().max(1_000_000),
+  quantity2: z.number().int().positive().max(1_000_000),
+  price1: z.number().finite().nonnegative().optional(),
+  price2: z.number().finite().nonnegative().optional(),
+  spreadValue: z.number().finite().optional(),
+  automationTarget: z.number().finite().optional().nullable(),
+  automationCondition: z.enum(['greater_than', 'less_than', 'equal_to']).optional().nullable(),
+}).strict();
 
 /**
  * GET /api/spread-orders
@@ -55,7 +70,18 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const rawBody = await request.json();
+    const parsed = spreadOrderCreateSchema.safeParse(rawBody);
+
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: 'Payload de ordem de spread inválido',
+          details: parsed.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
 
     const {
       symbol1,
@@ -67,17 +93,9 @@ export async function POST(request: NextRequest) {
       price1,
       price2,
       spreadValue,
-      status = 'PENDING',
-      isAutomated = false,
       automationTarget = null,
       automationCondition = null,
-      mt5OrderTicket1 = null,
-      mt5OrderTicket2 = null,
-    } = body;
-
-    if (!symbol1 || !symbol2 || !type1 || !type2 || !quantity1 || !quantity2) {
-      return NextResponse.json({ error: 'Campos obrigatórios faltando' }, { status: 400 });
-    }
+    } = parsed.data;
 
     // Buscar ou criar ativos
     let asset1 = await prisma.asset.findUnique({ where: { symbol: symbol1 } });
@@ -105,13 +123,14 @@ export async function POST(request: NextRequest) {
         price1: price1 ?? 0,
         price2: price2 ?? 0,
         spreadValue: spreadValue ?? (price1 != null && price2 != null ? price1 - price2 : 0),
-        status,
-        isAutomated,
+        // Campos internos são definidos exclusivamente pelo servidor.
+        status: 'PENDING',
+        isAutomated: false,
         automationTarget,
         automationCondition,
-        filledAt: status === 'FILLED' ? new Date() : null,
-        mt5OrderTicket1,
-        mt5OrderTicket2,
+        filledAt: null,
+        mt5OrderTicket1: null,
+        mt5OrderTicket2: null,
       },
     });
 
