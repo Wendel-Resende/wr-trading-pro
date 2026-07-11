@@ -13,6 +13,7 @@ import {
   MT5Candle,
   MT5ChartData,
 } from '@/types/mt5';
+import { redactedString } from '@/lib/redact';
 
 /**
  * MetaTrader 5 Service - Bridge para comunicação com servidor Python
@@ -266,7 +267,7 @@ class MT5Service {
     if (this.ws?.readyState === WebSocket.OPEN) {
       const jsonMessage = JSON.stringify(message);
       // eslint-disable-next-line no-console
-      console.log('Enviando mensagem:', jsonMessage);
+      console.log('Enviando mensagem:', redactedString(message));
       this.ws.send(jsonMessage);
     } else if (process.env.NODE_ENV !== 'production') {
       // eslint-disable-next-line no-console

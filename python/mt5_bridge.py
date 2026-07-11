@@ -18,6 +18,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Campos sensíveis que nunca devem aparecer em logs
+_SENSITIVE_KEYS = {
+    'password', 'pass', 'pwd', 'token', 'api_key', 'apikey', 'secret',
+    'accesskey', 'access_key', 'secretkey', 'secret_key', 'privatekey',
+    'private_key', 'authorization', 'auth', 'credentials', 'credential',
+}
+
+
+def _redact_value(key: str, value: Any) -> Any:
+    """Mascara valores de campos sensíveis."""
+    if isinstance(key, str) and key.lower().replace('-', '_') in _SENSITIVE_KEYS:
+        return '***'
+    return value
+
+
+def redact(obj: Any, _depth: int = 0) -> Any:
+    """Retorna uma cópia do objeto com campos sensíveis mascarados.
+
+    Suporta dict, list e tipos primitivos. Evita recursão infinita
+    limitando a profundidade.
+    """
+    if _depth > 10:
+        return '...'
+    if isinstance(obj, dict):
+        return {k: _redact_value(k, redact(v, _depth + 1)) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [redact(v, _depth + 1) for v in obj]
+    if isinstance(obj, str) and any(s in obj.lower() for s in ('password', 'token', 'secret', 'api_key', 'authorization')):
+        # strings brutas que parecem conter segredos
+        return '***'
+    return obj
+
+
+def redacted_str(obj: Any) -> str:
+    """Serializa objeto para log já com redação de segredos."""
+    try:
+        return json.dumps(redact(obj), default=str)
+    except (TypeError, ValueError):
+        return '***'
+
 # Tentar importar MetaTrader5
 try:
     import MetaTrader5 as mt5
@@ -109,9 +149,10 @@ class MT5Bridge:
             msg_data = data.get('data', {})
             
             logger.info(f"Recebido: {msg_type}")
-            # Logar data apenas se não estiver vazia para evitar spam
+            # Logar data apenas se não estiver vazia para evitar spam.
+            # Aplica redação de segredos (senha, token, api_key etc.).
             if msg_data:
-                logger.info(f"Data: {msg_data}")
+                logger.info(f"Data: {redacted_str(msg_data)}")
             
             if msg_type == 'LOGIN':
                 await self.handle_login(websocket, msg_data)
