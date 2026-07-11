@@ -20,7 +20,7 @@ const agentState = {
 };
 
 interface OperationSuggestion {
-  action: 'BUY' | 'SELL' | 'HOLD';
+  action: 'BUY' | 'SELL' | 'HOLD' | 'NO_DECISION';
   ticker: string;
   entry_price: number;
   stop_loss: number;
@@ -30,6 +30,8 @@ interface OperationSuggestion {
   confidence: number;
   rationale: string;
   timestamp: string;
+  mode?: 'live' | 'degraded' | 'mock';
+  eligibleForExecution?: boolean;
 }
 
 interface MarketData {
@@ -42,7 +44,30 @@ interface MarketData {
 }
 
 /**
- * Generate mock operation suggestion (fallback)
+ * Modo degradado: NENHUMA decisão acionável.
+ * Usado quando o LLM falha, o parse falha ou não há provedor configurado.
+ * Nunca deve ser tratado como sinal de execução.
+ */
+function getNoDecision(ticker: string, reason: string): OperationSuggestion {
+  return {
+    action: 'NO_DECISION',
+    ticker,
+    entry_price: 0,
+    stop_loss: 0,
+    take_profit: 0,
+    quantity: 0,
+    risk_score: 0,
+    confidence: 0,
+    rationale: reason,
+    timestamp: new Date().toISOString(),
+    mode: 'degraded',
+    eligibleForExecution: false,
+  };
+}
+
+/**
+ * Generate mock operation suggestion (fallback) — MODO DEGRADADO.
+ * @deprecated Não deve ser usado como sinal de execução. Apenas para UI/debug.
  */
 function getMockSuggestion(ticker: string, marketData: MarketData): OperationSuggestion {
   const price = marketData.price || 38.50;
@@ -79,6 +104,8 @@ function getMockSuggestion(ticker: string, marketData: MarketData): OperationSug
     confidence,
     rationale,
     timestamp: new Date().toISOString(),
+    mode: 'degraded',
+    eligibleForExecution: false,
   };
 }
 
@@ -86,6 +113,7 @@ function getMockSuggestion(ticker: string, marketData: MarketData): OperationSug
  * Generate real suggestion using LLM (single call)
  */
 async function getLlmSuggestion(
+
   ticker: string,
   marketData: MarketData,
   llmMode: string,
@@ -159,9 +187,11 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
         ...parsed,
         ticker,
         timestamp: new Date().toISOString(),
+        mode: 'live',
+        eligibleForExecution: false,
       };
     } catch {
-      return getMockSuggestion(ticker, marketData);
+      return getNoDecision(ticker, 'Resposta do OpenAI inválida — nenhuma decisão gerada.');
     }
 
   } else if (llmMode === 'local' && localUrl) {
@@ -193,14 +223,16 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
         ...parsed,
         ticker,
         timestamp: new Date().toISOString(),
+        mode: 'live',
+        eligibleForExecution: false,
       };
     } catch (parseError) {
-      console.error('Failed to parse LLM response:', content);
-      return getMockSuggestion(ticker, marketData);
+      console.error('Failed to parse LLM response');
+      return getNoDecision(ticker, 'Resposta do modelo local inválida — nenhuma decisão gerada.');
     }
   }
 
-  return getMockSuggestion(ticker, marketData);
+  return getNoDecision(ticker, 'Nenhum provedor LLM válido configurado — nenhuma decisão gerada.');
 }
 
 /**
@@ -284,6 +316,8 @@ async function runPipeline(
           confidence: result.confidence || 0.5,
           rationale: typeof result.rationale === 'string' ? result.rationale : JSON.stringify(result.rationale || 'Análise via pipeline multi-agent'),
           timestamp: result.timestamp || new Date().toISOString(),
+          mode: 'live',
+          eligibleForExecution: false,
         });
       } catch (parseError) {
         try { fs.unlinkSync(tmpFile); } catch {}
@@ -396,8 +430,10 @@ export async function POST(request: NextRequest) {
             local_model || 'ministral-3:8b'
           );
         } catch (error: any) {
-          suggestion = getMockSuggestion(ticker.toUpperCase(), marketData);
-          suggestion.rationale = `(LLM indisponivel: ${error.message}) ${suggestion.rationale}`;
+          suggestion = getNoDecision(
+            ticker.toUpperCase(),
+            `LLM indisponível: ${error.message}. Nenhuma decisão gerada.`
+          );
         }
       }
 
