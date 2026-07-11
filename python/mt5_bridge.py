@@ -1078,7 +1078,18 @@ class MT5Bridge:
             'ORDER_TYPE_BUY_STOP': mt5.ORDER_TYPE_BUY_STOP,
             'ORDER_TYPE_SELL_STOP': mt5.ORDER_TYPE_SELL_STOP,
         }
-        mt5_order_type = mt5_order_type_mapping.get(order_type, mt5.ORDER_TYPE_BUY)
+        mt5_order_type = mt5_order_type_mapping.get(order_type)
+        if mt5_order_type is None:
+            logger.error(f"Tipo de ordem desconhecido: {order_type}")
+            await self.broadcast({
+                'type': 'ERROR',
+                'data': {
+                    'message': f'Tipo de ordem desconhecido: {order_type}',
+                    'code': 'INVALID_ORDER_TYPE',
+                },
+                'timestamp': datetime.now().isoformat(),
+            })
+            return
         logger.info(f"Tipo de ordem MT5: {mt5_order_type} (constante)")
         
         # Obter informações do símbolo para configurar volume e preenchimento
