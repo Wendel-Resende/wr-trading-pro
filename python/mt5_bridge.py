@@ -11,7 +11,8 @@ from typing import Dict, Set, Any
 import websockets
 from websockets.legacy.server import serve
 
-# Configuração de logging
+# Configuração de rede segura (loopback + CORS allowlist)
+from network_config import NETWORK_HOST, CORS_OPTIONS
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -1806,6 +1807,19 @@ async def main():
 
 async def handle_client(bridge: MT5Bridge, websocket: Any):
     """Handler para conexões de clientes"""
+    # Validar Origin para mitigar Cross-Site WebSocket Hijacking.
+    # Apenas origens locais são aceitas; 'null' ou ausente são rejeitados.
+    origin = getattr(websocket, 'request_headers', {}).get('Origin') if hasattr(websocket, 'request_headers') else None
+    allowed_origins = set(CORS_OPTIONS.get('origins', []))
+    if origin is not None and origin not in allowed_origins:
+        logger.warning(f"Conexão WebSocket rejeitada — Origin não autorizada: {origin}")
+        await websocket.close(code=1008, reason='Origin not allowed')
+        return
+    if origin is None:
+        logger.warning("Conexão WebSocket com Origin ausente — rejeitada por segurança")
+        await websocket.close(code=1008, reason='Origin required')
+        return
+
     await bridge.register_client(websocket)
     
     try:
