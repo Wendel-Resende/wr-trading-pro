@@ -4,7 +4,6 @@ const electron_1 = require("electron");
 electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     openExternal: (url) => electron_1.ipcRenderer.invoke('open-external', url),
     getAppVersion: () => electron_1.ipcRenderer.invoke('get-app-version'),
-    getUserDataPath: () => electron_1.ipcRenderer.invoke('get-user-data-path'),
     saveOptionsScan: (data) => electron_1.ipcRenderer.invoke('save-options-scan', data),
     getLastOptionsScan: (asset) => electron_1.ipcRenderer.invoke('get-last-options-scan', asset),
     getOptionsHistory: (limit) => electron_1.ipcRenderer.invoke('get-options-history', limit),

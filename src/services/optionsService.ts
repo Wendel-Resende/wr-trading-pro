@@ -110,12 +110,28 @@ export async function saveScanToDBIPC(
 ): Promise<void> {
   if (typeof window !== 'undefined' && (window as any).electronAPI?.saveOptionsScan) {
     try {
+      // Contrato IPC explícito: não enviar o objeto de domínio completo.
+      const toIpcOption = (option: OptionStrike) => ({
+        symbol: option.symbol,
+        strike: option.strike,
+        bid: option.bid,
+        ask: option.ask,
+        spreadPct: option.spreadPct,
+        otmPct: option.otmPct,
+        dte: option.dte,
+        expiration: option.expiration.toISOString(),
+        anualizado: option.anualizado,
+        pExerc: option.pExerc,
+        estilo: option.estilo,
+        isWeekly: option.isWeekly,
+      });
+
       await (window as any).electronAPI.saveOptionsScan({
         asset,
         spot,
         volData,
-        calls: calls.map((c) => ({ ...c, expiration: (c.expiration as Date).toISOString() })),
-        puts: puts.map((p) => ({ ...p, expiration: (p.expiration as Date).toISOString() })),
+        calls: calls.map(toIpcOption),
+        puts: puts.map(toIpcOption),
       });
     } catch (e) {
       console.warn('[Options] IPC save failed:', e);

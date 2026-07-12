@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, session, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -12,10 +12,34 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 // In this build, asar is disabled (asar: false in package.json), so python files are directly in app folder
 const asarDisabled = true;
 const PORT = 3001;
+const TRUSTED_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+const MAX_EXTERNAL_URL_LENGTH = 2048;
+const MAX_OPTIONS_PER_SIDE = 500;
+const MAX_HISTORY_LIMIT = 100;
+const MIN_OPTIONS_SAVE_INTERVAL_MS = 500;
 
 let mainWindow: BrowserWindow | null = null;
 let nextServer: ChildProcess | null = null;
 let pythonProcesses: ChildProcess[] = [];
+let lastOptionsSaveAt = 0;
+
+function isTrustedRendererUrl(rawUrl: string): boolean {
+  try { return TRUSTED_ORIGINS.has(new URL(rawUrl).origin); } catch { return false; }
+}
+
+function isTrustedIpcSender(event: IpcMainInvokeEvent): boolean {
+  return mainWindow !== null && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+    && isTrustedRendererUrl(event.senderFrame.url);
+}
+
+function handleTrusted(channel: string, handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown): void {
+  ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+    if (!isTrustedIpcSender(event)) throw new Error('IPC request rejected');
+    try { return await handler(event, ...args); } catch { throw new Error('IPC request failed'); }
+  });
+}
 
 /**
  * Secret compartilhado do token WS do MT5 Bridge (Fase 0, Item 10).
@@ -379,11 +403,21 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false,
+      navigateOnDragDrop: false,
     },
     show: false,
     backgroundColor: '#0f172a',
   });
+
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isTrustedRendererUrl(navigationUrl)) event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
@@ -405,6 +439,8 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
   createWindow();
 
   app.on('activate', () => {
@@ -432,21 +468,15 @@ app.on('before-quit', () => {
   stopPythonServices();
 });
 
-ipcMain.handle('open-external', async (_, url: string) => {
-  // Validate URL scheme before opening
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    console.warn('[Electron] Blocked open-external with invalid scheme:', url);
-    return;
-  }
-  await shell.openExternal(url);
+handleTrusted('open-external', async (_event, value: unknown) => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_EXTERNAL_URL_LENGTH) throw new Error('Invalid URL');
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Invalid URL');
+  await shell.openExternal(url.toString());
 });
 
-ipcMain.handle('get-app-version', () => {
+handleTrusted('get-app-version', () => {
   return app.getVersion();
-});
-
-ipcMain.handle('get-user-data-path', () => {
-  return APP_DATA_DIR;
 });
 
 // ─── SQLite for Options (v4) ─────────────────────────────────────────────────
@@ -455,113 +485,193 @@ const DB_PATH = path.join(OPTIONS_DATA_DIR, 'options_data.db');
 function ensureOptionsDB(): ReturnType<typeof Database> {
   fs.mkdirSync(OPTIONS_DATA_DIR, { recursive: true });
   const db = new Database(DB_PATH);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS scans (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      asset TEXT NOT NULL,
-      scanned_at TEXT NOT NULL,
-      spot REAL NOT NULL,
-      vol_data TEXT
-    );
-    CREATE TABLE IF NOT EXISTS options (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
-      symbol TEXT NOT NULL,
-      strike REAL NOT NULL,
-      bid REAL NOT NULL,
-      ask REAL,
-      spread_pct REAL,
-      otm_pct REAL,
-      dte INTEGER,
-      venc TEXT,
-      tipo TEXT,
-      estilo TEXT,
-      anual_pct REAL,
-      p_exerc REAL,
-      custo_r REAL,
-      cabe_10k INTEGER,
-      cabe_capital INTEGER,
-      opt_type TEXT
-    );
-  `);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset TEXT NOT NULL,
+        scanned_at TEXT NOT NULL,
+        spot REAL NOT NULL,
+        vol_data TEXT
+      );
+      CREATE TABLE IF NOT EXISTS options (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+        symbol TEXT NOT NULL,
+        strike REAL NOT NULL,
+        bid REAL NOT NULL,
+        ask REAL,
+        spread_pct REAL,
+        otm_pct REAL,
+        dte INTEGER,
+        venc TEXT,
+        tipo TEXT,
+        estilo TEXT,
+        anual_pct REAL,
+        p_exerc REAL,
+        custo_r REAL,
+        cabe_10k INTEGER,
+        cabe_capital INTEGER,
+        opt_type TEXT
+      );
+    `);
 
-  const existingColumns = new Set(
-    db.prepare('PRAGMA table_info(options)').all().map((row: { name: string }) => row.name)
-  );
-  if (!existingColumns.has('cabe_10k')) {
-    db.exec('ALTER TABLE options ADD COLUMN cabe_10k INTEGER');
-  }
-  if (!existingColumns.has('cabe_capital')) {
-    db.exec('ALTER TABLE options ADD COLUMN cabe_capital INTEGER');
-  }
+    const existingColumns = new Set(
+      db.prepare('PRAGMA table_info(options)').all().map((row: { name: string }) => row.name)
+    );
+    if (!existingColumns.has('cabe_10k')) {
+      db.exec('ALTER TABLE options ADD COLUMN cabe_10k INTEGER');
+    }
+    if (!existingColumns.has('cabe_capital')) {
+      db.exec('ALTER TABLE options ADD COLUMN cabe_capital INTEGER');
+    }
 
-  return db;
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
-ipcMain.handle('save-options-scan', async (_, data: {
+interface OptionPayload {
+  symbol: string; strike: number; bid: number; ask: number; spreadPct?: number;
+  otmPct: number; dte: number; expiration: string; anualizado: number;
+  pExerc?: number; estilo?: string; isWeekly?: boolean;
+}
+interface OptionsScanPayload {
   asset: string;
   spot: number;
   volData: { dailyStd: number; annualStd: number; weeklyPct: number; mean30d: number; std30d: number; lastClose: number; nCandles: number } | null;
-  calls: { symbol: string; strike: number; bid: number; ask: number; spreadPct?: number; otmPct: number; dte: number; expiration: string; anualizado: number; pExerc?: number; estilo?: string; isWeekly?: boolean }[];
-  puts: { symbol: string; strike: number; bid: number; ask: number; spreadPct?: number; otmPct: number; dte: number; expiration: string; anualizado: number; pExerc?: number; estilo?: string; isWeekly?: boolean }[];
-}) => {
+  calls: OptionPayload[];
+  puts: OptionPayload[];
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isNumberInRange = (value: unknown, min: number, max: number): value is number =>
+  isFiniteNumber(value) && value >= min && value <= max;
+const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+};
+const isSafeText = (value: unknown, max: number): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u001f]/.test(value);
+const isMarketCode = (value: unknown, max: number): value is string =>
+  isSafeText(value, max) && /^[A-Z0-9._-]+$/i.test(value);
+const isIsoDate = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
+
+function isOptionPayload(value: unknown): value is OptionPayload {
+  if (!isPlainObject(value) || !isMarketCode(value.symbol, 32) || !isIsoDate(value.expiration)) return false;
+  if (!hasOnlyKeys(value, ['symbol', 'strike', 'bid', 'ask', 'spreadPct', 'otmPct', 'dte', 'expiration', 'anualizado', 'pExerc', 'estilo', 'isWeekly'])) return false;
+  if (!isNumberInRange(value.strike, 0, 1_000_000_000)
+      || !isNumberInRange(value.bid, 0, 1_000_000_000)
+      || !isNumberInRange(value.ask, 0, 1_000_000_000)
+      || !isNumberInRange(value.otmPct, -10_000, 10_000)
+      || !isNumberInRange(value.anualizado, -1_000_000, 1_000_000)) return false;
+  if (!Number.isInteger(value.dte) || (value.dte as number) < 0 || (value.dte as number) > 3650) return false;
+  if (value.spreadPct !== undefined && !isNumberInRange(value.spreadPct, -10_000, 10_000)) return false;
+  if (value.pExerc !== undefined && !isNumberInRange(value.pExerc, 0, 100)) return false;
+  return (value.estilo === undefined || isSafeText(value.estilo, 20))
+    && (value.isWeekly === undefined || typeof value.isWeekly === 'boolean');
+}
+
+function parseOptionsScan(value: unknown): OptionsScanPayload {
+  if (!isPlainObject(value)
+      || !hasOnlyKeys(value, ['asset', 'spot', 'volData', 'calls', 'puts'])
+      || !isMarketCode(value.asset, 24)
+      || !isNumberInRange(value.spot, 0, 1_000_000_000)) throw new Error('Invalid payload');
+  if (!Array.isArray(value.calls) || !Array.isArray(value.puts)
+      || value.calls.length > MAX_OPTIONS_PER_SIDE || value.puts.length > MAX_OPTIONS_PER_SIDE
+      || !value.calls.every(isOptionPayload) || !value.puts.every(isOptionPayload)) throw new Error('Invalid payload');
+  if (value.volData !== null) {
+    const volData = value.volData;
+    if (!isPlainObject(volData)
+        || !hasOnlyKeys(volData, ['dailyStd', 'annualStd', 'weeklyPct', 'mean30d', 'std30d', 'lastClose', 'nCandles'])
+        || !(['dailyStd', 'annualStd', 'weeklyPct', 'mean30d', 'std30d', 'lastClose', 'nCandles'] as const)
+          .every((key) => isNumberInRange(volData[key], -1_000_000_000, 1_000_000_000))
+        || !Number.isInteger(volData.nCandles)
+        || (volData.nCandles as number) < 0) throw new Error('Invalid payload');
+  }
+  return value as unknown as OptionsScanPayload;
+}
+
+handleTrusted('save-options-scan', async (_event, value: unknown) => {
+  const data = parseOptionsScan(value);
+  const requestTime = Date.now();
+  if (requestTime - lastOptionsSaveAt < MIN_OPTIONS_SAVE_INTERVAL_MS) throw new Error('Request rate exceeded');
+  lastOptionsSaveAt = requestTime;
+
+  let db: ReturnType<typeof Database> | null = null;
   try {
-    const db = ensureOptionsDB();
+    db = ensureOptionsDB();
     const now = new Date().toISOString();
-
-    const prev = db.prepare('SELECT id FROM scans WHERE asset = ? ORDER BY id DESC LIMIT 1').get(data.asset) as { id: number } | undefined;
-    if (prev) {
-      db.prepare('DELETE FROM options WHERE scan_id = ?').run(prev.id);
-      db.prepare('DELETE FROM scans WHERE id = ?').run(prev.id);
-    }
-
-    const volJson = data.volData ? JSON.stringify(data.volData) : null;
-    const scanResult = db.prepare('INSERT INTO scans (asset, scanned_at, spot, vol_data) VALUES (?,?,?,?)').run(data.asset, now, data.spot, volJson);
-    const scanId = scanResult.lastInsertRowid as number;
-
     const insertOpt = db.prepare(`
       INSERT INTO options (scan_id, symbol, strike, bid, ask, spread_pct, otm_pct, dte, venc, tipo, estilo, anual_pct, p_exerc, custo_r, cabe_10k, cabe_capital, opt_type)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
 
-    for (const o of data.calls) {
-      insertOpt.run(scanId, o.symbol, o.strike, o.bid, o.ask ?? 0, o.spreadPct ?? 0, o.otmPct, o.dte, o.expiration.split('T')[0], 'CALL', o.estilo ?? 'EUROPEIA', o.anualizado * 100, o.pExerc ?? 0, o.strike * 100, 1, 1, 'CALL');
-    }
-    for (const p of data.puts) {
-      insertOpt.run(scanId, p.symbol, p.strike, p.bid, p.ask ?? 0, p.spreadPct ?? 0, p.otmPct, p.dte, p.expiration.split('T')[0], 'PUT', p.estilo ?? 'EUROPEIA', p.anualizado * 100, p.pExerc ?? 0, p.strike * 100, 1, 1, 'PUT');
-    }
+    const persistScan = db.transaction((): number => {
+      const prev = db!.prepare('SELECT id FROM scans WHERE asset = ? ORDER BY id DESC LIMIT 1').get(data.asset) as { id: number } | undefined;
+      if (prev) {
+        db!.prepare('DELETE FROM options WHERE scan_id = ?').run(prev.id);
+        db!.prepare('DELETE FROM scans WHERE id = ?').run(prev.id);
+      }
 
-    db.close();
+      const volJson = data.volData ? JSON.stringify(data.volData) : null;
+      const scanResult = db!.prepare('INSERT INTO scans (asset, scanned_at, spot, vol_data) VALUES (?,?,?,?)').run(data.asset, now, data.spot, volJson);
+      const scanId = Number(scanResult.lastInsertRowid);
+
+      for (const o of data.calls) {
+        insertOpt.run(scanId, o.symbol, o.strike, o.bid, o.ask, o.spreadPct ?? 0, o.otmPct, o.dte, o.expiration.split('T')[0], 'CALL', o.estilo ?? 'EUROPEIA', o.anualizado * 100, o.pExerc ?? 0, o.strike * 100, 1, 1, 'CALL');
+      }
+      for (const p of data.puts) {
+        insertOpt.run(scanId, p.symbol, p.strike, p.bid, p.ask, p.spreadPct ?? 0, p.otmPct, p.dte, p.expiration.split('T')[0], 'PUT', p.estilo ?? 'EUROPEIA', p.anualizado * 100, p.pExerc ?? 0, p.strike * 100, 1, 1, 'PUT');
+      }
+      return scanId;
+    });
+
+    const scanId = persistScan();
     console.log(`[Options] Scan saved: ${data.asset} (id=${scanId})`);
     return { success: true, scanId };
   } catch (e) {
     console.error('[Options] DB save error:', e);
-    return { success: false, error: String(e) };
+    return { success: false, error: 'Unable to save options scan' };
+  } finally {
+    db?.close();
   }
 });
 
-ipcMain.handle('get-last-options-scan', async (_, asset: string) => {
+handleTrusted('get-last-options-scan', async (_event, value: unknown) => {
+  if (!isMarketCode(value, 24)) throw new Error('Invalid payload');
+  const asset = value;
+  let db: ReturnType<typeof Database> | null = null;
   try {
-    const db = ensureOptionsDB();
+    db = ensureOptionsDB();
     const scan = db.prepare('SELECT * FROM scans WHERE asset = ? ORDER BY id DESC LIMIT 1').get(asset) as any;
-    if (!scan) { db.close(); return null; }
+    if (!scan) return null;
     const options = db.prepare('SELECT * FROM options WHERE scan_id = ?').all(scan.id);
-    db.close();
     return { scan, options };
   } catch (e) {
     console.error('[Options] DB read error:', e);
     return null;
+  } finally {
+    db?.close();
   }
 });
 
-ipcMain.handle('get-options-history', async (_, limit = 10) => {
+handleTrusted('get-options-history', async (_event, value: unknown) => {
+  const limit = value === undefined ? 10 : value;
+  if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > MAX_HISTORY_LIMIT) throw new Error('Invalid payload');
+  let db: ReturnType<typeof Database> | null = null;
   try {
-    const db = ensureOptionsDB();
-    const scans = db.prepare('SELECT * FROM scans ORDER BY id DESC LIMIT ?').all(limit);
-    db.close();
-    return scans;
+    db = ensureOptionsDB();
+    return db.prepare('SELECT * FROM scans ORDER BY id DESC LIMIT ?').all(limit);
   } catch (e) {
     return [];
+  } finally {
+    db?.close();
   }
 });
 
