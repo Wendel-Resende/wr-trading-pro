@@ -27,20 +27,31 @@ export default function LoginPage() {
         return;
       }
 
-      // Salvar credenciais no localStorage (para autenticação simples)
-      // Em produção, isso deve ser substituído por um sistema de autenticação real
-      const authData = {
-        username: credentials.username,
-        timestamp: Date.now(),
-        isAuthenticated: true,
-      };
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: credentials.username.trim(),
+          password: credentials.password,
+        }),
+      });
 
-      localStorage.setItem('wr_trading_auth', JSON.stringify(authData));
+      if (response.ok) {
+        // Sessão criada em cookie HttpOnly pelo servidor
+        router.push('/');
+        router.refresh();
+        return;
+      }
 
-      // Redirecionar para o dashboard
-      router.push('/');
+      if (response.status === 401) {
+        setError('Usuário ou senha inválidos.');
+      } else if (response.status === 503) {
+        setError('Autenticação não configurada no servidor. Consulte docs/AUTH_SETUP.md.');
+      } else {
+        setError('Erro ao fazer login. Tente novamente.');
+      }
     } catch (err) {
-      setError('Erro ao fazer login. Tente novamente.');
+      setError('Não foi possível conectar ao servidor. Tente novamente.');
     } finally {
       setLoading(false);
     }
@@ -153,7 +164,7 @@ export default function LoginPage() {
                   <span className="text-cyber-cyan text-xs font-bold">1</span>
                 </div>
                 <p className="text-sm text-gray-400 font-space">
-                  Use suas credenciais do MetaTrader 5 para acessar
+                  Use as credenciais locais definidas na configuração do servidor
                 </p>
               </div>
               <div className="flex items-start gap-3">

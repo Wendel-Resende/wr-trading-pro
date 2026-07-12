@@ -58,12 +58,6 @@ export default function Dashboard() {
   useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
-    if (!mounted) return;
-    // Temporarily disabled auth for easy access
-    // TODO: Re-enable auth when ready
-  }, [mounted, router]);
-
-  useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -170,7 +164,17 @@ export default function Dashboard() {
               </p>
             </div>
             <button
-              onClick={() => { localStorage.removeItem("wr_trading_auth"); router.push("/login"); }}
+              onClick={async () => {
+                try {
+                  const response = await fetch("/api/auth/logout", { method: "POST" });
+                  if (!response.ok) throw new Error(`logout HTTP ${response.status}`);
+                  localStorage.removeItem("wr_trading_auth"); // limpa resquício do login antigo
+                  router.replace("/login");
+                  router.refresh();
+                } catch (error) {
+                  console.warn("Não foi possível encerrar a sessão:", error);
+                }
+              }}
               className="cyber-button cyber-button-secondary flex items-center gap-2"
               title="Sair"
             >
