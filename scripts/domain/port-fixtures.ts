@@ -1,12 +1,16 @@
+import { isGovernedOrderIntent } from '../../src/domain';
 import type {
   Account,
   ExecutionBroker,
+  ExecutionResult,
+  GovernedOrderIntent,
   HistoricalBarsProvider,
   HistoricalBarsRequest,
   Instrument,
   InstrumentCatalog,
   InstrumentId,
   InstrumentQuery,
+
   MarketBar,
   MarketDataProvider,
   MarketDataRequest,
@@ -59,7 +63,10 @@ class PortfolioFixture implements PortfolioProvider {
 }
 
 class BrokerFixture implements ExecutionBroker {
-  readonly capability = 'deferred-until-governed-order-intent' as const;
+  async execute(intent: GovernedOrderIntent): Promise<ExecutionResult> {
+    if (!isGovernedOrderIntent(intent)) throw new Error('unauthentic governed intent');
+    return { status: 'UNKNOWN', correlationId: intent.correlationId, idempotencyKey: intent.idempotencyKey, reason: 'compile fixture only' };
+  }
 }
 
 export const portFixtures = {

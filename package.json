@@ -17,6 +17,7 @@
     "test:contracts:ts": "tsc -p scripts/contracts/tsconfig.json && node scripts/contracts/contracts-cross-language-test.mts",
     "test:contracts:py": "python -m unittest python/tests/test_contracts_v1.py -v",
     "test:contracts": "npm run test:contracts:ts && npm run test:contracts:py",
+    "test:workflow": "node scripts/workflow/run-workflow-test.cjs",
     "test:ws-token:py": "python python/tests/test_ws_token.py",
     "postinstall": "prisma generate",
     "electron:dev": "electron .",

@@ -32,9 +32,18 @@ for (const { path, text } of sources) {
 }
 
 assert.match(allSource, /DOMAIN_CONTRACT_VERSION = 1 as const/);
-assert.doesNotMatch(allSource, /\b(?:TradeProposal|RiskDecision)\b/);
-assert.match(executionPort, /readonly capability: 'deferred-until-governed-order-intent'/);
-assert.doesNotMatch(executionPort, /\b(?:submit|send|place|execute|cancel)\s*(?:\(|:)/i);
-assert.doesNotMatch(allSource, /\b(?:interface|type|class)\s+(?:ExecutionRequest|CancellationRequest|OrderIntent)\b/);
+for (const model of ['TradeProposal', 'RiskDecision', 'HumanApprovalReceipt', 'KillSwitchSnapshot', 'OrderIntent', 'ExecutionResult']) {
+  assert.match(allSource, new RegExp(`\\b${model}\\b`), `modelo Item 3 ausente: ${model}`);
+}
+assert.match(allSource, /export interface IdempotencyRegistry\b/);
+assert.match(executionPort, /execute\(intent: GovernedOrderIntent\): Promise<ExecutionResult>/);
+assert.match(executionPort, /MUST call isGovernedOrderIntent before its first side effect/);
+for (const guard of ['isRiskDecision', 'isHumanApprovalReceipt', 'isKillSwitchSnapshot', 'isGovernedOrderIntent']) {
+  assert.match(allSource, new RegExp(`export const ${guard}\\b`), `runtime guard ausente: ${guard}`);
+}
+assert.match(allSource, /ARTIFACT_NOT_AUTHENTIC/);
+assert.match(allSource, /TradeProposalV1Schema\.safeParse/);
+assert.match(allSource, /OrderDraftV1Schema\.safeParse/);
+assert.doesNotMatch(allSource, /Date\.now|process\.env|\bfetch\s*\(|from\s+['"](?:node:)?crypto/i);
 
 console.log(`Domain contracts v1 smoke test: OK (${sources.length} arquivos verificados)`);

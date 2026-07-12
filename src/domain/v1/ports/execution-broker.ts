@@ -1,10 +1,11 @@
+import type { ExecutionResult } from '../workflow/models';
+import type { GovernedOrderIntent } from '../workflow/order-intent';
+
 /**
- * Marcador da futura borda de execução.
- *
- * Intencionalmente não possui método acionável no Item 1. O contrato de
- * execução só será aberto no Item 3, depois que OrderIntent carregar decisão
- * de risco, aprovação humana e chave de idempotência verificáveis.
+ * Side-effect boundary. Implementations are deferred to Item 4.
+ * Every adapter MUST call isGovernedOrderIntent before its first side effect and
+ * reject values that fail the runtime guard; the TypeScript type alone is not a trust boundary.
  */
 export interface ExecutionBroker {
-  readonly capability: 'deferred-until-governed-order-intent';
+  execute(intent: GovernedOrderIntent): Promise<ExecutionResult>;
 }

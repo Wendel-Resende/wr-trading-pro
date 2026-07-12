@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "noEmit": false,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "isolatedModules": false,
+    "target": "ES2020",
+    "rootDir": "../..",
+    "outDir": "./.dist",
+    "types": ["node"]
+  },
+  "include": ["../../src/domain/**/*.ts", "../../src/contracts/v1/index.ts", "./*.ts"],
+  "exclude": ["./.dist"]
+}
