@@ -38,6 +38,7 @@ class MT5Service {
   private wsAuthenticated = false;
   private connectionGeneration = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private chartRequestId = 0;
 
   // Timeouts do handshake de autenticação do bridge (Fase 0, Item 10)
   private readonly WS_TOKEN_FETCH_TIMEOUT_MS = 5000;
@@ -53,7 +54,8 @@ class MT5Service {
 
   private readonly NON_FATAL_ERROR_CODES = new Set([
     'SEND_FAILED', 'VOLUME_TOO_SMALL', 'NO_PRICE', 'CHART_DATA_ERROR',
-    'NOT_CONNECTED', 'HISTORY_ERROR', 'SYMBOL_INFO_ERROR',
+    'CHART_RANGE_ERROR', 'CHART_TIMEFRAME_ERROR', 'NOT_CONNECTED',
+    'HISTORY_ERROR', 'SYMBOL_INFO_ERROR', 'SYMBOL_NOT_FOUND',
   ]);
   private readonly NON_FATAL_ERROR_SUBSTRINGS = [
     'Terminal: Call failed',
@@ -517,6 +519,7 @@ class MT5Service {
           break;
         case 'CHART_DATA': {
           const chartData = message.data as MT5ChartData;
+          const requestId = (chartData as any)?.requestId;
           const emitSymbol = message.symbol ?? chartData?.symbol;
           const emitTimeframe = message.timeframe ?? chartData?.timeframe;
           // eslint-disable-next-line no-console
@@ -534,7 +537,7 @@ class MT5Service {
             close: Number(c.close),
             volume: Number(c.volume || c.tick_volume || 0),
           }));
-          this.emit('chartData', { symbol: emitSymbol, timeframe: emitTimeframe, candles });
+          this.emit('chartData', { requestId, symbol: emitSymbol, timeframe: emitTimeframe, candles });
           break;
         }
         case 'ERROR':
@@ -1016,6 +1019,11 @@ class MT5Service {
     });
   }
 
+  /** Obter lista completa de símbolos (comando já suportado pelo bridge). */
+  getSymbols(): void {
+    this.send({ type: 'GET_SYMBOLS', data: { includeDetails: true } });
+  }
+
   /**
    * Obter informações de símbolo
    */
@@ -1170,32 +1178,44 @@ class MT5Service {
   /**
    * Busca dados históricos de candles para um símbolo e timeframe
    */
-  getChartData(symbol: string, timeframe: string, count: number = 200): Promise<MT5Candle[]> {
+  getChartData(symbol: string, timeframe: string, count: number = 200, range?: Readonly<{ from: string; to: string }>): Promise<MT5Candle[]> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.connectionState.state !== 'CONNECTED') {
         reject(new Error('MT5 não conectado'));
         return;
       }
 
-      const timeout = setTimeout(() => {
-        this.off('chartData', handler);
-        reject(new Error('Timeout ao buscar chart data'));
-      }, 60000);
-
-      const handler = (data: { symbol: string; timeframe: string; candles: MT5Candle[] }) => {
-        if (data.symbol === symbol && data.timeframe === timeframe) {
-          clearTimeout(timeout);
-          this.off('chartData', handler);
-          resolve(data.candles);
-        }
+      const requestId = ++this.chartRequestId;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        if (timeout) clearTimeout(timeout);
+        this.off('chartData', onChartData);
+        this.off('error', onError);
+      };
+      const fail = (error: Error) => { cleanup(); reject(error); };
+      const onChartData = (data: { requestId?: number; symbol: string; timeframe: string; candles: MT5Candle[] }) => {
+        if (data.requestId !== requestId || data.symbol !== symbol || data.timeframe !== timeframe) return;
+        cleanup();
+        resolve(data.candles);
+      };
+      const onError = (data: any) => {
+        if (data?.requestId !== requestId || data?.symbol !== symbol || data?.timeframe !== timeframe) return;
+        const code = typeof data.code === 'string' ? data.code : 'CHART_DATA_ERROR';
+        fail(new Error(`${code}: ${data.message || 'Falha ao buscar chart data'}`));
       };
 
-      this.on('chartData', handler);
+      this.on('chartData', onChartData);
+      this.on('error', onError);
+      timeout = setTimeout(() => fail(new Error('Timeout ao buscar chart data')), 60000);
 
-      this.send({
-        type: 'GET_CHART_DATA',
-        data: { symbol, timeframe, count },
-      });
+      try {
+        this.send({
+          type: 'GET_CHART_DATA',
+          data: { requestId, symbol, timeframe, count, ...(range ? { from: range.from, to: range.to } : {}) },
+        });
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error('Falha ao solicitar chart data'));
+      }
     });
   }
 }

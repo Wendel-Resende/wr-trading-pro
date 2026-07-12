@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2022","module":"CommonJS","moduleResolution":"Node","strict":true,"esModuleInterop":true,"skipLibCheck":true,"rootDir":"../..","outDir":".dist","lib":["ES2022","DOM"]},"include":["mt5-adapters-test.ts","../../src/adapters/mt5/**/*.ts","../../src/domain/v1/**/*.ts","../../src/contracts/v1/**/*.ts"]}

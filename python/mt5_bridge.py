@@ -7,7 +7,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Dict, Set, Any
 import websockets
 from websockets.legacy.server import serve
@@ -118,18 +119,27 @@ class MT5Bridge:
         logger.info(f"Cliente desconectado. Total: {len(self.clients)}")
         
     async def broadcast(self, message: Dict[str, Any]):
-        """Enviar mensagem para todos os clientes conectados"""
+        """Enviar mensagem para todos os clientes conectados usando JSON estrito."""
         if self.clients:
-            message_str = json.dumps(message, default=str)
+            try:
+                message_str = json.dumps(message, default=str, allow_nan=False)
+            except (TypeError, ValueError) as e:
+                logger.error(f"Mensagem não serializável como JSON estrito; broadcast cancelado: {e}")
+                return
             await asyncio.gather(
                 *[client.send(message_str) for client in self.clients],
                 return_exceptions=True
             )
     
     async def send_to_client(self, websocket: Any, message: Dict[str, Any]):
-        """Enviar mensagem para um cliente específico"""
+        """Enviar mensagem para um cliente específico usando JSON estrito."""
         try:
-            await websocket.send(json.dumps(message, default=str))
+            message_str = json.dumps(message, default=str, allow_nan=False)
+        except (TypeError, ValueError) as e:
+            logger.error(f"Mensagem não serializável como JSON estrito; envio cancelado: {e}")
+            return
+        try:
+            await websocket.send(message_str)
         except Exception as e:
             logger.error(f"Erro ao enviar mensagem para cliente: {e}")
 
@@ -167,7 +177,7 @@ class MT5Bridge:
             elif msg_type == 'GET_SYMBOLS':
                 await self.handle_get_symbols(websocket, msg_data)
             elif msg_type == 'GET_SYMBOL_INFO':
-                await self.handle_get_symbol_info(msg_data)
+                await self.handle_get_symbol_info(websocket, msg_data)
             elif msg_type == 'SELECT_SYMBOL':
                 await self.handle_select_symbol(msg_data)
             elif msg_type == 'UNSELECT_SYMBOL':
@@ -187,7 +197,7 @@ class MT5Bridge:
             elif msg_type == 'GET_HISTORY':
                 await self.handle_get_history(msg_data)
             elif msg_type == 'GET_CHART_DATA':
-                await self.handle_get_chart_data(msg_data)
+                await self.handle_get_chart_data(websocket, msg_data)
             elif msg_type == 'SEND_ORDER':
                 await self.handle_send_order(msg_data)
             elif msg_type == 'MODIFY_ORDER':
@@ -352,43 +362,26 @@ class MT5Bridge:
         """Obter lista de símbolos com filtro opcional por prefixo/caminho"""
         prefix = data.get('prefix', '')
         group = data.get('group', '')
+        include_details = data.get('includeDetails', data.get('include_details', False)) is True
 
-        logger.info(f"Buscando símbolos. prefix={prefix}, group={group}")
+        logger.info(f"Buscando símbolos. prefix={prefix}, group={group}, include_details={include_details}")
 
         if not MT5_AVAILABLE or not self.is_connected:
             return
 
         try:
-            # Se tiver prefixo (ex: BOVESPA\OPCOES\PETR), filtrar por path
+            symbols = mt5.symbols_get(group=f"*{group}*") if group else mt5.symbols_get()
+            if symbols is None:
+                raise RuntimeError(f"symbols_get falhou: {mt5.last_error()}")
             if prefix:
-                all_symbols = mt5.symbols_get()
-                # Usar startswith para filtrar por path (ex: BOVESPA\OPCOES\PETR)
-                filtered = [s.name for s in all_symbols if s.path.startswith(prefix)]
-                logger.info(f"Encontrados {len(filtered)} símbolos com prefixo '{prefix}'")
-                await self.send_to_client(websocket, {
-                    'type': 'SYMBOLS',
-                    'data': { 'symbols': filtered },
-                    'timestamp': datetime.now().isoformat(),
-                })
-            elif group:
-                # Usar wildcards como no script Python (group=*PETR*)
-                symbols = mt5.symbols_get(group=f"*{group}*")
-                symbol_names = [s.name for s in symbols]
-                logger.info(f"Encontrados {len(symbol_names)} símbolos no grupo '*{group}*'")
-                await self.send_to_client(websocket, {
-                    'type': 'SYMBOLS',
-                    'data': { 'symbols': symbol_names },
-                    'timestamp': datetime.now().isoformat(),
-                })
-            else:
-                symbols = mt5.symbols_get()
-                symbol_names = [s.name for s in symbols]
-                logger.info(f"Encontrados {len(symbol_names)} símbolos (sem filtro)")
-                await self.send_to_client(websocket, {
-                    'type': 'SYMBOLS',
-                    'data': { 'symbols': symbol_names },
-                    'timestamp': datetime.now().isoformat(),
-                })
+                symbols = tuple(s for s in symbols if s.path.startswith(prefix))
+            payload = [s._asdict() for s in symbols] if include_details else [s.name for s in symbols]
+            logger.info(f"Encontrados {len(payload)} símbolos")
+            await self.send_to_client(websocket, {
+                'type': 'SYMBOLS',
+                'data': { 'symbols': payload },
+                'timestamp': datetime.now().isoformat(),
+            })
         except Exception as e:
             logger.error(f"Erro ao buscar símbolos: {e}")
             await self.send_to_client(websocket, {
@@ -397,26 +390,41 @@ class MT5Bridge:
                 'timestamp': datetime.now().isoformat(),
             })
 
-    async def handle_get_symbol_info(self, data: Dict[str, Any]):
-        """Obter informações de símbolo"""
+    async def handle_get_symbol_info(self, websocket: Any, data: Dict[str, Any]):
+        """Obter informações de símbolo e responder somente ao solicitante."""
         symbol = data.get('symbol')
         logger.info(f"Obtendo informações do símbolo: {symbol}")
-        
+
+        async def send_error(message: str, code: str):
+            await self.send_to_client(websocket, {
+                'type': 'ERROR',
+                'data': {'message': message, 'code': code, 'symbol': symbol},
+                'timestamp': datetime.now().isoformat(),
+            })
+
+        if not isinstance(symbol, str) or not symbol.strip():
+            await send_error('Símbolo inválido', 'SYMBOL_INFO_ERROR')
+            return
         if not MT5_AVAILABLE or not self.is_connected:
+            await send_error('MT5 não disponível ou não conectado', 'SYMBOL_INFO_ERROR')
             return
-        
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            logger.error(f"Símbolo não encontrado: {symbol}")
-            return
-        
-        info_dict = symbol_info._asdict()
-        info_dict['symbol'] = symbol  # Add symbol to data for client matching
-        await self.broadcast({
-            'type': 'SYMBOL_INFO',
-            'data': info_dict,
-            'timestamp': datetime.now().isoformat(),
-        })
+
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                logger.info(f"Símbolo não encontrado: {symbol}")
+                await send_error('Símbolo não encontrado', 'SYMBOL_NOT_FOUND')
+                return
+            info_dict = symbol_info._asdict()
+            info_dict['symbol'] = symbol
+            await self.send_to_client(websocket, {
+                'type': 'SYMBOL_INFO',
+                'data': info_dict,
+                'timestamp': datetime.now().isoformat(),
+            })
+        except Exception as e:
+            logger.error(f"Erro ao obter informações do símbolo {symbol}: {e}")
+            await send_error('Erro ao obter informações do símbolo', 'SYMBOL_INFO_ERROR')
 
     async def handle_select_symbol(self, data: Dict[str, Any]):
         """Selecionar símbolo no Market Watch (obrigatório antes de consultar dados)"""
@@ -936,60 +944,98 @@ class MT5Bridge:
             'timestamp': datetime.now().isoformat(),
         })
     
-    async def handle_get_chart_data(self, data: Dict[str, Any]):
+    async def handle_get_chart_data(self, websocket: Any, data: Dict[str, Any]):
         """Obter dados de candlestick para o gráfico"""
         symbol = data.get('symbol')
         timeframe = data.get('timeframe', '1H')  # Padrão: 1 hora
+        request_id = data.get('requestId')
         count = data.get('count', 100)  # Número de candles
+        from_value = data.get('from')
+        to_value = data.get('to')
+
+        async def send_chart_error(message: str, code: str):
+            await self.send_to_client(websocket, {
+                'type': 'ERROR',
+                'data': {
+                    'message': message, 'code': code, 'requestId': request_id,
+                    'symbol': symbol, 'timeframe': timeframe,
+                },
+                'timestamp': datetime.now().isoformat(),
+            })
+
+        if (from_value is None) != (to_value is None):
+            await send_chart_error('from e to devem ser fornecidos juntos', 'CHART_RANGE_ERROR')
+            return
+        range_from = range_to = None
+        if from_value is not None:
+            try:
+                iso_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$'
+                if not isinstance(from_value, str) or not isinstance(to_value, str) or not re.fullmatch(iso_pattern, from_value) or not re.fullmatch(iso_pattern, to_value):
+                    raise ValueError('ISO timestamp required')
+                range_from = datetime.fromisoformat(from_value.replace('Z', '+00:00'))
+                range_to = datetime.fromisoformat(to_value.replace('Z', '+00:00'))
+                if range_from.tzinfo is None or range_to.tzinfo is None or range_from > range_to:
+                    raise ValueError('aware ordered range required')
+                range_from = range_from.astimezone(timezone.utc)
+                range_to = range_to.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                await send_chart_error('Intervalo ISO com timezone inválido', 'CHART_RANGE_ERROR')
+                return
         
         logger.info(f"Obtendo dados de gráfico: symbol={symbol}, timeframe={timeframe}, count={count}")
         
         if not MT5_AVAILABLE or not self.is_connected:
             logger.error("MT5 não disponível ou não conectado")
-            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', broadcast=True)
+            await send_chart_error('MT5 não disponível ou não conectado', 'CHART_DATA_ERROR')
             return
         
         if not symbol:
             logger.error("Símbolo não fornecido")
-            await self.broadcast({
-                'type': 'ERROR',
-                'data': {
-                    'message': 'Símbolo não fornecido',
-                    'code': 'NO_SYMBOL',
-                },
-                'timestamp': datetime.now().isoformat(),
-            })
+            await send_chart_error('Símbolo não fornecido', 'CHART_DATA_ERROR')
             return
         
         # Mapear timeframes do frontend para MT5
         tf_mapping = {
             '1m': mt5.TIMEFRAME_M1,
+            'M1': mt5.TIMEFRAME_M1,
             '5m': mt5.TIMEFRAME_M5,
+            'M5': mt5.TIMEFRAME_M5,
             '15m': mt5.TIMEFRAME_M15,
+            'M15': mt5.TIMEFRAME_M15,
             '30m': mt5.TIMEFRAME_M30,
+            'M30': mt5.TIMEFRAME_M30,
             '1H': mt5.TIMEFRAME_H1,
+            'H1': mt5.TIMEFRAME_H1,
             '4H': mt5.TIMEFRAME_H4,
+            'H4': mt5.TIMEFRAME_H4,
             '1D': mt5.TIMEFRAME_D1,
+            'D1': mt5.TIMEFRAME_D1,
             '1W': mt5.TIMEFRAME_W1,
+            'W1': mt5.TIMEFRAME_W1,
             '1M': mt5.TIMEFRAME_MN1,
         }
         
-        mt5_timeframe = tf_mapping.get(timeframe, mt5.TIMEFRAME_H1)
+        mt5_timeframe = tf_mapping.get(timeframe)
+        if mt5_timeframe is None:
+            await send_chart_error('Timeframe de gráfico inválido', 'CHART_TIMEFRAME_ERROR')
+            return
         
-        # Obter candles do MT5
-        rates = mt5.copy_rates_from(symbol, mt5_timeframe, datetime.now(), count)
+        # Obter candles do MT5. Intervalos explícitos usam a API por range;
+        # chamadas legadas continuam posicionais e backwards-compatible.
+        try:
+            if range_from is not None and range_to is not None:
+                rates = mt5.copy_rates_range(symbol, mt5_timeframe, range_from, range_to)
+            else:
+                rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, count)
+        except Exception as e:
+            logger.error(f"Erro ao obter dados de gráfico: {e}")
+            await send_chart_error('Erro ao obter dados de gráfico', 'CHART_DATA_ERROR')
+            return
         
         if rates is None:
             error_code = mt5.last_error()
             logger.error(f"Erro ao obter dados de gráfico: {error_code}")
-            await self.broadcast({
-                'type': 'ERROR',
-                'data': {
-                    'message': f'Erro ao obter dados de gráfico: {error_code}',
-                    'code': 'CHART_DATA_ERROR',
-                },
-                'timestamp': datetime.now().isoformat(),
-            })
+            await send_chart_error(f'Erro ao obter dados de gráfico: {error_code}', 'CHART_DATA_ERROR')
             return
         
         logger.info(f"Obtidos {len(rates)} candles para {symbol} ({timeframe})")
@@ -1006,10 +1052,11 @@ class MT5Bridge:
                 'volume': int(rate['tick_volume']) if rate['tick_volume'] > 0 else 0,
             })
         
-        # Enviar para o cliente
-        await self.broadcast({
+        # Enviar somente para o cliente solicitante, preservando correlação.
+        await self.send_to_client(websocket, {
             'type': 'CHART_DATA',
             'data': {
+                'requestId': request_id,
                 'symbol': symbol,
                 'timeframe': timeframe,
                 'candles': chart_data,

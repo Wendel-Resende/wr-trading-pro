@@ -26,7 +26,8 @@
     "electron:build:mac": "electron-builder --mac",
     "electron:build:linux": "electron-builder --linux",
     "electron:compile": "tsc -p electron/tsconfig.json",
-    "electron:package": "npm run build && npm run electron:compile && electron-builder"
+    "electron:package": "npm run build && npm run electron:compile && electron-builder",
+    "test:mt5-adapters": "node scripts/mt5/run-mt5-tests.cjs"
   },
   "build": {
     "appId": "com.wrtrade.pro",

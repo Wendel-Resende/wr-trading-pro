@@ -5,6 +5,7 @@ import { MAX_KILL_SWITCH_TTL_MS, canonicalDraftContent, createHumanApprovalServi
   createRiskDecision, fingerprintOrderDraft, isGovernedOrderIntent, isHumanApprovalReceipt, isKillSwitchSnapshot,
   isRiskDecision, issueOrderIntent } from '../../src/domain/v1/workflow';
 import { InMemoryIdempotencyRegistry } from './in-memory-idempotency-registry';
+import { DisabledMt5ExecutionBroker } from '../../src/adapters/mt5/disabled-execution-broker';
 
 class TestOnlyHumanVerifier implements HumanAuthenticationVerifier<string> {
   async verify(evidence: string): Promise<AuthenticatedHumanPrincipal | null> {
@@ -30,6 +31,11 @@ const main = async (): Promise<void> => {
   const happy = await issueOrderIntent({ ...base, registry: new InMemoryIdempotencyRegistry(() => now) });
   assert.equal(happy.ok, true); if (!happy.ok) throw new Error('happy path');
   assert.ok(isGovernedOrderIntent(happy.value)); assert.ok(Object.isFrozen(happy.value));
+  const disabledBroker = new DisabledMt5ExecutionBroker();
+  const authenticDisabled = await disabledBroker.execute(happy.value);
+  assert.equal(authenticDisabled.status, 'REJECTED');
+  assert.equal(authenticDisabled.correlationId, happy.value.correlationId);
+  assert.equal((await disabledBroker.execute(Object.freeze({ ...happy.value }) as typeof happy.value)).status, 'UNKNOWN');
   assert.equal(happy.value.draftFingerprint, `draft-v1-canonical:${canonicalDraftContent(draft)}`);
   assert.equal(happy.value.issuedAt, now);
   assert.equal(fingerprintOrderDraft({ ...draft, accountId: 'account-X' }) === fingerprintOrderDraft(draft), false);
