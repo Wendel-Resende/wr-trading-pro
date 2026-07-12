@@ -1,0 +1,1746 @@
+[
+  {
+    "name": "envelope-null",
+    "payload": null
+  },
+  {
+    "name": "envelope-array",
+    "payload": []
+  },
+  {
+    "name": "envelope-string",
+    "payload": "x"
+  },
+  {
+    "name": "envelope-number",
+    "payload": 1
+  },
+  {
+    "name": "envelope-boolean",
+    "payload": true
+  },
+  {
+    "name": "wrong-version",
+    "payload": {
+      "schemaVersion": "2.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "wrong-kind",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.intent",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "missing-kind",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "missing-created-at",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "null-created-at",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": null,
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "extra-signal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00",
+      "unexpected": true
+    }
+  },
+  {
+    "name": "execution-eligible-signal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": true,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "missing-execution-eligible-signal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "extra-proposal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00",
+      "unexpected": true
+    }
+  },
+  {
+    "name": "execution-eligible-proposal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": true,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "missing-execution-eligible-proposal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "extra-draft",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null,
+      "unexpected": true
+    }
+  },
+  {
+    "name": "execution-eligible-draft",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": true,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "missing-execution-eligible-draft",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "signal-old-side-field",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00",
+      "side": "BUY"
+    }
+  },
+  {
+    "name": "invalid-decision",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "WAIT",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "missing-decision",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "null-decision",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": null,
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "confidence-below",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": -0.01,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "confidence-above",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 1.01,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "confidence-string",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": "0.5",
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "invalid-timeframe",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M2",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "id-regex",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "-bad",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "id-too-long",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "symbol-regex",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "winq26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "symbol-too-long",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "empty-rationale",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "rationale-too-long",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "too-many-tags",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "empty-tag",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        ""
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "tag-too-long",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "tags-null",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": null,
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-00",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-01",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "0000-01-01T00:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-02",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-00-01T00:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-03",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-13-01T00:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-04",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-00T00:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-05",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-02-30T10:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-06",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2025-02-29T10:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-07",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T24:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-08",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:60:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-09",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:60Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-10",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:00+14:01",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-11",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:00-14:01",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-12",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:00+15:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-13",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:00+01:60",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-14",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01t00:00:00Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "timestamp-invalid-15",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-01-01T00:00:00.1234567Z",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:05:00-03:00"
+    }
+  },
+  {
+    "name": "invalid-valid-until-calendar",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-02-30T10:00:00Z"
+    }
+  },
+  {
+    "name": "valid-until-equal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T10:00:00-03:00"
+    }
+  },
+  {
+    "name": "valid-until-before",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T09:59:59-03:00"
+    }
+  },
+  {
+    "name": "valid-until-same-instant-offset",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trading.signal",
+      "id": "sig-001",
+      "createdAt": "2026-07-12T10:00:00-03:00",
+      "executionEligible": false,
+      "instrument": "WINQ26",
+      "timeframe": "M5",
+      "decision": "BUY",
+      "confidence": 0.75,
+      "rationale": "Rompimento confirmado com contexto apenas informativo.",
+      "tags": [
+        "breakout",
+        "intraday"
+      ],
+      "validUntil": "2026-07-12T13:00:00Z"
+    }
+  },
+  {
+    "name": "proposal-invalid-side",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "HOLD",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-zero-quantity",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 0,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-over-max-quantity",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1000000000.01,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-quantity-string",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": "1",
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-limit-without-price",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": null,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-market-with-price",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "MARKET",
+      "quantity": 1,
+      "limitPrice": 1,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-invalid-expires-calendar",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-02-30T10:00:00Z"
+    }
+  },
+  {
+    "name": "proposal-expires-equal",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T10:00:01Z"
+    }
+  },
+  {
+    "name": "proposal-expires-before",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T09:59:59Z"
+    }
+  },
+  {
+    "name": "proposal-expires-same-instant-offset",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:00:01+03:00"
+    }
+  },
+  {
+    "name": "proposal-limitPrice-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 0,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-limitPrice-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 1000000000.01,
+      "stopLoss": 128000,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-stopLoss-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 0,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-stopLoss-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 1000000000.01,
+      "takeProfit": 129500,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-takeProfit-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 0,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "proposal-takeProfit-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "trade.proposal",
+      "id": "proposal-001",
+      "createdAt": "2026-07-12T10:00:01Z",
+      "executionEligible": false,
+      "signalId": "sig-001",
+      "instrument": "WINQ26",
+      "side": "BUY",
+      "orderType": "LIMIT",
+      "quantity": 1,
+      "limitPrice": 128500.5,
+      "stopLoss": 128000,
+      "takeProfit": 1000000000.01,
+      "rationale": "Proposta não executável derivada do sinal.",
+      "expiresAt": "2026-07-12T13:05:00+00:00"
+    }
+  },
+  {
+    "name": "draft-invalid-side",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "HOLD",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-zero-quantity",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 0,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-over-max-quantity",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 1000000000.01,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-limit-without-price",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "LIMIT",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-market-with-price",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": 1,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "approved-draft",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": "approved",
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "idempotency-on-draft",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": "key"
+    }
+  },
+  {
+    "name": "wrong-draft-state",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "submitted",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-human-approval-missing",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-idempotency-missing",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null
+    }
+  },
+  {
+    "name": "draft-limitPrice-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": 0,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-limitPrice-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": 1000000000.01,
+      "stopLoss": null,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-stopLoss-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": 0,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-stopLoss-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": 1000000000.01,
+      "takeProfit": null,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-takeProfit-zero",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": 0,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  },
+  {
+    "name": "draft-takeProfit-over-max",
+    "payload": {
+      "schemaVersion": "1.0.0",
+      "kind": "order.draft",
+      "id": "draft-001",
+      "createdAt": "2026-07-12T13:00:02.123456Z",
+      "executionEligible": false,
+      "proposalId": "proposal-001",
+      "accountId": "paper-account",
+      "instrument": "WINQ26",
+      "side": "SELL",
+      "orderType": "MARKET",
+      "quantity": 2,
+      "limitPrice": null,
+      "stopLoss": null,
+      "takeProfit": 1000000000.01,
+      "state": "draft",
+      "humanApproval": null,
+      "idempotencyKey": null
+    }
+  }
+]

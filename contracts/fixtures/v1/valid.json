@@ -1,0 +1,129 @@
+[
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-001",
+    "createdAt": "2026-07-12T10:00:00-03:00",
+    "executionEligible": false,
+    "instrument": "WINQ26",
+    "timeframe": "M5",
+    "decision": "BUY",
+    "confidence": 0.75,
+    "rationale": "Rompimento confirmado com contexto apenas informativo.",
+    "tags": [
+      "breakout",
+      "intraday"
+    ],
+    "validUntil": "2026-07-12T10:05:00-03:00"
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-hold",
+    "createdAt": "2026-07-12T10:00:00-03:00",
+    "executionEligible": false,
+    "instrument": "WINQ26",
+    "timeframe": "M5",
+    "decision": "HOLD",
+    "confidence": 0,
+    "rationale": "Sem confirmação suficiente.",
+    "tags": [
+      "safe-state"
+    ],
+    "validUntil": null
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-none",
+    "createdAt": "2026-07-12T10:00:00-03:00",
+    "executionEligible": false,
+    "instrument": "WINQ26",
+    "timeframe": "M5",
+    "decision": "NO_DECISION",
+    "confidence": 0,
+    "rationale": "Modelo indisponível; nenhuma decisão produzida.",
+    "tags": [
+      "model-unavailable"
+    ],
+    "validUntil": null
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trade.proposal",
+    "id": "proposal-001",
+    "createdAt": "2026-07-12T10:00:01Z",
+    "executionEligible": false,
+    "signalId": "sig-001",
+    "instrument": "WINQ26",
+    "side": "BUY",
+    "orderType": "LIMIT",
+    "quantity": 1,
+    "limitPrice": 128500.5,
+    "stopLoss": 128000,
+    "takeProfit": 129500,
+    "rationale": "Proposta não executável derivada do sinal.",
+    "expiresAt": "2026-07-12T13:05:00+00:00"
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "order.draft",
+    "id": "draft-001",
+    "createdAt": "2026-07-12T13:00:02.123456Z",
+    "executionEligible": false,
+    "proposalId": "proposal-001",
+    "accountId": "paper-account",
+    "instrument": "WINQ26",
+    "side": "SELL",
+    "orderType": "MARKET",
+    "quantity": 2,
+    "limitPrice": null,
+    "stopLoss": null,
+    "takeProfit": null,
+    "state": "draft",
+    "humanApproval": null,
+    "idempotencyKey": null
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-microsecond-ordering",
+    "createdAt": "2026-07-12T10:00:00.000001Z",
+    "executionEligible": false,
+    "instrument": "PETR4",
+    "timeframe": "M1",
+    "decision": "HOLD",
+    "confidence": 0,
+    "rationale": "Fixture de ordenação temporal com precisão de microssegundos.",
+    "tags": ["precision"],
+    "validUntil": "2026-07-12T10:00:00.000002Z"
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-year-min-offset-max",
+    "createdAt": "0001-01-01T00:00:00.000000+14:00",
+    "executionEligible": false,
+    "instrument": "TEST1",
+    "timeframe": "D1",
+    "decision": "NO_DECISION",
+    "confidence": 0,
+    "rationale": "Fixture do limite inferior de ano e superior de offset.",
+    "tags": ["boundary"],
+    "validUntil": "0001-01-01T00:00:00.000001+14:00"
+  },
+  {
+    "schemaVersion": "1.0.0",
+    "kind": "trading.signal",
+    "id": "sig-year-max-offset-min",
+    "createdAt": "9999-12-31T23:59:59.999998-14:00",
+    "executionEligible": false,
+    "instrument": "TEST9",
+    "timeframe": "D1",
+    "decision": "HOLD",
+    "confidence": 0,
+    "rationale": "Fixture do limite superior de ano e inferior de offset.",
+    "tags": ["boundary"],
+    "validUntil": "9999-12-31T23:59:59.999999-14:00"
+  }
+]

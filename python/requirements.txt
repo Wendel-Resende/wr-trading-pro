@@ -3,4 +3,5 @@ flask-cors
 MetaTrader5
 pandas
 pandas_ta
+pydantic>=2.12,<3
 websockets>=15,<16
