@@ -39,10 +39,10 @@ class TradingAgentsService {
     ticker: string,
     thesis: string,
     marketData?: MarketData,
-    apiKey?: string,
-    llmMode?: string,
-    localUrl?: string
+    llmMode?: string
   ): Promise<OperationSuggestion> {
+    // Chaves de API e endpoint Ollama são configurados no servidor (.env);
+    // o cliente envia apenas ticker, tese, dados de mercado e modo.
     const response = await fetch('/api/agents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -51,9 +51,7 @@ class TradingAgentsService {
         ticker,
         thesis,
         market_data: marketData,
-        api_key: apiKey,
         llm_mode: llmMode,
-        local_url: localUrl,
       }),
     });
 

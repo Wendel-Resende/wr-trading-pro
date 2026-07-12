@@ -37,14 +37,22 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Load available providers
-    const providers = llmService.getAvailableProviders();
-    setAvailableProviders(providers);
-    
-    // Set first available provider as default
-    if (providers.length > 0 && !providers.includes(selectedProvider)) {
-      setSelectedProvider(providers[0]);
-    }
+    // Load available providers (configurados no servidor, via proxy /api/llm/chat)
+    let cancelled = false;
+
+    llmService.getAvailableProviders().then((providers) => {
+      if (cancelled) return;
+      setAvailableProviders(providers);
+
+      // Set first available provider as default
+      if (providers.length > 0 && !providers.includes(selectedProvider)) {
+        setSelectedProvider(providers[0]);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const scrollToBottom = () => {

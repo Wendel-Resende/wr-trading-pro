@@ -13,11 +13,36 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { z } from 'zod';
+import { getOllamaEndpoint } from '@/lib/server/llm-config';
 
 const agentState = {
   director: { status: 'ready' as const, lastRun: null as string | null },
   quant: { status: 'ready' as const, lastRun: null as string | null },
 };
+
+/**
+ * Schema estrito do body: `api_key` e `local_url` NÃO são aceitos — chaves e
+ * endpoint Ollama vêm exclusivamente da configuração server-side (llm-config).
+ * Campos desconhecidos causam rejeição (mass assignment / SSRF bloqueados).
+ */
+const marketDataSchema = z.object({
+  price: z.number().finite().nonnegative().optional(),
+  bid: z.number().finite().nonnegative().optional(),
+  ask: z.number().finite().nonnegative().optional(),
+  previousClose: z.number().finite().nonnegative().optional(),
+  change: z.number().finite().optional(),
+  changePercent: z.number().finite().optional(),
+}).strict();
+
+const agentsRequestSchema = z.object({
+  action: z.enum(['status', 'suggest-operation', 'suggest-operation-pipeline']),
+  ticker: z.string().trim().regex(/^[A-Z0-9]{3,12}$/i, 'Ticker inválido').transform(v => v.toUpperCase()).optional(),
+  thesis: z.string().max(4000).optional(),
+  market_data: marketDataSchema.optional(),
+  llm_mode: z.enum(['mock', 'openai', 'local']).optional(),
+  local_model: z.string().trim().regex(/^[\w][\w.\-:]{0,63}$/, 'Modelo inválido').optional(),
+}).strict();
 
 interface OperationSuggestion {
   action: 'BUY' | 'SELL' | 'HOLD' | 'NO_DECISION';
@@ -113,14 +138,14 @@ function getMockSuggestion(ticker: string, marketData: MarketData): OperationSug
  * Generate real suggestion using LLM (single call)
  */
 async function getLlmSuggestion(
-
   ticker: string,
   marketData: MarketData,
   llmMode: string,
-  apiKey: string,
-  localUrl: string,
   localModel: string
 ): Promise<OperationSuggestion> {
+  // Credenciais e endpoint vêm SOMENTE do servidor — nunca do cliente
+  const apiKey = process.env.OPENAI_API_KEY?.trim() || '';
+  const localUrl = getOllamaEndpoint();
   const price = marketData.price || 38.50;
   const change = marketData.changePercent || 0;
   const bid = marketData.bid || price;
@@ -160,7 +185,11 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
 
   let response;
 
-  if (llmMode === 'openai' && apiKey) {
+  if (llmMode === 'openai') {
+    if (!apiKey) {
+      return getNoDecision(ticker, 'OPENAI_API_KEY não configurada no servidor — nenhuma decisão gerada.');
+    }
+
     response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -194,7 +223,7 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
       return getNoDecision(ticker, 'Resposta do OpenAI inválida — nenhuma decisão gerada.');
     }
 
-  } else if (llmMode === 'local' && localUrl) {
+  } else if (llmMode === 'local') {
     response = await fetch(`${localUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -386,8 +415,20 @@ function extractRationale(result: any): string | null {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { action, ticker, market_data, api_key, llm_mode, local_url, local_model } = body;
+    const rawBody = await request.json();
+    const parsedBody = agentsRequestSchema.safeParse(rawBody);
+
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        {
+          error: 'Payload inválido para /api/agents',
+          details: parsedBody.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const { action, ticker, market_data, llm_mode, local_model } = parsedBody.data;
 
     // Status check
     if (action === 'status') {
@@ -412,26 +453,31 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const marketData: MarketData = market_data || { price: 0, bid: 0, ask: 0, previousClose: 0 };
+      const marketData: MarketData = {
+        price: market_data?.price ?? 0,
+        bid: market_data?.bid ?? 0,
+        ask: market_data?.ask ?? 0,
+        previousClose: market_data?.previousClose ?? 0,
+        change: market_data?.change,
+        changePercent: market_data?.changePercent,
+      };
       const mode = llm_mode || 'mock';
 
       let suggestion: OperationSuggestion;
 
       if (mode === 'mock') {
-        suggestion = getMockSuggestion(ticker.toUpperCase(), marketData);
+        suggestion = getMockSuggestion(ticker, marketData);
       } else {
         try {
           suggestion = await getLlmSuggestion(
-            ticker.toUpperCase(),
+            ticker,
             marketData,
             mode,
-            api_key || '',
-            local_url || 'http://localhost:11434',
             local_model || 'ministral-3:8b'
           );
         } catch (error: any) {
           suggestion = getNoDecision(
-            ticker.toUpperCase(),
+            ticker,
             `LLM indisponível: ${error.message}. Nenhuma decisão gerada.`
           );
         }
@@ -451,31 +497,34 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const marketData: MarketData = market_data || { price: 0, bid: 0, ask: 0, previousClose: 0 };
+      const marketData: MarketData = {
+        price: market_data?.price ?? 0,
+        bid: market_data?.bid ?? 0,
+        ask: market_data?.ask ?? 0,
+        previousClose: market_data?.previousClose ?? 0,
+        change: market_data?.change,
+        changePercent: market_data?.changePercent,
+      };
       const model = local_model || 'ministral-3:8b';
 
       try {
-        const suggestion = await runPipeline(ticker.toUpperCase(), marketData, model);
+        const suggestion = await runPipeline(ticker, marketData, model);
         agentState.director.lastRun = new Date().toISOString();
         return NextResponse.json({ success: true, data: suggestion });
       } catch (error: any) {
         console.error('Pipeline error:', error);
-        // Fallback to single LLM call
+        // Fallback to single LLM call (endpoint Ollama server-side)
         try {
-          const fallback = await getLlmSuggestion(
-            ticker.toUpperCase(),
-            marketData,
-            'local',
-            '',
-            local_url || 'http://localhost:11434',
-            model
-          );
+          const fallback = await getLlmSuggestion(ticker, marketData, 'local', model);
           fallback.rationale = `(Pipeline indisponivel: ${error.message}) ${fallback.rationale}`;
           return NextResponse.json({ success: true, data: fallback });
         } catch {
-          const mock = getMockSuggestion(ticker.toUpperCase(), marketData);
-          mock.rationale = `(Pipeline e LLM indisponiveis) ${mock.rationale}`;
-          return NextResponse.json({ success: true, data: mock });
+          // Sem fallback sintético acionável: pipeline e LLM indisponíveis → NO_DECISION
+          const noDecision = getNoDecision(
+            ticker,
+            'Pipeline e LLM local indisponíveis — nenhuma decisão gerada.'
+          );
+          return NextResponse.json({ success: true, data: noDecision });
         }
       }
     }

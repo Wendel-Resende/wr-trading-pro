@@ -51,10 +51,8 @@ export default function AgentPanel() {
   const [mt5Connected, setMt5Connected] = useState(false);
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
 
-  // Settings
-  const [apiKey, setApiKey] = useState('');
+  // Settings — chaves de API e endpoint Ollama vivem SOMENTE no servidor (.env)
   const [llmMode, setLlmMode] = useState<'mock' | 'openai' | 'local'>('local');
-  const [localLlmUrl, setLocalLlmUrl] = useState('http://localhost:11434');
   const [localModel, setLocalModel] = useState('ministral-3:8b');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -62,14 +60,14 @@ export default function AgentPanel() {
 
   // Load saved settings
   useEffect(() => {
-    const savedApiKey = localStorage.getItem('agent-api-key') || '';
+    // Remove segredos legados persistidos no navegador (item 7 da Fase 0)
+    localStorage.removeItem('agent-api-key');
+    localStorage.removeItem('agent-local-url');
+
     const savedLlmMode = localStorage.getItem('agent-llm-mode') || 'local';
-    const savedLlmUrl = localStorage.getItem('agent-local-url') || 'http://localhost:11434';
     const savedLocalModel = localStorage.getItem('agent-local-model') || 'ministral-3:8b';
 
-    setApiKey(savedApiKey);
     setLlmMode(savedLlmMode as any);
-    setLocalLlmUrl(savedLlmUrl);
     setLocalModel(savedLocalModel);
   }, []);
 
@@ -171,9 +169,7 @@ export default function AgentPanel() {
           action: 'suggest-operation',
           ticker: ticker.toUpperCase(),
           market_data: marketData,
-          api_key: apiKey,
           llm_mode: llmMode,
-          local_url: localLlmUrl,
           local_model: localModel,
         }),
       });
@@ -276,41 +272,24 @@ export default function AgentPanel() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">URL do Ollama</label>
-                <input
-                  type="text"
-                  value={localLlmUrl}
-                  onChange={(e) => setLocalLlmUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
-                />
-              </div>
+              <p className="text-xs text-gray-500">
+                <Server className="w-3 h-3 inline mr-1" />
+                Endpoint do Ollama configurado no servidor (OLLAMA_ENDPOINT no .env).
+              </p>
             </>
           )}
 
-          {/* API Key for OpenAI */}
+          {/* OpenAI: chave configurada no servidor */}
           {llmMode === 'openai' && (
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
-                <Key className="w-3 h-3 inline mr-1" />
-                OpenAI API Key
-              </label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
-              />
-            </div>
+            <p className="text-xs text-gray-500">
+              <Key className="w-3 h-3 inline mr-1" />
+              A chave da OpenAI é configurada no servidor (OPENAI_API_KEY no .env), nunca no navegador.
+            </p>
           )}
 
           <button
             onClick={() => {
-              localStorage.setItem('agent-api-key', apiKey);
               localStorage.setItem('agent-llm-mode', llmMode);
-              localStorage.setItem('agent-local-url', localLlmUrl);
               localStorage.setItem('agent-local-model', localModel);
               setShowSettings(false);
             }}
