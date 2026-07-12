@@ -11,6 +11,8 @@
     "start": "next start -H 127.0.0.1",
     "lint": "next lint",
     "smoke:auth": "node scripts/auth/auth-smoke-test.mts",
+    "smoke:ws-token": "node scripts/auth/ws-token-smoke-test.mts",
+    "test:ws-token:py": "python python/tests/test_ws_token.py",
     "postinstall": "prisma generate",
     "electron:dev": "electron .",
     "electron:build": "electron-builder",

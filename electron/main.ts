@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -15,6 +16,24 @@ const PORT = 3001;
 let mainWindow: BrowserWindow | null = null;
 let nextServer: ChildProcess | null = null;
 let pythonProcesses: ChildProcess[] = [];
+
+/**
+ * Secret compartilhado do token WS do MT5 Bridge (Fase 0, Item 10).
+ * Se não vier do ambiente (>= 32 chars), gera um valor criptográfico efêmero
+ * por processo e passa o MESMO valor, via env, ao servidor Next e ao
+ * mt5_bridge.py. Nunca persistido nem logado.
+ */
+function resolveWsTokenSecret(): string {
+  const fromEnv = process.env.WR_WS_TOKEN_SECRET?.trim() ?? '';
+  if (fromEnv.length >= 32) return fromEnv;
+  return crypto.randomBytes(32).toString('hex');
+}
+
+const WS_TOKEN_SECRET = resolveWsTokenSecret();
+
+function childEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, WR_WS_TOKEN_SECRET: WS_TOKEN_SECRET };
+}
 
 function isProjectRoot(candidate: string): boolean {
   try {
@@ -134,6 +153,7 @@ function startPythonService(cfg: ServiceConfig): Promise<void> {
 
     const child = spawn(pythonPath, [scriptPath], {
       cwd: cwd,
+      env: childEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true,
@@ -299,6 +319,7 @@ function startNextServer(): Promise<void> {
       [nextBin, 'start', '-H', '127.0.0.1', '-p', String(PORT)],
       {
         cwd: serverCwd,
+        env: childEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: false,
       }

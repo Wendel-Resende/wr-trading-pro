@@ -33,7 +33,16 @@ class MT5Service {
   private listeners: Map<string, Set<(data: any) => void>> = new Map();
   private pythonServerUrl: string = 'ws://localhost:8766';
   private lastConfig: MT5Config | null = null;
-  
+  // Serializa tentativas concorrentes e distingue socket aberto de autenticado.
+  private connectPromise: Promise<boolean> | null = null;
+  private wsAuthenticated = false;
+  private connectionGeneration = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Timeouts do handshake de autenticação do bridge (Fase 0, Item 10)
+  private readonly WS_TOKEN_FETCH_TIMEOUT_MS = 5000;
+  private readonly WS_AUTH_TIMEOUT_MS = 5000;
+
   // Cache de dados para manter estado entre remontagens de componentes
   private ordersCache: Map<number, MT5Order> = new Map();
   private tradesCache: Map<number, MT5Trade> = new Map();
@@ -93,14 +102,81 @@ class MT5Service {
   }
 
   /**
-   * Conectar ao servidor Python do MT5
+   * Busca um token efêmero de uso único para o handshake do WebSocket.
+   * A sessão vem do cookie HttpOnly (credentials same-origin); o token nunca
+   * é logado, guardado em localStorage nem colocado na URL do WebSocket.
+   */
+  private async fetchWsToken(): Promise<string> {
+    let response: Response;
+    try {
+      response = await fetch('/api/auth/ws-token', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.WS_TOKEN_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error('Falha ao obter token de autenticação do MT5 Bridge');
+    }
+
+    if (response.status === 401) {
+      throw new Error('Sessão expirada — faça login novamente para conectar ao MT5');
+    }
+    if (response.status === 503) {
+      throw new Error('Autenticação do MT5 Bridge não configurada no servidor');
+    }
+    if (!response.ok) {
+      throw new Error(`Falha ao obter token de autenticação (HTTP ${response.status})`);
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!body || typeof body.token !== 'string' || body.token.length === 0) {
+      throw new Error('Resposta inválida ao obter token de autenticação');
+    }
+    return body.token;
+  }
+
+  /**
+   * Conectar ao servidor Python do MT5. Chamadas concorrentes compartilham a
+   * mesma Promise para impedir que um AUTH_OK de um socket resolva outro.
    */
   async connect(config?: Partial<MT5Config>): Promise<boolean> {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      // eslint-disable-next-line no-console
-      console.log('MT5 already connected');
+    if (
+      this.ws?.readyState === WebSocket.OPEN &&
+      this.wsAuthenticated
+    ) {
       return true;
     }
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    const attempt = this.connectInternal(config);
+    this.connectPromise = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (this.connectPromise === attempt) {
+        this.connectPromise = null;
+      }
+    }
+  }
+
+  private async connectInternal(config?: Partial<MT5Config>): Promise<boolean> {
+    const generation = this.connectionGeneration;
+    // Zerar this.ws antes de fechar o socket antigo garante que o onclose
+    // dele não toque no estado da nova tentativa nem feche o socket novo.
+    const oldWs = this.ws;
+    if (oldWs && oldWs.readyState !== WebSocket.CLOSED) {
+      this.ws = null;
+      oldWs.close();
+    }
+    this.wsAuthenticated = false;
 
     if (config && (config.login || config.password || config.server)) {
       this.lastConfig = config as MT5Config;
@@ -108,83 +184,173 @@ class MT5Service {
 
     // eslint-disable-next-line no-console
     console.log('Tentando conectar ao MT5 Bridge:', this.pythonServerUrl);
-    // eslint-disable-next-line no-console
-    console.log('Configuração:', config);
+
+    // Token novo a cada (re)conexão — é de uso único e expira em segundos
+    let wsToken: string;
+    try {
+      wsToken = await this.fetchWsToken();
+    } catch (error) {
+      if (generation !== this.connectionGeneration) {
+        throw new Error('Conexão com o MT5 cancelada');
+      }
+      const message = error instanceof Error ? error.message : 'Falha ao obter token de autenticação';
+      // eslint-disable-next-line no-console
+      console.warn('MT5:', message);
+      this.connectionState.state = 'ERROR';
+      this.connectionState.isConnected = false;
+      this.connectionState.lastError = message;
+      this.emit('state', this.connectionState);
+      throw error;
+    }
+
+    // disconnect() pode ocorrer enquanto fetchWsToken() aguarda a rede.
+    if (generation !== this.connectionGeneration) {
+      throw new Error('Conexão com o MT5 cancelada');
+    }
 
     return new Promise((resolve, reject) => {
+      let socket: WebSocket;
       try {
-        this.ws = new WebSocket(this.pythonServerUrl);
-
-        this.ws.onopen = () => {
-          // eslint-disable-next-line no-console
-          console.log('MT5 WebSocket connected');
-          this.connectionState.state = 'CONNECTING';
-          this.connectionState.isConnected = true;
-          this.emit('state', this.connectionState);
-
-          // Enviar configuração de login se fornecida
-          if (config) {
-            // eslint-disable-next-line no-console
-            console.log('Enviando login:', {
-              login: config.login,
-              server: config.server,
-            });
-            this.sendLogin(config);
-          } else {
-            // eslint-disable-next-line no-console
-            console.warn('Nenhuma configuração fornecida para login');
-          }
-
-          resolve(true);
-        };
-
-        this.ws.onmessage = (event) => {
-          this.handleMessage(event.data);
-        };
-
-        this.ws.onerror = (error) => {
-          // eslint-disable-next-line no-console
-          console.error('MT5 WebSocket error:', error);
-          this.connectionState.state = 'ERROR';
-          this.connectionState.lastError = 'WebSocket connection error';
-          this.emit('state', this.connectionState);
-          reject(error);
-        };
-
-        this.ws.onclose = () => {
-          // eslint-disable-next-line no-console
-          console.log('MT5 WebSocket closed');
-          
-          // Não tentar reconectar automaticamente se reconnectAttempts foi excedido (desconexão manual)
-          const wasManualDisconnect = this.reconnectAttempts > this.maxReconnectAttempts;
-          
-          // Mudar estado para DISCONNECTED apenas se a conexão realmente fechou
-          this.connectionState.state = 'DISCONNECTED';
-          this.connectionState.isConnected = false;
-          // Não limpar accountInfo ao mudar de aba para manter os dados
-          // this.connectionState.accountInfo = undefined;
-          // eslint-disable-next-line no-console
-          console.log('Estado alterado para DISCONNECTED - conexão WebSocket fechada');
-          this.emit('state', this.connectionState);
-
-          // Tentar reconectar automaticamente apenas se não foi desconexão manual
-          if (!wasManualDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            setTimeout(() => {
-              // eslint-disable-next-line no-console
-              console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-              this.connect(this.lastConfig ?? undefined);
-            }, this.reconnectDelay);
-          }
-        };
+        socket = new WebSocket(this.pythonServerUrl);
+        this.ws = socket;
       } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error('Failed to connect to MT5:', error);
         this.connectionState.state = 'ERROR';
+        this.connectionState.isConnected = false;
         this.connectionState.lastError = error instanceof Error ? error.message : 'Unknown error';
         this.emit('state', this.connectionState);
         reject(error);
+        return;
       }
+
+      let settled = false;
+      let authTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearAuthTimer = () => {
+        if (authTimer) {
+          clearTimeout(authTimer);
+          authTimer = null;
+        }
+      };
+
+      const failBeforeAuth = (message: string) => {
+        if (settled) return;
+        settled = true;
+        clearAuthTimer();
+        if (this.ws === socket) {
+          this.wsAuthenticated = false;
+          this.connectionState.state = 'ERROR';
+          this.connectionState.isConnected = false;
+          this.connectionState.lastError = message;
+          this.emit('state', this.connectionState);
+        }
+        try {
+          socket.close();
+        } catch {
+          // socket já fechado
+        }
+        reject(new Error(message));
+      };
+
+      const completeAuth = () => {
+        if (settled || this.ws !== socket) return;
+        settled = true;
+        clearAuthTimer();
+        this.wsAuthenticated = true;
+        this.reconnectAttempts = 0;
+
+        // eslint-disable-next-line no-console
+        console.log('MT5 WebSocket conectado e autenticado');
+        this.connectionState.state = 'CONNECTING';
+        this.connectionState.isConnected = true;
+        this.emit('state', this.connectionState);
+
+        // Só enviar LOGIN depois do AUTH_OK
+        if (config) {
+          this.sendLogin(config);
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn('Nenhuma configuração fornecida para login');
+        }
+        resolve(true);
+      };
+
+      socket.onopen = () => {
+        // Primeira mensagem obrigatória: AUTH com token efêmero. Envio direto
+        // para nunca passar pelo logger de send().
+        socket.send(JSON.stringify({ type: 'AUTH', data: { token: wsToken } }));
+        authTimer = setTimeout(
+          () => failBeforeAuth('Timeout na autenticação do MT5 Bridge'),
+          this.WS_AUTH_TIMEOUT_MS
+        );
+      };
+
+      socket.onmessage = (event) => {
+        if (!settled) {
+          try {
+            const message = JSON.parse(event.data as string) as { type?: string };
+            if (message.type === 'AUTH_OK') {
+              completeAuth();
+              return;
+            }
+          } catch {
+            failBeforeAuth('Resposta inválida durante autenticação do MT5 Bridge');
+            return;
+          }
+          failBeforeAuth('MT5 Bridge respondeu antes de confirmar autenticação');
+          return;
+        }
+
+        this.handleMessage(event.data);
+      };
+
+      socket.onerror = () => {
+        if (!settled) {
+          failBeforeAuth('WebSocket connection error');
+        }
+      };
+
+      socket.onclose = () => {
+        clearAuthTimer();
+        const wasAuthenticated = this.ws === socket && this.wsAuthenticated;
+        if (!settled) {
+          settled = true;
+          reject(new Error('Conexão fechada antes da autenticação com o MT5 Bridge'));
+        }
+
+        // Eventos atrasados de socket antigo não podem alterar a tentativa atual.
+        if (this.ws !== socket) return;
+
+        this.ws = null;
+        this.wsAuthenticated = false;
+        this.connectionState.isConnected = false;
+
+        // Falha de autenticação permanece ERROR e não entra em retry automático.
+        if (!wasAuthenticated) {
+          if (this.connectionState.state !== 'ERROR') {
+            this.connectionState.state = 'ERROR';
+            this.connectionState.lastError = 'Conexão fechada antes da autenticação com o MT5 Bridge';
+            this.emit('state', this.connectionState);
+          }
+          return;
+        }
+
+        const wasManualDisconnect = this.reconnectAttempts > this.maxReconnectAttempts;
+        this.connectionState.state = 'DISCONNECTED';
+        this.emit('state', this.connectionState);
+
+        if (!wasManualDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          const reconnectGeneration = this.connectionGeneration;
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (reconnectGeneration !== this.connectionGeneration) return;
+            this.connect(this.lastConfig ?? undefined).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn('Reconexão MT5 falhou:', err instanceof Error ? err.message : err);
+            });
+          }, this.reconnectDelay);
+        }
+      };
     });
   }
 
@@ -192,14 +358,30 @@ class MT5Service {
    * Desconectar do servidor Python
    */
   disconnect(): void {
-    // Resetar tentativas de reconexão para evitar reconexão automática
+    // Invalida fetch/handshake pendente e qualquer reconexão já agendada.
+    this.connectionGeneration++;
     this.reconnectAttempts = this.maxReconnectAttempts + 1;
-    
+    this.wsAuthenticated = false;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Permite uma nova conexão manual; a tentativa antiga continuará vinculada
+    // à geração anterior e não poderá criar/autenticar um novo socket.
+    this.connectPromise = null;
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-    
+
+    this.connectionState.state = 'DISCONNECTED';
+    this.connectionState.isConnected = false;
+    this.connectionState.lastError = undefined;
+    this.emit('state', this.connectionState);
+
     // Limpar caches ao desconectar
     this.ordersCache.clear();
     this.tradesCache.clear();

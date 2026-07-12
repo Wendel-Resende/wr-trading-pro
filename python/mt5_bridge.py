@@ -14,6 +14,8 @@ from websockets.legacy.server import serve
 
 # Configuração de rede segura (loopback + CORS allowlist)
 from network_config import NETWORK_HOST, CORS_OPTIONS
+# Token efêmero de autenticação do WebSocket (Fase 0, Item 10)
+import ws_token as ws_token_mod
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -1795,7 +1797,14 @@ class MT5Bridge:
 async def main():
     """Função principal do servidor"""
     bridge = MT5Bridge()
-    
+
+    if ws_token_mod.get_ws_token_secret() is None:
+        logger.warning(
+            "WR_WS_TOKEN_SECRET não configurado (mínimo 32 caracteres) — "
+            "todas as conexões WebSocket serão rejeitadas (fail-closed). "
+            "Ver docs/WS_AUTH.md."
+        )
+
     # Iniciar tarefa de simulação de dados de mercado
     asyncio.create_task(bridge.simulate_market_data())
     
@@ -1838,6 +1847,66 @@ async def main():
                 return
 
 
+# Tempo máximo para o cliente enviar a mensagem AUTH após conectar
+AUTH_TIMEOUT_SECONDS = 5
+
+# Replay cache global: cada jti de token WS só pode ser consumido uma vez
+_ws_replay_cache = ws_token_mod.ReplayCache()
+
+
+async def authenticate_client(websocket: Any) -> bool:
+    """Exige AUTH com token efêmero válido antes de registrar o cliente.
+
+    Fail-closed: secret ausente, timeout, token inválido/expirado ou replay
+    fecham a conexão com 1008 e razão genérica. O token nunca é logado.
+    """
+    secret = ws_token_mod.get_ws_token_secret()
+    if not secret:
+        logger.warning(
+            "Conexão WebSocket rejeitada — WR_WS_TOKEN_SECRET ausente ou curto demais "
+            "(mínimo 32 caracteres). Configure o mesmo secret no Next e no bridge."
+        )
+        await websocket.close(code=1008, reason='Authentication unavailable')
+        return False
+
+    try:
+        raw = await asyncio.wait_for(websocket.recv(), timeout=AUTH_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Conexão WebSocket rejeitada — AUTH não recebido a tempo")
+        await websocket.close(code=1008, reason='Authentication required')
+        return False
+    except websockets.exceptions.ConnectionClosed:
+        return False
+
+    token = None
+    try:
+        message = json.loads(raw)
+        if isinstance(message, dict) and message.get('type') == 'AUTH':
+            data = message.get('data')
+            if isinstance(data, dict):
+                token = data.get('token')
+    except (ValueError, TypeError):
+        token = None
+
+    payload = ws_token_mod.verify_ws_token(token, secret)
+    if payload is None:
+        logger.warning("Conexão WebSocket rejeitada — token de autenticação inválido")
+        await websocket.close(code=1008, reason='Authentication failed')
+        return False
+
+    if not _ws_replay_cache.consume(payload['jti'], payload['exp']):
+        logger.warning("Conexão WebSocket rejeitada — token de autenticação reutilizado")
+        await websocket.close(code=1008, reason='Authentication failed')
+        return False
+
+    await websocket.send(json.dumps({
+        'type': 'AUTH_OK',
+        'data': {'sub': payload['sub']},
+        'timestamp': datetime.now().isoformat(),
+    }))
+    return True
+
+
 async def handle_client(bridge: MT5Bridge, websocket: Any):
     """Handler para conexões de clientes"""
     # Validar Origin para mitigar Cross-Site WebSocket Hijacking.
@@ -1851,6 +1920,20 @@ async def handle_client(bridge: MT5Bridge, websocket: Any):
     if origin is None:
         logger.warning("Conexão WebSocket com Origin ausente — rejeitada por segurança")
         await websocket.close(code=1008, reason='Origin required')
+        return
+
+    # Autenticação obrigatória ANTES de registrar: clientes não autenticados
+    # nunca entram em bridge.clients (não recebem broadcasts nem enviam comandos)
+    try:
+        if not await authenticate_client(websocket):
+            return
+    except Exception:
+        # Razão genérica; nunca logar o conteúdo da mensagem AUTH
+        logger.warning("Conexão WebSocket rejeitada — falha na autenticação")
+        try:
+            await websocket.close(code=1008, reason='Authentication failed')
+        except Exception:
+            pass
         return
 
     await bridge.register_client(websocket)

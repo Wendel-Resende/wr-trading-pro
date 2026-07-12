@@ -195,7 +195,7 @@ export interface MT5OrderResult {
 }
 
 export interface MT5WebSocketMessage {
-  type: 'STATE' | 'TICK' | 'POSITION' | 'ORDER' | 'TRADE' | 'ACCOUNT' | 'ORDER_RESULT' | 'ORDERBOOK' | 'CHART_DATA' | 'ERROR' | 'SYMBOLS' | 'SYMBOL_INFO' | 'EQUITIES';
+  type: 'AUTH_OK' | 'STATE' | 'TICK' | 'POSITION' | 'ORDER' | 'TRADE' | 'ACCOUNT' | 'ORDER_RESULT' | 'ORDERBOOK' | 'CHART_DATA' | 'ERROR' | 'SYMBOLS' | 'SYMBOL_INFO' | 'EQUITIES';
   data: MT5Tick | MT5Position | MT5Order | MT5Trade | MT5AccountInfo | MT5OrderResult | MT5BookInfo | MT5ConnectionState | MT5ChartData | string;
   timestamp: Date;
   symbol?: string;
