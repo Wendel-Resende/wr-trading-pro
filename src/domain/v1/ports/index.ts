@@ -1,7 +1,9 @@
 export type * from './cvm-fact-repository';
 export type * from './cvm-filing-repository';
 export type * from './cvm-ingestion-unit-of-work';
+export type * from './dataset-snapshot-repository';
 export type * from './execution-broker';
+export type * from './feature-value-repository';
 export type * from './idempotency-registry';
 export type * from './historical-bars-provider';
 export type * from './ingestion-ledger';

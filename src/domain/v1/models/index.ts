@@ -1,6 +1,8 @@
 export type * from './cvm-fact';
 export type * from './cvm-filing';
 export type * from './cvm-point-in-time-view';
+export type * from './dataset-snapshot';
+export type * from './feature-value';
 export type * from './ingestion';
 export type * from './instrument';
 export type * from './instrument-version';
