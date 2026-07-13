@@ -8,6 +8,8 @@ export type * from './ingestion-ledger';
 export type * from './instrument-catalog';
 export type * from './instrument-repository';
 export type * from './issuer-repository';
+export type * from './market-bar-ingestion-unit-of-work';
+export type * from './market-bar-repository';
 export type * from './market-data-provider';
 export type * from './portfolio-provider';
 export type * from './reference-data-ingestion-unit-of-work';

@@ -340,6 +340,7 @@ model IngestionRun {
   cvmFilings                CvmFiling[]
   cvmFacts                  CvmFact[]
   shareCapitalFacts         ShareCapitalFact[]
+  versionedMarketBars       VersionedMarketBar[]
 
   @@index([sourceKey, startedAt])
   @@index([status])
@@ -389,6 +390,8 @@ model InstrumentVersion {
   issuer       Issuer?       @relation(fields: [issuerId], references: [id])
   createdByRun IngestionRun  @relation("InstrumentVersionCreatedByRun", fields: [createdByRunId], references: [id])
   closedByRun  IngestionRun? @relation("InstrumentVersionClosedByRun", fields: [closedByRunId], references: [id])
+
+  versionedMarketBars VersionedMarketBar[]
 
   @@unique([symbol, exchange, validFrom])
   @@index([symbol, exchange, validTo])
@@ -452,7 +455,7 @@ model CvmFact {
   id             String   @id @default(cuid())
   filingId       String
   issuerId       String
-  statementType  String // BPA, BPP, DRE, DFC, DVA, DMPL
+  statementType  String // BPA, BPP, DRE, DFC_MD, DFC_MI, DVA, DMPL
   scope          String // CON, IND
   accountCode    String
   accountLabel   String
@@ -498,4 +501,59 @@ model ShareCapitalFact {
   @@index([issuerId, shareClass, quantityType, periodEnd])
   @@index([filingId])
   @@index([createdByRunId])
+}
+
+// ---------------------------------------------------------------------------
+// Fase 2 / Item 3 — Fundação de MarketBar versionada e point-in-time
+// (VersionedMarketBar). Modelo ADITIVO: nenhum modelo legado (MarketData,
+// HistoricalCandle) foi alterado. Apenas relações aditivas foram adicionadas
+// a IngestionRun e InstrumentVersion (sem colunas novas nessas tabelas).
+// Append-only: nenhuma linha é jamais UPDATE/DELETE destrutivo. Invariantes
+// de idempotência/cadeia de revisão/point-in-time são garantidas na
+// PrismaMarketBarIngestionUnitOfWork (não por triggers SQL). Ver
+// docs/architecture/phase-2-item-3-market-bar.md
+// ---------------------------------------------------------------------------
+
+// Barra de mercado (OHLCV) versionada por fonte/revisão, exata (sem float) e
+// point-in-time. Valor real de preço = rawValue * 10^priceScalePow; valor
+// real de volume = volumeRaw * 10^volumeScalePow. sourceKey é derivado da
+// IngestionRun corrente (nunca enviado na submission). Cadeia de revisão:
+// root tem revisionNumber=1 e supersedesBarId=null; cada revisão aponta
+// para o predecessor via supersedesBarId (único) e revisionNumber =
+// predecessor.revisionNumber + 1.
+model VersionedMarketBar {
+  id                  String   @id @default(cuid())
+  instrumentVersionId String
+  sourceKey           String
+  sourceRecordKey     String
+  timeframe           String
+  openedAt            DateTime
+  closedAt            DateTime
+  sourceAvailableAt   DateTime
+  openRaw             BigInt
+  highRaw             BigInt
+  lowRaw              BigInt
+  closeRaw            BigInt
+  priceScalePow       Int
+  volumeRaw           BigInt
+  volumeScalePow      Int
+  volumeSemantics     String // TICKS, CONTRACTS, SHARES, NOTIONAL
+  tradeCount          BigInt?
+  priceBasis          String // TRADE, MID, BID, ASK
+  quality             String // FINAL, PROVISIONAL, ESTIMATED, CORRECTED
+  rawSha256           String // 64 lowercase hex chars
+  revisionNumber      Int
+  supersedesBarId     String?  @unique
+  createdByRunId      String
+
+  instrumentVersion InstrumentVersion    @relation(fields: [instrumentVersionId], references: [id])
+  createdByRun      IngestionRun         @relation(fields: [createdByRunId], references: [id])
+  supersedesBar     VersionedMarketBar?  @relation("MarketBarRevisionChain", fields: [supersedesBarId], references: [id])
+  supersededByBars  VersionedMarketBar[] @relation("MarketBarRevisionChain")
+
+  @@unique([instrumentVersionId, timeframe, sourceKey, openedAt, revisionNumber])
+  @@unique([sourceKey, sourceRecordKey])
+  @@index([instrumentVersionId, timeframe, sourceKey, openedAt])
+  @@index([createdByRunId])
+  @@index([sourceAvailableAt])
 }

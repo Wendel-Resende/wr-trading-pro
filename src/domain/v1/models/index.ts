@@ -9,3 +9,4 @@ export type * from './market-bar';
 export type * from './market-data';
 export type * from './portfolio';
 export type * from './share-capital-fact';
+export type * from './versioned-market-bar';

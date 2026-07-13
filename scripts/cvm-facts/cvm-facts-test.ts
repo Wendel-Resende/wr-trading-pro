@@ -605,7 +605,32 @@ async function factDurationAndValueTests(prisma: PrismaClient): Promise<void> {
     'valueRaw exceeding signed 64-bit max',
   );
 
-  // Valid batch: filing + INSTANT and DURATION facts at the signed 64-bit boundaries.
+  const invalidScale = await uow.begin(SOURCE, '2026-08-02T01:20:00.000Z');
+  await expectRejection(
+    uow.commit(invalidScale, '2026-08-02T01:21:00.000Z', '{"message":"scale outside contract"}', {
+      filings: [filing],
+      facts: [{
+        filingCvmProtocol: filing.cvmProtocol,
+        statementType: 'BPA',
+        scope: 'CON',
+        accountCode: '1',
+        accountLabel: 'Ativo Total',
+        periodStart: '2025-12-31',
+        periodEnd: '2025-12-31',
+        durationType: 'INSTANT',
+        valueRaw: BigInt(1),
+        scalePow: -19,
+        originalScale: 'UNIT' as const,
+        currency: 'BRL',
+        quality: 'AUDITED' as const,
+      }],
+      shareCapitalFacts: [],
+    }),
+    ZodError,
+    'scalePow outside documented technical contract',
+  );
+
+  // Valid batch: filing + INSTANT and DURATION facts at the signed 64-bit and scale boundaries.
   const validRun = await uow.begin(SOURCE, '2026-08-02T02:00:00.000Z');
   const t = '2026-08-02T02:01:00.000Z';
   await uow.commit(validRun, t, '{"message":"valid facts"}', {
@@ -621,7 +646,7 @@ async function factDurationAndValueTests(prisma: PrismaClient): Promise<void> {
         periodEnd: '2025-12-31',
         durationType: 'INSTANT',
         valueRaw: BigInt('9223372036854775807'), // exact max
-        scalePow: -2,
+        scalePow: -18,
         originalScale: 'THOUSAND' as const,
         currency: 'BRL',
         quality: 'AUDITED' as const,
@@ -636,7 +661,7 @@ async function factDurationAndValueTests(prisma: PrismaClient): Promise<void> {
         periodEnd: '2025-12-31',
         durationType: 'DURATION',
         valueRaw: BigInt('-9223372036854775808'), // exact min
-        scalePow: 0,
+        scalePow: 18,
         originalScale: 'UNIT' as const,
         currency: 'BRL',
         quality: 'AUDITED' as const,
@@ -650,8 +675,10 @@ async function factDurationAndValueTests(prisma: PrismaClient): Promise<void> {
   assert.equal(factsResult.length, 2);
   const instant = factsResult.find((f) => f.durationType === 'INSTANT');
   assert.equal(instant?.valueRaw, BigInt('9223372036854775807'));
+  assert.equal(instant?.scalePow, -18);
   const duration = factsResult.find((f) => f.durationType === 'DURATION');
   assert.equal(duration?.valueRaw, BigInt('-9223372036854775808'));
+  assert.equal(duration?.scalePow, 18);
 
   // Exact duplicate fact key within the same batch fails closed.
   const dupRun = await uow.begin(SOURCE, '2026-08-02T03:00:00.000Z');
@@ -679,6 +706,32 @@ async function factDurationAndValueTests(prisma: PrismaClient): Promise<void> {
     }),
     DuplicateFactError,
     'exact duplicate fact key (already persisted)',
+  );
+
+  const exactDuplicateInBatch = {
+    filingCvmProtocol: filing.cvmProtocol,
+    statementType: 'BPP' as const,
+    scope: 'CON' as const,
+    accountCode: '2.99',
+    accountLabel: 'Duplicata exata no lote',
+    periodStart: '2025-12-31',
+    periodEnd: '2025-12-31',
+    durationType: 'INSTANT' as const,
+    valueRaw: BigInt(7),
+    scalePow: 0,
+    originalScale: 'UNIT' as const,
+    currency: 'BRL',
+    quality: 'AUDITED' as const,
+  };
+  const exactBatchRun = await uow.begin(SOURCE, '2026-08-02T03:10:00.000Z');
+  await expectRejection(
+    uow.commit(exactBatchRun, '2026-08-02T03:11:00.000Z', '{"message":"exact in-batch duplicate"}', {
+      filings: [],
+      facts: [exactDuplicateInBatch, exactDuplicateInBatch],
+      shareCapitalFacts: [],
+    }),
+    DuplicateFactError,
+    'exact duplicate fact repeated inside the same batch',
   );
 
   // Unresolved filingCvmProtocol reference fails closed.
@@ -1019,7 +1072,24 @@ async function deepInBatchRestatementChainTests(prisma: PrismaClient): Promise<v
   await uow.commit(run, t, '{"message":"deep reversed chain"}', { filings: [v3, v2, v1], facts: [], shareCapitalFacts: [] });
   const row = await filings.getFilingByCvmProtocol(v3.cvmProtocol, { decisionTime: t, knowledgeTime: t });
   assert.equal(row?.versionNumber, 3);
-  console.log('deep in-batch chain: OK (ordenação topológica independente dos protocolos e input)');
+
+  const cycleAProtocol = 'PROTO-LAMBDA-CYCLE-A';
+  const cycleBProtocol = 'PROTO-LAMBDA-CYCLE-B';
+  const cycleRun = await uow.begin(SOURCE, '2026-08-09T02:00:00.000Z');
+  await expectRejection(
+    uow.commit(cycleRun, '2026-08-09T02:01:00.000Z', '{"message":"cycle"}', {
+      filings: [
+        { ...base, cvmProtocol: cycleAProtocol, filedAt: '2026-06-01T00:00:00.000Z', publishedAt: '2026-06-02T00:00:00.000Z', isRestatement: true, supersedesCvmProtocol: cycleBProtocol, sourceUrl: 'https://cvm.example/lambda-cycle-a', rawSha256: '1'.repeat(64) },
+        { ...base, cvmProtocol: cycleBProtocol, filedAt: '2026-06-03T00:00:00.000Z', publishedAt: '2026-06-04T00:00:00.000Z', isRestatement: true, supersedesCvmProtocol: cycleAProtocol, sourceUrl: 'https://cvm.example/lambda-cycle-b', rawSha256: '2'.repeat(64) },
+      ],
+      facts: [],
+      shareCapitalFacts: [],
+    }),
+    FilingChainViolationError,
+    'cycle between filings in the same batch',
+  );
+
+  console.log('deep in-batch chain: OK (ordenação topológica, cadeia profunda e ciclo fail-closed)');
 }
 
 async function main(): Promise<void> {

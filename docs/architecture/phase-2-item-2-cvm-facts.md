@@ -73,7 +73,7 @@ Campos:
 - `accountCode`, `accountLabel`;
 - `periodStart` não nullable e `periodEnd`;
 - `durationType`: `INSTANT | DURATION`;
-- `valueRaw: BigInt`, `scalePow: Int`, `originalScale: UNIT | THOUSAND | MILLION`, `currency`;
+- `valueRaw: BigInt`, `scalePow: Int` no intervalo técnico `[-18,18]`, `originalScale: UNIT | THOUSAND | MILLION`, `currency`;
 - `quality: AUDITED | REVIEWED | UNAUDITED | RESTATED`.
 
 Valor real = `valueRaw * 10^scalePow`. `originalScale` preserva a representação declarada pela fonte; não se presume que `scalePow` seja zero.
@@ -82,7 +82,7 @@ Para `INSTANT`, `periodStart === periodEnd`; nenhum `NULL` é usado em chave ún
 
 Valores aceitos somente no intervalo SQLite signed 64-bit:
 `[-9223372036854775808, 9223372036854775807]`.
-Não aplicar limite de plausibilidade arbitrário neste item.
+Não aplicar limite de plausibilidade econômica arbitrário neste item. O intervalo `scalePow [-18,18]` é um contrato de segurança computacional para impedir expansão decimal patológica em consumidores futuros; entradas fora dele falham sem truncamento/coerção e exigem revisão explícita do formato.
 
 Unicidade dentro do filing:
 `filingId + statementType + scope + accountCode + periodStart + periodEnd`.
