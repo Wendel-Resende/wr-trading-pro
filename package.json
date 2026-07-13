@@ -32,7 +32,8 @@
     "test:cvm-facts": "node scripts/cvm-facts/run-cvm-facts-tests.cjs",
     "test:market-bar": "node scripts/market-bar/run-market-bar-tests.cjs",
     "test:read-models-v1": "node scripts/read-models-v1/run-read-models-v1-tests.cjs",
-    "test:dataset-feature": "node scripts/dataset-feature/run-dataset-feature-tests.cjs"
+    "test:dataset-feature": "node scripts/dataset-feature/run-dataset-feature-tests.cjs",
+    "test:reconciliation": "node scripts/reconciliation/run-reconciliation-tests.cjs"
   },
   "build": {
     "appId": "com.wrtrade.pro",

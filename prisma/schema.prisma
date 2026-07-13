@@ -624,3 +624,82 @@ model FeatureValue {
   @@index([subjectId, featureType, knowledgeTime])
   @@index([createdByRunId])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 2 / Item 6 — Reconciliação e paridade com legado (somente leitura).
+// Modelos ADITIVOS: nenhum modelo legado ou de itens anteriores foi
+// alterado. Estas três tabelas existem para eventual persistência de
+// auditoria de planos/relatórios de reconciliação já computados; as rotas
+// GET /api/v1/reconciliation/* deste item computam a comparação sob
+// demanda (leitura pura de VersionedMarketBar/CvmFact/ShareCapitalFact
+// contra HistoricalCandle/MarketData/StockMonitoring) e não escrevem
+// nestas tabelas — nenhum endpoint de escrita é exposto neste item. Ver
+// docs/architecture/phase-2-item-6-reconciliation.md
+// ---------------------------------------------------------------------------
+
+// Registro de um plano de reconciliação (parâmetros de uma consulta
+// GET /api/v1/reconciliation/plan já resolvida). Reservado para uso
+// futuro de auditoria; sem escrita neste item.
+model ReconciliationPlan {
+  id             String   @id @default(cuid())
+  planId         String   @unique
+  domain         String?
+  subjectId      String?
+  decisionTime   DateTime
+  knowledgeTime  DateTime
+  createdByRunId String?
+  createdAt      DateTime @default(now())
+
+  rows ReconciliationRow[]
+
+  @@index([decisionTime, knowledgeTime])
+  @@index([createdByRunId])
+}
+
+// Registro de um relatório de reconciliação agregado (parâmetros de uma
+// consulta GET /api/v1/reconciliation/report já resolvida). Reservado
+// para uso futuro de auditoria; sem escrita neste item.
+model ReconciliationReport {
+  id             String   @id @default(cuid())
+  reportId       String   @unique
+  domain         String?
+  fromTime       DateTime
+  toTime         DateTime
+  overall        String // PARIDADE, PARIDADE_PARCIAL, SEM_PARIDADE
+  computedAt     DateTime
+  decisionTime   DateTime
+  knowledgeTime  DateTime
+  createdByRunId String?
+  createdAt      DateTime @default(now())
+
+  @@index([decisionTime, knowledgeTime])
+  @@index([createdByRunId])
+}
+
+// Linha de comparação por domínio (cvm-facts, market-bars,
+// stock-monitoring) de um ReconciliationPlan. Reservado para uso futuro
+// de auditoria; sem escrita neste item.
+model ReconciliationRow {
+  id              String    @id @default(cuid())
+  planId          String
+  domain          String
+  legacySource    String
+  newSource       String
+  legacyCount     BigInt
+  newCount        BigInt
+  sampleLegacyIds String // JSON array de strings
+  sampleNewIds    String // JSON array de strings
+  matchedSamples  Int
+  mismatchSamples Int
+  decidedAt       DateTime
+  decisionTime    DateTime
+  knowledgeTime   DateTime
+  createdByRunId  String?
+  createdAt       DateTime  @default(now())
+
+  plan ReconciliationPlan @relation(fields: [planId], references: [id])
+
+  @@unique([planId, domain])
+  @@index([domain, decisionTime, knowledgeTime])
+  @@index([createdByRunId])
+}
