@@ -61,8 +61,8 @@ export function decimalIntegerString(minValue: number, maxValue: number) {
     .refine((value) => value >= minValue && value <= maxValue, `deve estar entre ${minValue} e ${maxValue}`);
 }
 
-export function jsonSuccess(data: unknown, meta: Record<string, unknown> = {}): NextResponse {
-  return NextResponse.json({ success: true, data, meta }, { status: 200 });
+export function jsonSuccess(data: unknown, meta: Record<string, unknown> = {}, status = 200): NextResponse {
+  return NextResponse.json({ success: true, data, meta }, { status });
 }
 
 export function jsonError(error: unknown): NextResponse {

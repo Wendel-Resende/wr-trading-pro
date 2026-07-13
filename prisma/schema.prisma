@@ -703,3 +703,32 @@ model ReconciliationRow {
   @@index([domain, decisionTime, knowledgeTime])
   @@index([createdByRunId])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 3 / Item 1 — runtime assíncrono e persistente de AgentRun. Modelo
+// ADITIVO: nenhum modelo legado ou de itens anteriores foi alterado. O
+// processamento deste item é simulado/determinístico (sem LLM real), sem
+// ponte para ExecutionBroker/ordens reais. Ver
+// docs/architecture/phase-3-item-1-agent-run.md
+// ---------------------------------------------------------------------------
+model AgentRun {
+  id            String    @id @default(cuid())
+  runId         String    @unique
+  requestedBy   String
+  kind          String // RESEARCH | PROPOSAL
+  status        String // QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED
+  dag           String // JSON: { nodes: string[]; edges: [string, string][] }
+  inputJson     String // JSON do payload de entrada validado por Zod
+  budgetJson    String // JSON: { maxSteps?, maxCost?, timeoutMs? }
+  outputJson    String? // JSON do contrato de saída; só em SUCCEEDED
+  errorJson     String? // JSON sanitizado; só em FAILED
+  decisionTime  DateTime
+  knowledgeTime DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  finishedAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([requestedBy, createdAt])
+  @@index([decisionTime, knowledgeTime])
+}

@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "agent-run-test.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/application/**/*.ts",
+    "../../src/domain/v1/**/*.ts",
+    "../../src/app/api/v1/_shared/http.ts"
+  ]
+}
