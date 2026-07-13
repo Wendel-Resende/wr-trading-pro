@@ -30,7 +30,8 @@
     "test:mt5-adapters": "node scripts/mt5/run-mt5-tests.cjs",
     "test:reference-data": "node scripts/reference-data/run-reference-data-tests.cjs",
     "test:cvm-facts": "node scripts/cvm-facts/run-cvm-facts-tests.cjs",
-    "test:market-bar": "node scripts/market-bar/run-market-bar-tests.cjs"
+    "test:market-bar": "node scripts/market-bar/run-market-bar-tests.cjs",
+    "test:read-models-v1": "node scripts/read-models-v1/run-read-models-v1-tests.cjs"
   },
   "build": {
     "appId": "com.wrtrade.pro",

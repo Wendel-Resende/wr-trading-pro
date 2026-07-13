@@ -1,4 +1,5 @@
 import type { CvmFact, CvmScope, CvmStatementType } from '../models/cvm-fact';
+import type { CvmDocumentType } from '../models/cvm-filing';
 import type { CvmPointInTimeView } from '../models/cvm-point-in-time-view';
 import type { IssuerId } from '../models/issuer';
 
@@ -11,6 +12,18 @@ export interface CvmFactQuery {
   readonly periodFrom?: string;
   /** Inclusive upper bound on periodEnd. */
   readonly periodTo?: string;
+  /**
+   * Additive (Fase 2 / Item 4): when provided together with
+   * `referenceDate`, narrows chain-effective filing selection to the
+   * exact (issuerId, documentType, referenceDate) chain, preventing
+   * facts from a different chain's effective filing from contaminating
+   * the response. Both must be provided together, or both omitted.
+   */
+  readonly documentType?: CvmDocumentType;
+  readonly referenceDate?: string;
+  /** Additive (Fase 2 / Item 4): deterministic pagination. Omitted = unpaginated (legacy behavior). */
+  readonly limit?: number;
+  readonly offset?: number;
 }
 
 /**

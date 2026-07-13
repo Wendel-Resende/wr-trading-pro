@@ -78,6 +78,7 @@ export const SourceUrlSchema = z
   }, 'sourceUrl deve usar uma URL HTTP ou HTTPS válida');
 
 const DocumentTypeSchema = z.enum(['DFP', 'ITR', 'FRE']);
+export const CvmDocumentTypeSchema = DocumentTypeSchema;
 
 export const SummarySchema = z
   .string()
@@ -147,10 +148,10 @@ export const CvmFilingSubmissionSchema = CvmFilingSubmissionBaseSchema.strict().
   }
 });
 
-const StatementTypeSchema = z.enum(['BPA', 'BPP', 'DRE', 'DFC_MD', 'DFC_MI', 'DVA', 'DMPL']);
-const ScopeSchema = z.enum(['CON', 'IND']);
+export const StatementTypeSchema = z.enum(['BPA', 'BPP', 'DRE', 'DFC_MD', 'DFC_MI', 'DVA', 'DMPL']);
+export const ScopeSchema = z.enum(['CON', 'IND']);
 const DurationTypeSchema = z.enum(['INSTANT', 'DURATION']);
-const AccountCodeSchema = z
+export const AccountCodeSchema = z
   .string()
   .min(1)
   .max(64)
@@ -202,13 +203,13 @@ export const CvmFactSubmissionSchema = z
     }
   });
 
-const ShareClassSchema = z
+export const ShareClassSchema = z
   .string()
   .min(1)
   .max(32)
   .transform(normalizeShareClass)
   .refine((value) => /^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(value), 'shareClass normalizada inválida');
-const QuantityTypeSchema = z.enum(['ISSUED', 'OUTSTANDING', 'TREASURY']);
+export const QuantityTypeSchema = z.enum(['ISSUED', 'OUTSTANDING', 'TREASURY']);
 const QuantitySchema = z.bigint().min(BigInt(0)).max(SQLITE_MAX_INT64);
 
 export const ShareCapitalFactSubmissionSchema = z
@@ -248,6 +249,9 @@ export const CvmPointInTimeViewSchema = z
 
 export const IssuerIdSchema = z.string().min(1).max(64);
 
+export const LimitSchema = z.number().int().min(1).max(1000);
+export const OffsetSchema = z.number().int().min(0).max(1_000_000);
+
 export const CvmFactQuerySchema = z
   .object({
     issuerId: IssuerIdSchema,
@@ -256,11 +260,19 @@ export const CvmFactQuerySchema = z
     accountCode: AccountCodeSchema.optional(),
     periodFrom: CivilDateSchema.optional(),
     periodTo: CivilDateSchema.optional(),
+    documentType: DocumentTypeSchema.optional(),
+    referenceDate: CivilDateSchema.optional(),
+    limit: LimitSchema.optional(),
+    offset: OffsetSchema.optional(),
   })
   .strict()
   .refine((value) => !value.periodFrom || !value.periodTo || value.periodFrom <= value.periodTo, {
     message: 'periodFrom não pode ser posterior a periodTo',
     path: ['periodTo'],
+  })
+  .refine((value) => (value.documentType === undefined) === (value.referenceDate === undefined), {
+    message: 'documentType e referenceDate devem ser fornecidos juntos, ou ambos omitidos',
+    path: ['referenceDate'],
   });
 
 export const ShareCapitalFactQuerySchema = z
@@ -270,11 +282,19 @@ export const ShareCapitalFactQuerySchema = z
     quantityType: QuantityTypeSchema.optional(),
     periodFrom: CivilDateSchema.optional(),
     periodTo: CivilDateSchema.optional(),
+    documentType: DocumentTypeSchema.optional(),
+    referenceDate: CivilDateSchema.optional(),
+    limit: LimitSchema.optional(),
+    offset: OffsetSchema.optional(),
   })
   .strict()
   .refine((value) => !value.periodFrom || !value.periodTo || value.periodFrom <= value.periodTo, {
     message: 'periodFrom não pode ser posterior a periodTo',
     path: ['periodTo'],
+  })
+  .refine((value) => (value.documentType === undefined) === (value.referenceDate === undefined), {
+    message: 'documentType e referenceDate devem ser fornecidos juntos, ou ambos omitidos',
+    path: ['referenceDate'],
   });
 
 export type NormalizedCvmFilingSubmission = z.infer<typeof CvmFilingSubmissionSchema>;

@@ -26,6 +26,10 @@ export class PrismaShareCapitalFactRepository implements ShareCapitalFactReposit
     const visibleFilings = await this.prisma.cvmFiling.findMany({
       where: {
         issuerId: normalizedQuery.issuerId,
+        // Additive (Fase 2 / Item 4): narrow to the exact chain when given.
+        ...(normalizedQuery.documentType !== undefined && normalizedQuery.referenceDate !== undefined
+          ? { documentType: normalizedQuery.documentType, referenceDate: normalizedQuery.referenceDate }
+          : {}),
         publishedAt: { lte: new Date(normalizedView.decisionTime) },
         createdByRun: { is: { status: 'SUCCEEDED', completedAt: { lte: new Date(normalizedView.knowledgeTime) } } },
       },
@@ -51,7 +55,9 @@ export class PrismaShareCapitalFactRepository implements ShareCapitalFactReposit
         periodEnd: { gte: periodFrom, lte: periodTo },
         createdByRun: { is: { status: 'SUCCEEDED', completedAt: { lte: new Date(normalizedView.knowledgeTime) } } },
       },
-      orderBy: [{ periodEnd: 'asc' }, { shareClass: 'asc' }],
+      orderBy: [{ periodEnd: 'asc' }, { shareClass: 'asc' }, { id: 'asc' }],
+      ...(normalizedQuery.offset !== undefined ? { skip: normalizedQuery.offset } : {}),
+      ...(normalizedQuery.limit !== undefined ? { take: normalizedQuery.limit } : {}),
     });
 
     return Object.freeze(rows.map(toShareCapitalFact));

@@ -28,6 +28,13 @@ export class PrismaCvmFactRepository implements CvmFactRepository {
     const visibleFilings = await this.prisma.cvmFiling.findMany({
       where: {
         issuerId: normalizedQuery.issuerId,
+        // Additive (Fase 2 / Item 4): when documentType+referenceDate are
+        // given, narrow chain-effective resolution to that exact chain so
+        // facts from a different chain's effective filing can never
+        // contaminate the response.
+        ...(normalizedQuery.documentType !== undefined && normalizedQuery.referenceDate !== undefined
+          ? { documentType: normalizedQuery.documentType, referenceDate: normalizedQuery.referenceDate }
+          : {}),
         publishedAt: { lte: new Date(normalizedView.decisionTime) },
         createdByRun: { is: { status: 'SUCCEEDED', completedAt: { lte: new Date(normalizedView.knowledgeTime) } } },
       },
@@ -54,7 +61,11 @@ export class PrismaCvmFactRepository implements CvmFactRepository {
         periodEnd: { gte: periodFrom, lte: periodTo },
         createdByRun: { is: { status: 'SUCCEEDED', completedAt: { lte: new Date(normalizedView.knowledgeTime) } } },
       },
-      orderBy: [{ periodEnd: 'asc' }, { accountCode: 'asc' }],
+      // Deterministic order is required for stable pagination (id is a
+      // stable tiebreaker beyond periodEnd/accountCode, which may repeat).
+      orderBy: [{ periodEnd: 'asc' }, { accountCode: 'asc' }, { id: 'asc' }],
+      ...(normalizedQuery.offset !== undefined ? { skip: normalizedQuery.offset } : {}),
+      ...(normalizedQuery.limit !== undefined ? { take: normalizedQuery.limit } : {}),
     });
 
     return Object.freeze(rows.map(toCvmFact));
