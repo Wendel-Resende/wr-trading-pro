@@ -1,3 +1,6 @@
+export type * from './cvm-fact-repository';
+export type * from './cvm-filing-repository';
+export type * from './cvm-ingestion-unit-of-work';
 export type * from './execution-broker';
 export type * from './idempotency-registry';
 export type * from './historical-bars-provider';
@@ -8,3 +11,4 @@ export type * from './issuer-repository';
 export type * from './market-data-provider';
 export type * from './portfolio-provider';
 export type * from './reference-data-ingestion-unit-of-work';
+export type * from './share-capital-fact-repository';

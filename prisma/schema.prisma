@@ -337,6 +337,9 @@ model IngestionRun {
   issuers                   Issuer[]
   createdInstrumentVersions InstrumentVersion[] @relation("InstrumentVersionCreatedByRun")
   closedInstrumentVersions  InstrumentVersion[] @relation("InstrumentVersionClosedByRun")
+  cvmFilings                CvmFiling[]
+  cvmFacts                  CvmFact[]
+  shareCapitalFacts         ShareCapitalFact[]
 
   @@index([sourceKey, startedAt])
   @@index([status])
@@ -354,6 +357,9 @@ model Issuer {
 
   createdByRun       IngestionRun        @relation(fields: [createdByRunId], references: [id])
   instrumentVersions InstrumentVersion[]
+  cvmFilings         CvmFiling[]
+  cvmFacts           CvmFact[]
+  shareCapitalFacts  ShareCapitalFact[]
 
   @@index([createdByRunId])
 }
@@ -389,4 +395,107 @@ model InstrumentVersion {
   @@index([issuerId])
   @@index([createdByRunId])
   @@index([closedByRunId])
+}
+
+// ---------------------------------------------------------------------------
+// Fase 2 / Item 2 — CVM Filings e Fatos Point-in-Time (CvmFiling + CvmFact +
+// ShareCapitalFact). Modelos ADITIVOS: nenhum modelo existente foi alterado.
+// Append-only: nenhuma linha é jamais UPDATE/DELETE destrutivo. Invariantes
+// de idempotência/cadeia de retificação/point-in-time são garantidos na
+// PrismaCvmIngestionUnitOfWork (não por triggers SQL). Ver
+// docs/architecture/phase-2-item-2-cvm-facts.md
+// ---------------------------------------------------------------------------
+
+// Documento regulatório CVM (DFP/ITR/FRE) de um Issuer já existente (o batch
+// CVM nunca cria Issuer). publishedAt é o eixo de disponibilidade de mercado;
+// o knowledgeTime da plataforma é sempre derivado via join com createdByRun
+// (completedAt), nunca persistido aqui. cvmProtocol é globalmente único.
+// versionNumber/isRestatement/supersedesFilingId formam a cadeia de
+// retificação; nenhuma linha anterior é jamais atualizada ou apagada.
+model CvmFiling {
+  id                  String    @id @default(cuid())
+  issuerId            String
+  documentType        String // DFP, ITR, FRE
+  cvmProtocol         String    @unique
+  referenceDate       String // YYYY-MM-DD
+  fiscalYear          Int
+  fiscalQuarter       Int?
+  filedAt             DateTime
+  publishedAt         DateTime
+  versionNumber       Int
+  isRestatement       Boolean
+  supersedesFilingId  String?   @unique
+  sourceUrl           String
+  rawSha256           String // 64 lowercase hex chars
+  createdByRunId      String
+
+  issuer            Issuer         @relation(fields: [issuerId], references: [id])
+  createdByRun      IngestionRun   @relation(fields: [createdByRunId], references: [id])
+  supersedesFiling  CvmFiling?     @relation("CvmFilingChain", fields: [supersedesFilingId], references: [id])
+  supersededByFilings CvmFiling[]  @relation("CvmFilingChain")
+
+  facts             CvmFact[]
+  shareCapitalFacts ShareCapitalFact[]
+
+  @@unique([issuerId, documentType, referenceDate, versionNumber])
+  @@index([createdByRunId])
+  @@index([publishedAt])
+}
+
+// Fato contábil exato extraído de um CvmFiling. valor real = valueRaw *
+// 10^scalePow. INSTANT exige periodStart === periodEnd; DURATION exige
+// periodStart <= periodEnd. Unicidade dentro do filing garantida em
+// runtime (não pode ser um @@unique físico por causa de NULL em SQLite
+// não seria o problema aqui — todos os campos são NOT NULL — o índice
+// único abaixo garante a unicidade normativa).
+model CvmFact {
+  id             String   @id @default(cuid())
+  filingId       String
+  issuerId       String
+  statementType  String // BPA, BPP, DRE, DFC, DVA, DMPL
+  scope          String // CON, IND
+  accountCode    String
+  accountLabel   String
+  periodStart    String // YYYY-MM-DD
+  periodEnd      String // YYYY-MM-DD
+  durationType   String // INSTANT, DURATION
+  valueRaw       BigInt
+  scalePow       Int
+  originalScale  String
+  currency       String
+  quality        String
+  createdByRunId String
+
+  filing       CvmFiling    @relation(fields: [filingId], references: [id])
+  issuer       Issuer       @relation(fields: [issuerId], references: [id])
+  createdByRun IngestionRun @relation(fields: [createdByRunId], references: [id])
+
+  @@unique([filingId, statementType, scope, accountCode, periodStart, periodEnd])
+  @@index([issuerId, statementType, scope, accountCode, periodEnd])
+  @@index([filingId])
+  @@index([createdByRunId])
+}
+
+// Composição de capital social extraída de um CvmFiling. periodStart ===
+// periodEnd sempre (conceito INSTANT). quantity é não-negativa, signed 64-bit.
+model ShareCapitalFact {
+  id             String   @id @default(cuid())
+  filingId       String
+  issuerId       String
+  shareClass     String
+  periodStart    String // YYYY-MM-DD
+  periodEnd      String // YYYY-MM-DD
+  quantity       BigInt
+  quantityType   String // ISSUED, OUTSTANDING, TREASURY
+  quality        String
+  createdByRunId String
+
+  filing       CvmFiling    @relation(fields: [filingId], references: [id])
+  issuer       Issuer       @relation(fields: [issuerId], references: [id])
+  createdByRun IngestionRun @relation(fields: [createdByRunId], references: [id])
+
+  @@unique([filingId, shareClass, periodEnd, quantityType])
+  @@index([issuerId, shareClass, quantityType, periodEnd])
+  @@index([filingId])
+  @@index([createdByRunId])
 }

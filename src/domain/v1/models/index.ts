@@ -1,3 +1,6 @@
+export type * from './cvm-fact';
+export type * from './cvm-filing';
+export type * from './cvm-point-in-time-view';
 export type * from './ingestion';
 export type * from './instrument';
 export type * from './instrument-version';
@@ -5,3 +8,4 @@ export type * from './issuer';
 export type * from './market-bar';
 export type * from './market-data';
 export type * from './portfolio';
+export type * from './share-capital-fact';
