@@ -198,6 +198,8 @@ Migração aditiva (não remover tabelas atuais):
 5. `DatasetSnapshot` + `FeatureValue` com `knowledgeTime`
 6. Cortar fundo legado somente após reconciliação e testes de paridade
 
+**Estado em 2026-07-13:** itens 1-6 concluídos e publicados como commits separados; paridade será decidida humana com base em APIs `/api/v1/reconciliation/*`, sem corte automático.
+
 ### Fase 3 — Runtime de agentes
 - `AgentRun` assíncrono persistente: `POST /runs → 202 + runId`
 - DAG explícito, schemas de entrada/saída, orçamento e cancelamento
