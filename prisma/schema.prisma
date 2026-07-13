@@ -2,7 +2,8 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -312,4 +313,80 @@ model HistoricalCandle {
 
   @@unique([symbol, timeframe, time])
   @@index([symbol, timeframe, time])
+}
+
+// ---------------------------------------------------------------------------
+// Fase 2 / Item 1 — Fundação de dados de referência (Issuer + Instrument +
+// IngestionRun). Modelos ADITIVOS: nenhum modelo existente foi alterado.
+// Invariantes de ciclo de vida/intervalo são garantidos no repositório
+// (unit of work), não por triggers SQL. Ver
+// docs/architecture/phase-2-item-1-reference-data.md
+// ---------------------------------------------------------------------------
+
+// Ledger de execuções de ingestão de dados de referência.
+// sourceKey é uma String imutável normalizada (sem relação com DataSource legado).
+// completedAt de uma run SUCCEEDED é o knowledgeTime das linhas criadas por ela.
+model IngestionRun {
+  id          String    @id @default(cuid())
+  sourceKey   String
+  status      String // RUNNING, SUCCEEDED, FAILED
+  startedAt   DateTime
+  completedAt DateTime?
+  summary     String? // JSON com resumo do lote
+
+  issuers                   Issuer[]
+  createdInstrumentVersions InstrumentVersion[] @relation("InstrumentVersionCreatedByRun")
+  closedInstrumentVersions  InstrumentVersion[] @relation("InstrumentVersionClosedByRun")
+
+  @@index([sourceKey, startedAt])
+  @@index([status])
+}
+
+// Identidade estável e imutável de emissor, chaveada por cvmCode normalizado.
+// Registro conflitante com identidade existente falha fechado (sem SCD-1 destrutivo).
+// cnpj é opcional (múltiplos NULL aceitos) e único quando presente — 14 dígitos.
+model Issuer {
+  id             String  @id @default(cuid())
+  cvmCode        String  @unique
+  cnpj           String? @unique
+  name           String
+  createdByRunId String
+
+  createdByRun       IngestionRun        @relation(fields: [createdByRunId], references: [id])
+  instrumentVersions InstrumentVersion[]
+
+  @@index([createdByRunId])
+}
+
+// Versão SCD-2 de instrumento com intervalo semiaberto [validFrom, validTo).
+// validTo NULL = intervalo aberto (no máximo um por (symbol, exchange)).
+// priceScalePow/quantityScalePow são EXPOENTES decimais: quantum = 10^scalePow
+// (scalePow pode ser negativo). validFromBasis: SOURCE_EFFECTIVE | OBSERVED_AT.
+model InstrumentVersion {
+  id               String    @id @default(cuid())
+  symbol           String
+  exchange         String
+  currency         String
+  displayName      String
+  assetClass       String
+  status           String // ACTIVE, SUSPENDED, DELISTED
+  priceScalePow    Int?
+  quantityScalePow Int?
+  lotSize          Int?
+  validFrom        DateTime
+  validTo          DateTime?
+  validFromBasis   String // SOURCE_EFFECTIVE, OBSERVED_AT
+  issuerId         String?
+  createdByRunId   String
+  closedByRunId    String?
+
+  issuer       Issuer?       @relation(fields: [issuerId], references: [id])
+  createdByRun IngestionRun  @relation("InstrumentVersionCreatedByRun", fields: [createdByRunId], references: [id])
+  closedByRun  IngestionRun? @relation("InstrumentVersionClosedByRun", fields: [closedByRunId], references: [id])
+
+  @@unique([symbol, exchange, validFrom])
+  @@index([symbol, exchange, validTo])
+  @@index([issuerId])
+  @@index([createdByRunId])
+  @@index([closedByRunId])
 }
