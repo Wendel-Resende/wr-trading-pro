@@ -206,6 +206,35 @@ Migração aditiva (não remover tabelas atuais):
 - Agentes produzem pesquisa/propostas; políticas determinísticas aprovam/rejeitam
 - Execução real exige aprovação humana + idempotency key
 
+**CHECKPOINT — Fase 3 COMPLETA (4/4 itens) em 2026-07-14**
+
+| Item | Título | Commit | Resumo da entrega |
+|------|--------|--------|-------------------|
+| 1 | `AgentRun` assíncrono persistente | `71292a3` | `POST /api/v1/agent-runs → 202 + runId`; modelo `AgentRun` + ledger; sem bloqueio síncrono |
+| 2 | DAG semântico + orçamento/cancelamento | `fe48f0c` | DAG explícito, schemas de entrada/saída, orçamento real e cancelamento real |
+| 3 | Motor RiskPolicy determinístico | `f721a8b` | `RiskDecision` (APPROVED/REJECTED) + ledger; regras: kill switch, allowlist, máx propostas/run, notional, concentração; HOLD não-acionável |
+| 4 | Aprovação humana + idempotency key | `c3d5782` | `HumanApprovalReceipt` + `OrderIntent` (intenção auditável CREATED/CANCELLED); idempotency `@unique` com replay sem duplicar; reutiliza `RiskPolicyRepository` |
+
+**Fluxo de trabalho (validado nesta fase):**
+1. Guardião escreve spec aditiva em `docs/architecture/phase-3-item-N-*.md` e faz push.
+2. Claude Code (Windows, Sonnet 5) implementa em worktree isolado, sem commit.
+3. Guardião revisa o diff e roda validação independente em WSL+Windows (prisma validate, tsc --noEmit, build Next.js, test:risk-policy, test:agent-run, test:reconciliation, smoke:auth, e o novo test:* do item).
+4. Guardião publica (commit + push) apenas após validação verde.
+
+**Validação acumulada (Guardião, fonte primária):**
+- `test:risk-policy` ✅ 14 itens · `test:agent-run` ✅ · `test:reconciliation` ✅ · `smoke:auth` ✅ 62 PASS, 0 FAIL
+- `test:order-intent` ✅ 14 itens (Item 4) · `prisma validate` ✅ · `tsc --noEmit` ✅ · `build` Next.js ✅
+
+**Correções do Guardião na revisão (fora do relatório do Claude):**
+- Item 3: import `_requested-by` quebrado (→ `../../agent-runs/_requested-by`) + `tsconfig.json` ausente do harness (criado). Sem elas, tsc e test:risk-policy falhavam.
+- Item 4: nenhuma correção necessária — entregue limpo.
+
+**Incidente Item 4:** o Claude Code (Sonnet 5) travou (`state: blocked`) por queda de API ("Connection closed mid-response") após escrever os arquivos, antes de rodar os testes. O Guardião assumiu: consertou o gitdir do worktree, copiou os arquivos para o `main` e concluiu a validação/teste independente.
+
+**Nota de legado (pré-existente, não do Item 4):** `prisma/migrations/` está no `.gitignore` do repositório. As migrations (incluindo as do Item 3 e Item 4) existem no disco local mas NÃO vão ao git. Em clone novo, os harness de teste dependem das migrations presentes no disco; o `test:reconciliation` exige as migrations locais `init_stock_monitoring` e `add_historical_candle`. Decisão pendente de humano: versionar ou não as migrations.
+
+**Próximo:** Fase 4 — MCP read-only.
+
 ### Fase 4 — MCP read-only
 - Servidor MCP local sobre serviços de aplicação
 - Tools: `cvm.get_facts`, `b3.get_instrument`, `market.get_bars`, `portfolio.snapshot`
