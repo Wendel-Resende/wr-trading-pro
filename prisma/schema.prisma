@@ -765,3 +765,46 @@ model RiskDecision {
   @@index([outcome, evaluatedAt])
   @@index([instrumentId, evaluatedAt])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 3 / Item 4 — aprovação humana + `idempotency key` (gate de
+// execução). ADITIVO: nenhum modelo legado ou de itens anteriores foi
+// alterado. `OrderIntent` é apenas intenção auditável, nunca ordem
+// executada — `ExecutionBroker` continua desabilitado. Ver
+// docs/architecture/phase-3-item-4-order-intent-approval.md
+// ---------------------------------------------------------------------------
+model HumanApprovalReceipt {
+  approvalId      String   @id @default(cuid())
+  decisionId      String
+  approvedBy      String
+  approvedAt      DateTime
+  policyVersion   String
+  decisionOutcome String // APPROVED
+  createdAt       DateTime @default(now())
+
+  @@index([decisionId])
+  @@index([approvedBy, createdAt])
+}
+
+model OrderIntent {
+  intentId       String    @id @default(cuid())
+  decisionId     String
+  approvalId     String
+  idempotencyKey String    @unique
+  requestedBy    String
+  approvedBy     String
+  instrumentId   String
+  direction      String // BUY | SELL
+  quantity       Int
+  status         String // CREATED | CANCELLED
+  policyVersion  String
+  decisionTime   DateTime
+  knowledgeTime  DateTime
+  createdAt      DateTime  @default(now())
+  cancelledAt    DateTime?
+
+  @@index([decisionId])
+  @@index([approvalId])
+  @@index([requestedBy, createdAt])
+  @@index([status, createdAt])
+}
