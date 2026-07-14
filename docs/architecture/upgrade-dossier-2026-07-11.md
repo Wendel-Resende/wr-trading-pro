@@ -268,6 +268,31 @@ Migração aditiva (não remover tabelas atuais):
 - Sinal em `t`, execução em `t+1`
 - TODO modelo ML real com fit/validation/test
 
+**CHECKPOINT — Fase 5 CONCLUÍDA em 2026-07-14**
+
+| Item | Título | Commit | Resumo da entrega |
+|------|--------|--------|-------------------|
+| F5 | Research/backtest/ML point-in-time | `a1c9f0c` | `ResearchRun`, `ModelVersion` (ML/RULE + evidências), `Signal` (point-in-time), `BacktestRun` (walk-forward, custos, embargo). Motor determinístico corrige CR-9/A18/A19/A20. Rotas `/api/v1/{research-runs,model-versions,signals,backtests}`. 4 novos `test:*` (SQLite temp) |
+
+**Características (corrigem achados do dossiê):**
+- **CR-9 (sem lookahead):** sinal em `t` → entrada `open[t+1]` (R-BT-1, assertiva `entryTime > signalTime`).
+- **A18:** Stop/TP intrabar (R-BT-2); Sharpe usa `sqrt(periodos_por_ano)` do timeframe, não `sqrt(252)` fixo (R-BT-4).
+- **A19:** custos reais — corretagem, emolumentos, spread (bps), slippage (bps), lote (R-BT-3).
+- **A20:** `ModelVersion.kind='ML'` exige `trainingEvidenceJson` real (R-RM).
+- **Embargo/purge:** `embargoDays` separa treino/teste (R-BT-5).
+- Point-in-time obrigatório: consome só read-models da Fase 2 (`MarketBar`, `CvmFact`, `FeatureValue`) com `knowledgeTime <= t`.
+- Sem execução (ExecutionBroker desabilitado); `backtesting.ts`/`mlModels.ts` legados preservados (não alterados).
+
+**Correção de teste (commit `a25c889`):** `test:read-models-v1` Test 16 varria TODAS as rotas `/api/v1` e exigia ausência de POST, quebrando desde a Fase 3 (`agent-runs/route.ts` tem POST legítimo). Restringido a `reference`/`fundamentals`/`market-bars` (GET-only). Não altera código de produção.
+
+**Validação acumulada (Guardião, fonte primária):**
+- Fase 5: `test:research-run` ✅ · `test:model-version` ✅ · `test:signal` ✅ · `test:backtest-run` (R-BT-1..7) ✅
+- `test:read-models-v1` ✅ (Test 16 e 17 verdes após correção)
+- Regressões: `test:risk-policy` ✅ · `test:agent-run` ✅ · `test:order-intent` ✅ · `test:reconciliation` ✅ · `test:dataset-feature` ✅ · `test:cvm-facts` ✅ · `test:market-bar` ✅ · `test:reference-data` ✅ · `test:mcp` ✅ · `smoke:auth` ✅ 62 PASS
+- `prisma validate` ✅ · `tsc --noEmit` ✅ · `build` Next.js ✅ · repositório 100% verde em clone limpo.
+
+**Próximo:** Fase 6 — Consolidação.
+
 ### Fase 6 — Consolidação
 - Migrar SQL de opções para repository governado
 - Remover implementações duplicadas
