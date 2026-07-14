@@ -347,7 +347,9 @@ function stopPythonServices() {
 }
 function startNextServer() {
     return new Promise((resolve, reject) => {
-        const appFolder = path_1.default.join(process.resourcesPath, 'app');
+        const appFolder = isDev || !process.resourcesPath
+            ? path_1.default.join(__dirname, '..', '..')
+            : path_1.default.join(process.resourcesPath, 'app');
         const nextDir = path_1.default.join(appFolder, '.next');
         const nextBin = path_1.default.join(appFolder, 'node_modules', 'next', 'dist', 'bin', 'next');
         const serverCwd = appFolder;
@@ -397,10 +399,10 @@ function startNextServer() {
 async function createWindow() {
     if (!isDev) {
         await startPythonServices();
-        console.log('[Electron] Starting Next.js production server...');
-        await startNextServer();
-        console.log('[Electron] Next.js server ready, launching window...');
     }
+    console.log('[Electron] Starting Next.js server...');
+    await startNextServer();
+    console.log('[Electron] Next.js server ready, launching window...');
     mainWindow = new electron_1.BrowserWindow({
         width: 1400,
         height: 900,
