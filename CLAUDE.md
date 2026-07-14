@@ -1,5 +1,14 @@
 # WR Trade Pro — CLAUDE.md
 
+## Segundo cérebro (vault Obsidian)
+
+O conhecimento do projeto vive no vault Obsidian `C:\Users\rwres\hermes-knowledge` (mantido pelo Guardião_Hermes e pelo usuário):
+
+- **No início de cada sessão de trabalho neste projeto**, ler `index.md` e `concepts/wr-trading-pro-professional-upgrade.md` do vault para contexto de estado/decisões — junto com `docs/CODEX_HANDOFF.md` deste repo.
+- **Ao tomar/registrar decisões relevantes** (arquitetura, segurança, roadmap), atualizar a página correspondente do vault e adicionar entrada no `log.md`, seguindo as convenções de `SCHEMA.md` (frontmatter, `updated`, wikilinks, index).
+- Divisão de papéis: o vault é a fonte de verdade de decisões e conhecimento; `docs/CODEX_HANDOFF.md` é o handoff operacional entre sessões; o histórico técnico fica no git.
+- Em conflito entre vault e código/git, o git vence para fatos técnicos — anotar a divergência no vault com data (política de update do `SCHEMA.md`).
+
 ## Stack
 
 - **Frontend:** Next.js 15.1.3 (App Router), React 19, TypeScript 5, Tailwind CSS 3.4
