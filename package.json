@@ -36,7 +36,9 @@
     "test:reconciliation": "node scripts/reconciliation/run-reconciliation-tests.cjs",
     "test:agent-run": "node scripts/agent-run/run-agent-run-tests.cjs",
     "test:risk-policy": "node scripts/risk-policy/run-risk-policy-tests.cjs",
-    "test:order-intent": "node scripts/order-intent/run-order-intent-tests.cjs"
+    "test:order-intent": "node scripts/order-intent/run-order-intent-tests.cjs",
+    "test:mcp": "node scripts/mcp/run-mcp-tests.cjs",
+    "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js"
   },
   "build": {
     "appId": "com.wrtrade.pro",
@@ -87,6 +89,7 @@
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^6.1.0",
     "@tanstack/react-query": "^5.62.7",
     "@trpc/client": "^11.0.0",
