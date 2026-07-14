@@ -299,6 +299,27 @@ Migração aditiva (não remover tabelas atuais):
 - Testes de contrato, replay de mercado, fixtures CVM
 - Trilha de auditoria como gate de release
 
+**CHECKPOINT — Fase 6 CONCLUÍDA em 2026-07-14**
+
+| Item | Título | Commit | Resumo da entrega |
+|------|--------|--------|-------------------|
+| F6 | Consolidação (repository, replay, auditoria) | `cf837d1` | `OptionPosition` + `SpreadOrderAudit` (ledger append-only) no Prisma governado; `option-math.ts` (funções puras extraídas de `optionsService.ts`, mesma API pública, zero remoção); replay determinístico point-in-time sobre `MarketBar` (Fase 2, CR-9); rotas `/api/v1/option-positions` (POST/GET, Zod `.strict()`); `test:option-position` SQLite temp |
+
+**Características:**
+- Repository governado (Prisma tipado, CREATE TABLE/INDEX aditivos) substituindo acesso manual — `OptionPosition` e `SpreadOrderAudit` no schema, sem alterar modelos legados (inclusive `SpreadOrder`).
+- Desacoplamento de cálculo: funções puras (`parseStrike`, `determineType`, `getDTE`, `anualizar`, `calcExerciseProb`, `mean`, `std`) extraídas para `option-math.ts` e re-exportadas com os mesmos nomes em `optionsService.ts` — **mesma API pública, comportamento preservado**.
+- Replay determinístico point-in-time (mesma entrada → mesma saída, sem lookahead CR-9).
+- Duplicações de I/O (`mt5Service`/`spreadService`/`spreadOrderService`) mapeadas e relatadas, não removidas (100% aditivo/funcional).
+- `docs/CODEX_HANDOFF.md` intocado; `tradingAgentsService`/`MLPredictionsTab`/`api/agents` intocados.
+
+**Validação acumulada (Guardião, fonte primária):**
+- `test:option-position` ✅ · `prisma validate` ✅ · `tsc --noEmit` ✅ · `build` Next.js ✅ (novas rotas `/api/v1/option-positions`)
+- `test:read-models-v1` ✅ (Test 16 e 17 verdes após commit da Fase 6)
+- Regressões: `test:risk-policy`/`agent-run`/`order-intent`/`reconciliation`/`dataset-feature`/`cvm-facts`/`market-bar`/`reference-data`/`mcp`/`research-run`/`model-version`/`signal`/`backtest-run`/`smoke:auth` ✅ 62 PASS
+- Repositório 100% verde em clone limpo.
+
+**Roadmap concluído:** Fases 3/4/5/6 ✅. Todas as 6 fases da arquitetura-alvo (seção 5) completas.
+
 ---
 
 ## 7. Gates mínimos de aceitação
