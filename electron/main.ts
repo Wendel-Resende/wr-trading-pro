@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, session, IpcMainInvokeEvent } from 
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import net from 'net';
 import { spawn, ChildProcess } from 'child_process';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -221,6 +222,16 @@ function startPythonService(cfg: ServiceConfig): Promise<void> {
       const text = data.toString();
       output += text;
       console.log(`[${cfg.name} stderr]`, text.trim());
+      // O logging do Python escreve no stderr por padrão — o "pronto" do
+      // mt5_bridge chega aqui, não no stdout.
+      if (cfg.waitFor && text.includes(cfg.waitFor)) {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        cleanup();
+        console.log(`[${cfg.name}] Ready!`);
+        resolve();
+      }
     });
 
     child.on('error', (err) => {
@@ -277,18 +288,49 @@ async function restartPythonService(cfg: ServiceConfig, maxRetries = 3): Promise
   }
 }
 
+/**
+ * Verifica se já há um listener na porta (serviço iniciado manualmente no
+ * fluxo dev de terminais). Conexão TCP simples — agnóstica de protocolo,
+ * funciona para o WebSocket do bridge e para as APIs Flask.
+ */
+function isPortInUse(port: number, timeoutMs = 1000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    const done = (inUse: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(inUse);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
 async function startPythonServices(): Promise<void> {
   console.log('[Electron] Starting Python backend services...');
 
   // Wait briefly to ensure ports from previous session are freed (TIME_WAIT on Windows)
   await new Promise((r) => setTimeout(r, 1500));
 
+  const portChecks = await Promise.all(
+    CRITICAL_SERVICES.map((cfg) => isPortInUse(cfg.port))
+  );
+  const toStart = CRITICAL_SERVICES.filter((cfg, i) => {
+    if (portChecks[i]) {
+      console.log(`[Electron] ${cfg.name} já está rodando na porta ${cfg.port} — pulando spawn`);
+      return false;
+    }
+    return true;
+  });
+
   const results = await Promise.allSettled(
-    CRITICAL_SERVICES.map((cfg) => startPythonService(cfg))
+    toStart.map((cfg) => startPythonService(cfg))
   );
 
   const failed = results
-    .map((r, i) => ({ cfg: CRITICAL_SERVICES[i], result: r }))
+    .map((r, i) => ({ cfg: toStart[i], result: r }))
     .filter(({ result }) => result.status === 'rejected');
 
   if (failed.length > 0) {
@@ -389,9 +431,11 @@ function startNextServer(): Promise<void> {
 }
 
 async function createWindow() {
-  if (!isDev) {
-    await startPythonServices();
-  }
+  // Sempre subir os serviços Python: pelo atalho da Área de Trabalho o app
+  // roda não-empacotado (isDev) e sem eles a conexão MT5 não funciona.
+  // Serviços cujas portas já estão em uso (fluxo dev com terminais manuais)
+  // são pulados em startPythonServices.
+  await startPythonServices();
   console.log('[Electron] Starting Next.js server...');
   await startNextServer();
   console.log('[Electron] Next.js server ready, launching window...');
