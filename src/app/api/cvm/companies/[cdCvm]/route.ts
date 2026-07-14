@@ -5,6 +5,12 @@ import {
   getShareCapital,
   CVM_LEGACY_PROVENANCE,
 } from '@/lib/server/cvm-legacy-db';
+import {
+  getDividendQuarters,
+  getDividendSummary,
+  getDividendQualityRanking,
+  getFinancialHealthLatest,
+} from '@/lib/server/cvm-exports';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,10 +32,25 @@ export async function GET(
       return NextResponse.json({ error: 'Empresa não encontrada.' }, { status: 404 });
     }
 
+    // Dividendos e scores são opcionais: a resposta base não pode falhar se
+    // os exports analíticos não estiverem presentes no snapshot local.
+    let dividends = null;
+    try {
+      dividends = {
+        quarters: getDividendQuarters(company.ticker),
+        summary: getDividendSummary(company.ticker),
+        quality: getDividendQualityRanking().find((q) => q.ticker === company.ticker) ?? null,
+        health: getFinancialHealthLatest().get(company.ticker) ?? null,
+      };
+    } catch (error) {
+      console.warn('[api/cvm/companies/:cdCvm] exports analíticos indisponíveis:', error);
+    }
+
     return NextResponse.json({
       company,
       quarters: getQuarters(cdCvm),
       shareCapital: getShareCapital(cdCvm),
+      dividends,
       provenance: CVM_LEGACY_PROVENANCE,
     });
   } catch (error) {

@@ -51,11 +51,70 @@ interface Quarter {
   dividaPl: number | null;
 }
 
+interface DividendQuarter {
+  ano: number;
+  trimestre: number;
+  dataRef: string | null;
+  dividendosPagos: number | null;
+  jcpPagos: number | null;
+  proventosSaidaCaixa: number | null;
+}
+
+interface DividendQuality {
+  ticker: string;
+  score: number | null;
+  classe: string | null;
+  scoreRecorrencia: number | null;
+  scoreCrescimento: number | null;
+  scorePayout: number | null;
+  scoreCoberturaCaixa: number | null;
+  scoreSaudeFinanceira: number | null;
+  scoreResiliencia: number | null;
+  scoreYieldPreco: number | null;
+  alertas: string | null;
+  saudeFinanceira?: number | null;
+  saudeClassificacao?: string | null;
+  monteCarlo?: string | null;
+}
+
+interface PortfolioPosition {
+  ticker: string;
+  nome: string | null;
+  macroSetor: string | null;
+  gateMonteCarlo: string | null;
+  scoreQualidade: number | null;
+  scoreFinal: number | null;
+  saudeFinanceira: number | null;
+  pesoSugeridoPct: number | null;
+  racional: string | null;
+}
+
+interface DividendsData {
+  ranking: DividendQuality[];
+  portfolio: PortfolioPosition[];
+}
+
 interface CompanyDetail {
   company: Company;
   quarters: Quarter[];
+  dividends: {
+    quarters: DividendQuarter[];
+    summary: { totalProventosSaidaCaixa: number | null } | null;
+    quality: DividendQuality | null;
+    health: { score: number | null; classificacao: string | null; periodo: string } | null;
+  } | null;
   provenance: { source: string; pointInTime: boolean; note: string };
 }
+
+const GATE_COLORS: Record<string, string> = {
+  "Núcleo robusto": "text-green-400 border-green-500/40 bg-green-500/10",
+  "Manter com teto": "text-cyan-400 border-cyan-500/40 bg-cyan-500/10",
+  "Observação controlada": "text-yellow-400 border-yellow-500/40 bg-yellow-500/10",
+  Reduzir: "text-red-400 border-red-500/40 bg-red-500/10",
+};
+
+const gateClass = (gate: string | null | undefined): string =>
+  GATE_COLORS[gate ?? ""] ?? "text-gray-400 border-gray-500/40 bg-gray-500/10";
 
 const fmtBRL = (v: number | null): string => {
   if (v === null) return "—";
@@ -69,10 +128,13 @@ const fmtBRL = (v: number | null): string => {
 const fmtPct = (v: number | null): string => (v === null ? "—" : `${v.toFixed(2)}%`);
 
 export default function CvmFundamentalsTab() {
+  const [view, setView] = useState<"empresas" | "dividendos">("empresas");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
+  const [dividends, setDividends] = useState<DividendsData | null>(null);
+  const [rankSearch, setRankSearch] = useState("");
   const [loadingList, setLoadingList] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
@@ -102,6 +164,18 @@ export default function CvmFundamentalsTab() {
       .finally(() => setLoadingDetail(false));
   }, [selected]);
 
+  // Ranking de dividendos: carregado na primeira visita à visão
+  useEffect(() => {
+    if (view !== "dividendos" || dividends) return;
+    fetch("/api/cvm/dividends")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => setDividends(data))
+      .catch(() => setError("Não foi possível carregar o ranking de dividendos."));
+  }, [view, dividends]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return companies;
@@ -112,6 +186,15 @@ export default function CvmFundamentalsTab() {
         (c.setor ?? "").toLowerCase().includes(q)
     );
   }, [companies, search]);
+
+  const filteredRanking = useMemo(() => {
+    if (!dividends) return [];
+    const q = rankSearch.trim().toLowerCase();
+    if (!q) return dividends.ranking;
+    return dividends.ranking.filter(
+      (r) => r.ticker.toLowerCase().includes(q) || (r.classe ?? "").toLowerCase().includes(q)
+    );
+  }, [dividends, rankSearch]);
 
   const quarters = detail?.quarters ?? [];
   const last = quarters.length > 0 ? quarters[quarters.length - 1] : null;
@@ -141,6 +224,147 @@ export default function CvmFundamentalsTab() {
         </p>
       </div>
 
+      {/* Sub-navegação */}
+      <div className="flex gap-2">
+        {(
+          [
+            { id: "empresas", label: "Empresas" },
+            { id: "dividendos", label: "Dividendos & Carteira" },
+          ] as const
+        ).map((v) => (
+          <button
+            key={v.id}
+            onClick={() => setView(v.id)}
+            className={`px-4 py-2 rounded-lg font-orbitron text-xs uppercase tracking-wider transition-colors border ${
+              view === v.id
+                ? "bg-cyber-pink/20 border-cyber-pink/60 text-white"
+                : "border-cyber-border text-gray-400 hover:text-white hover:bg-cyber-dark"
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {view === "dividendos" && (
+        <div className="space-y-6">
+          {!dividends && !error && (
+            <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-12 text-center">
+              <p className="text-gray-400 font-space">Carregando ranking de dividendos…</p>
+            </div>
+          )}
+
+          {dividends && (
+            <>
+              {/* Carteira 12 */}
+              <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-5">
+                <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider mb-1">
+                  Carteira 12 Dividendos/JCP
+                </h3>
+                <p className="text-xs text-gray-500 font-space mb-4">
+                  Seleção do lab com gates de score, saúde financeira e Monte Carlo — peso uniforme
+                  de 8,33% por ativo. Não é recomendação de investimento.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {dividends.portfolio.map((p) => (
+                    <div
+                      key={p.ticker}
+                      className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-orbitron font-bold text-white">{p.ticker}</span>
+                        <span
+                          className={`text-[0.65rem] font-space px-2 py-0.5 rounded-full border ${gateClass(p.gateMonteCarlo)}`}
+                        >
+                          {p.gateMonteCarlo ?? "—"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 font-space truncate">{p.nome ?? ""}</p>
+                      <div className="flex items-baseline justify-between mt-2">
+                        <span className="text-xs text-gray-500 font-space">{p.macroSetor ?? "—"}</span>
+                        <span className="text-lg font-bold text-cyber-cyan font-space">
+                          {p.scoreQualidade?.toFixed(1) ?? "—"}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Ranking completo */}
+              <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider">
+                    Ranking — Score de Qualidade de Dividendos ({filteredRanking.length})
+                  </h3>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={rankSearch}
+                      onChange={(e) => setRankSearch(e.target.value)}
+                      placeholder="Ticker ou classe..."
+                      className="bg-cyber-dark/50 border border-cyber-border rounded-lg pl-9 pr-3 py-2 text-sm text-white font-space focus:border-cyber-pink outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="overflow-x-auto overflow-y-auto max-h-[36rem]">
+                  <table className="w-full text-sm font-space">
+                    <thead className="sticky top-0 bg-cyber-dark">
+                      <tr className="text-left text-gray-400 border-b border-cyber-border">
+                        <th className="py-2 pr-3">#</th>
+                        <th className="py-2 pr-3">Ticker</th>
+                        <th className="py-2 pr-3">Score</th>
+                        <th className="py-2 pr-3">Classe</th>
+                        <th className="py-2 pr-3">Recorr.</th>
+                        <th className="py-2 pr-3">Cresc.</th>
+                        <th className="py-2 pr-3">Cobert.</th>
+                        <th className="py-2 pr-3">Saúde</th>
+                        <th className="py-2">Monte Carlo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredRanking.map((r, i) => (
+                        <tr
+                          key={r.ticker}
+                          className="border-b border-cyber-border/40 text-gray-200 hover:bg-cyber-dark/60"
+                        >
+                          <td className="py-2 pr-3 text-gray-500">{i + 1}</td>
+                          <td className="py-2 pr-3 font-orbitron font-bold text-white">{r.ticker}</td>
+                          <td className="py-2 pr-3 font-bold text-cyber-cyan">
+                            {r.score?.toFixed(1) ?? "—"}
+                          </td>
+                          <td className="py-2 pr-3">{r.classe ?? "—"}</td>
+                          <td className="py-2 pr-3">{r.scoreRecorrencia?.toFixed(0) ?? "—"}</td>
+                          <td className="py-2 pr-3">{r.scoreCrescimento?.toFixed(0) ?? "—"}</td>
+                          <td className="py-2 pr-3">{r.scoreCoberturaCaixa?.toFixed(0) ?? "—"}</td>
+                          <td className="py-2 pr-3">
+                            {r.saudeFinanceira?.toFixed(1) ?? "—"}
+                            {r.saudeClassificacao ? ` (${r.saudeClassificacao})` : ""}
+                          </td>
+                          <td className="py-2">
+                            {r.monteCarlo ? (
+                              <span
+                                className={`text-[0.65rem] px-2 py-0.5 rounded-full border ${gateClass(r.monteCarlo)}`}
+                              >
+                                {r.monteCarlo}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === "empresas" && (
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Lista de empresas */}
         <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-4 lg:col-span-1">
@@ -345,10 +569,86 @@ export default function CvmFundamentalsTab() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Dividendos & scores da empresa */}
+              {detail.dividends && (
+                <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-5">
+                  <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider mb-4">
+                    Dividendos & JCP
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                    <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                      <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                        Score Qualidade
+                      </p>
+                      <p className="text-lg font-bold text-cyber-cyan font-space mt-1">
+                        {detail.dividends.quality?.score?.toFixed(1) ?? "—"}
+                      </p>
+                      <p className="text-xs text-gray-400 font-space">
+                        {detail.dividends.quality?.classe ?? "sem classificação"}
+                      </p>
+                    </div>
+                    <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                      <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                        Saúde Financeira
+                      </p>
+                      <p className="text-lg font-bold text-white font-space mt-1">
+                        {detail.dividends.health?.score?.toFixed(1) ?? "—"}
+                      </p>
+                      <p className="text-xs text-gray-400 font-space">
+                        {detail.dividends.health
+                          ? `${detail.dividends.health.classificacao ?? "—"} (${detail.dividends.health.periodo})`
+                          : "sem dados"}
+                      </p>
+                    </div>
+                    <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                      <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                        Total Pago (2011–25)
+                      </p>
+                      <p className="text-lg font-bold text-white font-space mt-1">
+                        {fmtBRL(detail.dividends.summary?.totalProventosSaidaCaixa ?? null)}
+                      </p>
+                    </div>
+                    <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                      <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                        Alertas
+                      </p>
+                      <p className="text-xs text-yellow-400/90 font-space mt-1">
+                        {detail.dividends.quality?.alertas ?? "nenhum"}
+                      </p>
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart
+                      data={detail.dividends.quarters.slice(-24).map((q) => ({
+                        periodo: `${q.ano}T${q.trimestre}`,
+                        proventos:
+                          q.proventosSaidaCaixa === null ? null : q.proventosSaidaCaixa / 1e6,
+                      }))}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                      <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
+                        labelStyle={{ color: "#e2e8f0" }}
+                        formatter={(v: number) => [`R$ ${Number(v).toFixed(1)} mi`, "Proventos"]}
+                      />
+                      <Bar
+                        dataKey="proventos"
+                        name="Proventos (saída de caixa)"
+                        fill="#a855f7"
+                        radius={[3, 3, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </>
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
