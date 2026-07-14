@@ -3,9 +3,10 @@
 `cvm_fundamentos.db` é um **snapshot do banco derivado** mantido pelo
 Guardião_Hermes no WSL (`/root/.hermes/workspace/cvm_fundamentos/data/`).
 
-- Snapshot copiado em: **2026-07-14**
-- Conteúdo: 138 empresas B3, séries trimestrais 2011–2025 (DRE, BPA, BPP,
-  DFC, DVA, DRA, indicadores calculados, capital social)
+- Snapshot copiado em: **2026-07-14 (2ª cópia, ~19:40 — inclui 1T2026)**
+- Conteúdo: 138 empresas B3, séries trimestrais 2011–2026T1 (DRE, BPA, BPP,
+  DFC, DVA, DRA, indicadores calculados, capital social); 134 empresas já
+  com o 1T2026 na DRE
 - Proveniência: valores derivados/normalizados a partir de arquivos públicos
   da CVM pelo pipeline do lab; **não** é o dado bruto point-in-time
   (sem protocolo de documento, sem data de publicação, sem versionamento
@@ -35,7 +36,8 @@ CSVs copiados de `/root/.hermes/workspace/cvm_fundamentos/data/exports/`
 Consumidos read-only por `/api/cvm/dividends` e pelo detalhe de empresa
 (`src/lib/server/cvm-exports.ts`). Mesma proveniência derivada do banco.
 
-**Nota (2026-07-14):** a carteira 12 nos CSVs atuais difere da tabela
-registrada no inventário do vault (ex.: VIVA3 81,7 lidera; VULC3/INTB3
-presentes; ITUB4 ausente) — os exports parecem mais recentes que a página.
-Divergência anotada no log do vault para o Guardião esclarecer a versão.
+**Nota (2026-07-14):** os exports foram gerados em **2026-06-01** — são a
+versão da carteira/scores posterior à tabela do inventário do vault (por
+isso VIVA3 81,7 lidera e ITUB4 saiu), mas **ainda não incluem o 1T2026**
+(presente só no banco). Quando o Guardião regenerar o pipeline de
+dividendos/scores com o 1T2026, recopiar os CSVs daqui.
