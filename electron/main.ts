@@ -329,7 +329,9 @@ function stopPythonServices(): void {
 
 function startNextServer(): Promise<void> {
   return new Promise((resolve, reject) => {
-    const appFolder = path.join(process.resourcesPath!, 'app');
+    const appFolder = isDev || !process.resourcesPath
+      ? path.join(__dirname, '..', '..')
+      : path.join(process.resourcesPath, 'app');
     const nextDir = path.join(appFolder, '.next');
     const nextBin = path.join(appFolder, 'node_modules', 'next', 'dist', 'bin', 'next');
     const serverCwd = appFolder;
@@ -389,10 +391,10 @@ function startNextServer(): Promise<void> {
 async function createWindow() {
   if (!isDev) {
     await startPythonServices();
-    console.log('[Electron] Starting Next.js production server...');
-    await startNextServer();
-    console.log('[Electron] Next.js server ready, launching window...');
   }
+  console.log('[Electron] Starting Next.js server...');
+  await startNextServer();
+  console.log('[Electron] Next.js server ready, launching window...');
 
   mainWindow = new BrowserWindow({
     width: 1400,
