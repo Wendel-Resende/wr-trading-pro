@@ -8,6 +8,8 @@ export type ReadModelErrorCode =
   | 'AGENT_RUN_NOT_FOUND'
   | 'INVALID_TRANSITION'
   | 'INVALID_DAG'
+  | 'INVALID_BODY'
+  | 'RISK_DECISION_NOT_FOUND'
   | 'INTERNAL_ERROR';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
@@ -20,6 +22,8 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   AGENT_RUN_NOT_FOUND: 404,
   INVALID_TRANSITION: 409,
   INVALID_DAG: 400,
+  INVALID_BODY: 400,
+  RISK_DECISION_NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
 };
 

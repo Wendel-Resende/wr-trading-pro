@@ -736,3 +736,32 @@ model AgentRun {
   @@index([decisionTime, knowledgeTime])
   @@index([status, updatedAt])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 3 / Item 3 — ledger de auditoria do motor `RiskPolicy` (determinístico,
+// sem LLM). ADITIVO: nenhum modelo legado ou de itens anteriores foi
+// alterado. Não conecta a `ExecutionBroker`/ordens reais; toda avaliação é
+// apenas persistida como decisão auditável. Ver
+// docs/architecture/phase-3-item-3-risk-policy.md
+// ---------------------------------------------------------------------------
+model RiskDecision {
+  id                 String   @id @default(cuid())
+  decisionId         String   @unique
+  runId              String
+  requestedBy        String
+  instrumentId       String
+  direction          String // BUY | SELL | HOLD
+  outcome            String // APPROVED | REJECTED
+  reasonsJson        String // JSON: string[] de códigos de regra
+  policyVersion      String
+  proposalJson       String // snapshot do TradeProposal avaliado
+  contextJson        String // snapshot do RiskEvaluationContext aplicado
+  policySnapshotJson String? // snapshot das regras/limites aplicados
+  decisionTime       DateTime
+  knowledgeTime      DateTime
+  evaluatedAt        DateTime @default(now())
+
+  @@index([runId, evaluatedAt])
+  @@index([outcome, evaluatedAt])
+  @@index([instrumentId, evaluatedAt])
+}
