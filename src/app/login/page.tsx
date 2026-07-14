@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from 'react';
-import { Lock, User, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Lock, User, ArrowRight, Eye, EyeOff, UserPlus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
@@ -9,10 +9,28 @@ export default function LoginPage() {
   const [credentials, setCredentials] = useState({
     username: '',
     password: '',
+    confirmPassword: '',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // null = ainda verificando; true = primeiro acesso (criar usuário e senha)
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/setup')
+      .then((r) => (r.ok ? r.json() : { needsSetup: false }))
+      .then((data) => {
+        if (!cancelled) setNeedsSetup(Boolean(data.needsSetup));
+      })
+      .catch(() => {
+        if (!cancelled) setNeedsSetup(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,6 +42,40 @@ export default function LoginPage() {
       if (!credentials.username.trim() || !credentials.password.trim()) {
         setError('Por favor, preencha todos os campos.');
         setLoading(false);
+        return;
+      }
+
+      if (needsSetup) {
+        if (credentials.password.length < 8) {
+          setError('A senha deve ter no mínimo 8 caracteres.');
+          setLoading(false);
+          return;
+        }
+        if (credentials.password !== credentials.confirmPassword) {
+          setError('As senhas não conferem.');
+          setLoading(false);
+          return;
+        }
+
+        const response = await fetch('/api/auth/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: credentials.username.trim(),
+            password: credentials.password,
+            confirmPassword: credentials.confirmPassword,
+          }),
+        });
+
+        if (response.ok) {
+          // Cadastro criado e sessão iniciada pelo servidor
+          router.push('/');
+          router.refresh();
+          return;
+        }
+
+        const data = await response.json().catch(() => null);
+        setError(data?.error ?? 'Erro ao criar o cadastro. Tente novamente.');
         return;
       }
 
@@ -69,18 +121,26 @@ export default function LoginPage() {
             WR TRADING PRO
           </h1>
           <p className="text-gray-400 font-space">
-            Acesso Restrito
+            {needsSetup ? 'Primeiro Acesso' : 'Acesso Restrito'}
           </p>
         </div>
 
         {/* Card de Login */}
         <div className="cyber-card bg-cyber-dark/80 border-2 border-cyber-border rounded-2xl p-8 hud-corner">
           {/* Aviso de Segurança */}
-          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-6">
-            <p className="text-yellow-400 text-sm font-space text-center">
-              ⚠️ Área restrita. Use suas credenciais para acessar o sistema.
-            </p>
-          </div>
+          {needsSetup ? (
+            <div className="bg-cyber-cyan/10 border border-cyber-cyan/30 rounded-lg p-4 mb-6">
+              <p className="text-cyber-cyan text-sm font-space text-center">
+                👋 Bem-vindo! Crie seu usuário e senha para começar a usar a plataforma.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-6">
+              <p className="text-yellow-400 text-sm font-space text-center">
+                ⚠️ Área restrita. Use suas credenciais para acessar o sistema.
+              </p>
+            </div>
+          )}
 
           {/* Formulário */}
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -129,6 +189,26 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* Confirmação de senha — apenas no primeiro acesso */}
+            {needsSetup && (
+              <div>
+                <label className="block text-sm font-bold font-orbitron text-cyber-cyan uppercase tracking-wider mb-2">
+                  Confirmar Senha
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={credentials.confirmPassword}
+                    onChange={(e) => setCredentials({ ...credentials, confirmPassword: e.target.value })}
+                    placeholder="Repita a senha"
+                    className="w-full bg-cyber-dark/50 border border-cyber-border rounded-lg pl-10 pr-4 py-3 text-white font-space focus:border-cyber-pink focus:ring-2 focus:ring-cyber-pink/20 transition-all outline-none"
+                    disabled={loading}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Error Message */}
             {error && (
               <div className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-3 rounded-lg text-sm font-space">
@@ -145,7 +225,12 @@ export default function LoginPage() {
               {loading ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Acessando...</span>
+                  <span>{needsSetup ? 'Criando cadastro...' : 'Acessando...'}</span>
+                </>
+              ) : needsSetup ? (
+                <>
+                  <UserPlus className="w-5 h-5" />
+                  <span>Criar Cadastro e Entrar</span>
                 </>
               ) : (
                 <>

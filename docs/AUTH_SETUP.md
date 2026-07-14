@@ -1,11 +1,26 @@
 # Autenticação Local — Setup (Fase 0, Item 9)
 
 O WR Trading Pro usa autenticação local de usuário único com cookie de sessão
-HttpOnly assinado (HMAC-SHA256) e um middleware Next.js que protege o dashboard
-e todas as rotas `/api` (exceto `/login` e `/api/auth/*`).
+HttpOnly assinado (HMAC-SHA256) e um middleware Next.js (runtime Node) que
+protege o dashboard e todas as rotas `/api` (exceto `/login` e `/api/auth/*`).
 
 **Importante:** estas credenciais são exclusivas do app local. **Nunca** use
 login/senha do MetaTrader 5 nem de corretoras.
+
+## Primeiro acesso (caminho recomendado)
+
+Se ainda não há credenciais configuradas, basta abrir a plataforma: a tela de
+login detecta automaticamente o estado e mostra o formulário de **Primeiro
+Acesso** (usuário + senha + confirmação). Ao enviar:
+
+- as credenciais são gravadas no `.env` (hash scrypt; a senha nunca é
+  armazenada) por `/api/auth/setup`;
+- a sessão já é iniciada — você entra direto no dashboard, sem reiniciar;
+- o endpoint é fail-closed: depois do cadastro criado, responde `409` e nunca
+  sobrescreve credenciais existentes. Para trocar usuário/senha, use o fluxo
+  manual abaixo ou edite o `.env`.
+
+As seções a seguir descrevem o fluxo manual (alternativa/troca de senha).
 
 ## 1. Gerar hash de senha e secret de sessão
 

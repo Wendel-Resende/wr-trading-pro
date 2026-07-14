@@ -5,7 +5,12 @@
  * Públicos: /login e /api/auth/*. Assets do Next e arquivos estáticos
  * passam direto (ver classifyPath em src/lib/auth/routes.ts).
  *
- * Roda no Edge runtime: usa apenas módulos Edge-safe (Web Crypto).
+ * Roda no runtime Node.js (estável desde o Next 15.5) para compartilhar o
+ * process.env vivo do servidor: o fluxo de primeiro acesso (/api/auth/setup)
+ * cria as credenciais em runtime, e o sandbox Edge congela o env no boot —
+ * com Edge, o cadastro recém-criado exigiria reiniciar o app. Os módulos
+ * usados continuam Edge-safe (Web Crypto), então voltar ao Edge é trivial
+ * se necessário.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -54,4 +59,5 @@ export async function middleware(request: NextRequest) {
 export const config = {
   // Exclui internals do Next; a classificação fina fica em classifyPath
   matcher: ['/((?!_next/).*)'],
+  runtime: 'nodejs',
 };
