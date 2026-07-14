@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { useRouter } from "next/navigation";
 import {
   LayoutDashboard, FileText, BarChart3, Brain, Cpu,
-  ArrowDownLeft, TrendingUp, Database, Wifi, WifiOff, Zap, LogOut, Bot
+  ArrowDownLeft, TrendingUp, Database, Wifi, WifiOff, Zap, LogOut, Bot, Landmark
 } from "lucide-react";
 import MT5ConnectionForm from "@/components/MT5ConnectionForm";
 import Modal from "@/components/Modal";
@@ -22,8 +22,9 @@ const MLModelsTab = lazy(() => import("@/components/tabs/MLModelsTab"));
 const OptionsTab = lazy(() => import("@/components/tabs/OptionsTab"));
 const AdminTab = lazy(() => import("@/components/tabs/AdminTab"));
 const AgentTab = lazy(() => import("@/components/tabs/AgentTab"));
+const CvmFundamentalsTab = lazy(() => import("@/components/tabs/CvmFundamentalsTab"));
 
-type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "models" | "opcoes" | "admin" | "agentes";
+type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "models" | "opcoes" | "fundamentos" | "admin" | "agentes";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -33,6 +34,7 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "models", label: "Modelos ML", icon: Cpu },
   { id: "spread", label: "Spread B3", icon: ArrowDownLeft },
   { id: "opcoes", label: "Opções", icon: TrendingUp },
+  { id: "fundamentos", label: "Fundamentos CVM", icon: Landmark },
   { id: "monitoramento", label: "Monitoramento", icon: TrendingUp },
   { id: "agentes", label: "Agentes", icon: Bot },
   { id: "admin", label: "Admin", icon: Database },
@@ -256,6 +258,11 @@ export default function Dashboard() {
         {mountedTabs.has("opcoes") && (
           <div style={{ display: activeTab === "opcoes" ? "block" : "none" }}>
             <Suspense fallback={<TabLoader />}><OptionsTab /></Suspense>
+          </div>
+        )}
+        {mountedTabs.has("fundamentos") && (
+          <div style={{ display: activeTab === "fundamentos" ? "block" : "none" }}>
+            <Suspense fallback={<TabLoader />}><CvmFundamentalsTab /></Suspense>
           </div>
         )}
         {mountedTabs.has("admin") && (
