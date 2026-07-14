@@ -2,7 +2,8 @@
 
 import React, { useState, useCallback } from 'react';
 import { runMACrossover, runLinearRegression } from '@/services/mlModels';
-import { runBacktest, type BacktestResult, type BacktestParams } from '@/services/backtesting';
+import type { BacktestResult, BacktestParams } from '@/services/backtesting';
+import { runBacktestV2 } from '@/services/backtestAdapter';
 import type { Candle } from '@/services/historicalDataService';
 import { MT5ServiceSingleton } from '@/services/mt5Service';
 
@@ -95,7 +96,7 @@ export default function MLModelsTab() {
     try {
       const candles = await fetchCandles();
       const modelFn = cfg.id === 'ma_crossover' ? runMACrossover : runLinearRegression;
-      const result  = runBacktest(candles, modelFn as Parameters<typeof runBacktest>[1], cfg.params, btParams);
+      const result  = runBacktestV2(candles, modelFn as Parameters<typeof runBacktestV2>[1], cfg.params, btParams, timeframe);
       setResults(prev => ({ ...prev, [cfg.id]: result }));
       if (candles.length > 0) {
         const fmt = (d: Date) => d.toLocaleDateString('pt-BR');

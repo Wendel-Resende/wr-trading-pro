@@ -199,13 +199,13 @@ class MT5Bridge:
             elif msg_type == 'GET_CHART_DATA':
                 await self.handle_get_chart_data(websocket, msg_data)
             elif msg_type == 'SEND_ORDER':
-                await self.handle_send_order(msg_data)
+                await self.handle_send_order(websocket, msg_data)
             elif msg_type == 'MODIFY_ORDER':
                 await self.handle_modify_order(msg_data)
             elif msg_type == 'CANCEL_ORDER':
                 await self.handle_cancel_order(msg_data)
             elif msg_type == 'CLOSE_POSITION':
-                await self.handle_close_position(msg_data)
+                await self.handle_close_position(websocket, msg_data)
             elif msg_type == 'CLOSE_POSITION_BY':
                 await self.handle_close_position_by(msg_data)
             else:
@@ -1106,14 +1106,14 @@ class MT5Bridge:
                 'timestamp': datetime.now().isoformat(),
             })
     
-    async def handle_send_order(self, data: Dict[str, Any]):
+    async def handle_send_order(self, websocket: Any, data: Dict[str, Any]):
         """Enviar ordem"""
         logger.info(f"=== INICIANDO ENVIO DE ORDEM ===")
         logger.info(f"Dados recebidos: {data}")
         
         if not MT5_AVAILABLE or not self.is_connected:
             logger.error("MT5 não disponível ou não conectado")
-            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', broadcast=True)
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
             return
         
         logger.info(f"MT5 disponível e conectado. Continuando...")
@@ -1142,7 +1142,7 @@ class MT5Bridge:
         trading_enabled = os.environ.get('WR_TRADING_ENABLED', 'false').lower() in ('true', '1', 'yes')
         if not trading_enabled:
             logger.warning("Envio de ordens BLOQUEADO por kill switch (WR_TRADING_ENABLED != 'true')")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': 'Operação de ordem desabilitada (kill switch ativo). Defina WR_TRADING_ENABLED=true para operar.',
@@ -1155,7 +1155,7 @@ class MT5Bridge:
         # Validações básicas
         if not symbol:
             logger.error("Símbolo não fornecido")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': 'Símbolo não fornecido',
@@ -1167,7 +1167,7 @@ class MT5Bridge:
         
         if not volume or volume <= 0:
             logger.error(f"Volume inválido: {volume}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': 'Volume inválido',
@@ -1189,7 +1189,7 @@ class MT5Bridge:
         mt5_order_type = mt5_order_type_mapping.get(order_type)
         if mt5_order_type is None:
             logger.error(f"Tipo de ordem desconhecido: {order_type}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Tipo de ordem desconhecido: {order_type}',
@@ -1205,7 +1205,7 @@ class MT5Bridge:
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             logger.error(f"Símbolo não encontrado: {symbol}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Símbolo não encontrado: {symbol}',
@@ -1231,7 +1231,7 @@ class MT5Bridge:
         # Verificar volume mínimo
         if volume_lots < symbol_info.volume_min:
             logger.error(f"Volume abaixo do mínimo: {volume_lots} < {symbol_info.volume_min}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Volume mínimo é {symbol_info.volume_min} lotes',
@@ -1244,7 +1244,7 @@ class MT5Bridge:
         # Verificar volume máximo
         if volume_lots > symbol_info.volume_max:
             logger.error(f"Volume acima do máximo: {volume_lots} > {symbol_info.volume_max}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Volume máximo é {symbol_info.volume_max} lotes',
@@ -1298,7 +1298,7 @@ class MT5Bridge:
                     logger.info(f"Tick obtido: bid={tick.bid}, ask={tick.ask}")
                 else:
                     logger.error(f"Não foi possível obter tick para {symbol}")
-                    await self.broadcast({
+                    await self.send_to_client(websocket, {
                         'type': 'ERROR',
                         'data': {
                             'message': f'Não foi possível obter preço atual para {symbol}',
@@ -1310,7 +1310,7 @@ class MT5Bridge:
             else:
                 # Para ordens LIMIT/STOP, o preço é obrigatório
                 logger.error(f"Preço obrigatório para ordem {order_type}")
-                await self.broadcast({
+                await self.send_to_client(websocket, {
                     'type': 'ERROR',
                     'data': {
                         'message': f'Preço obrigatório para ordens LIMIT/STOP',
@@ -1351,7 +1351,7 @@ class MT5Bridge:
             if mt5_order_type in [mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP]:
                 if tp <= price:
                     logger.error(f"TP inválido para ordem BUY: TP ({tp}) deve ser MAIOR que preço ({price})")
-                    await self.broadcast({
+                    await self.send_to_client(websocket, {
                         'type': 'ERROR',
                         'data': {
                             'message': f'Para ordem BUY, Take Profit deve ser MAIOR que preço de entrada. TP: {tp}, Preço: {price}',
@@ -1366,7 +1366,7 @@ class MT5Bridge:
             elif mt5_order_type in [mt5.ORDER_TYPE_SELL, mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_SELL_STOP]:
                 if tp >= price:
                     logger.error(f"TP inválido para ordem SELL: TP ({tp}) deve ser MENOR que preço ({price})")
-                    await self.broadcast({
+                    await self.send_to_client(websocket, {
                         'type': 'ERROR',
                         'data': {
                             'message': f'Para ordem SELL, Take Profit deve ser MENOR que preço de entrada. TP: {tp}, Preço: {price}',
@@ -1389,7 +1389,7 @@ class MT5Bridge:
         if check is None or check.retcode != 0:
             error_code = check.retcode if check else mt5.last_error()
             logger.error(f"order_check falhou: {error_code}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Ordem rejeitada pela verificação prévia do broker: {error_code}',
@@ -1413,7 +1413,7 @@ class MT5Bridge:
             logger.error(f"  Mensagem do erro: {error_code[1]}")
             logger.error(f"Request completo: {request}")
             
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'{error_code[1] if error_code else "Falha ao enviar ordem"} (código: {error_code[0] if error_code else "desconhecido"})',
@@ -1444,7 +1444,7 @@ class MT5Bridge:
             logger.error(f"Código de retorno: {result.retcode}")
             logger.error(f"Comentário: {result.comment}")
             
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Ordem não executada: {result.comment} (código: {result.retcode})',
@@ -1461,7 +1461,7 @@ class MT5Bridge:
             
         logger.info(f"=== FIM DA ORDEM ===")
         
-        await self.broadcast({
+        await self.send_to_client(websocket, {
             'type': 'ORDER_RESULT',
             'data': result._asdict(),
             'timestamp': datetime.now().isoformat(),
@@ -1491,7 +1491,7 @@ class MT5Bridge:
         # Em produção, usaria mt5.order_send() com TRADE_ACTION_REMOVE
         pass
     
-    async def handle_close_position(self, data: Dict[str, Any]):
+    async def handle_close_position(self, websocket: Any, data: Dict[str, Any]):
         """Fechar posição"""
         ticket = data.get('ticket')
         volume = data.get('volume')
@@ -1501,7 +1501,7 @@ class MT5Bridge:
         
         if not MT5_AVAILABLE or not self.is_connected:
             logger.error("MT5 não disponível ou não conectado")
-            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', broadcast=True)
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
             return
         
         # Buscar a posição para obter informações
@@ -1509,7 +1509,7 @@ class MT5Bridge:
         positions = mt5.positions_get(ticket=ticket)
         if positions is None or len(positions) == 0:
             logger.error(f"Posição #{ticket} não encontrada")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Posição #{ticket} não encontrada',
@@ -1536,7 +1536,7 @@ class MT5Bridge:
         tick = mt5.symbol_info_tick(position.symbol)
         if not tick:
             logger.error(f"Não foi possível obter tick para {position.symbol}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Não foi possível obter preço para {position.symbol}',
@@ -1588,7 +1588,7 @@ class MT5Bridge:
         if result is None:
             error_code = mt5.last_error()
             logger.error(f"Falha ao fechar posição: {error_code}")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Falha ao fechar posição: {error_code}',
@@ -1607,14 +1607,14 @@ class MT5Bridge:
         
         if result.retcode == 10009:  # TRADE_RETCODE_DONE
             logger.info(f"Posição #{ticket} fechada com sucesso!")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ORDER_RESULT',
                 'data': result._asdict(),
                 'timestamp': datetime.now().isoformat(),
             })
         else:
             logger.error(f"Falha ao fechar posição (código {result.retcode})")
-            await self.broadcast({
+            await self.send_to_client(websocket, {
                 'type': 'ERROR',
                 'data': {
                     'message': f'Falha ao fechar posição (código: {result.retcode})',

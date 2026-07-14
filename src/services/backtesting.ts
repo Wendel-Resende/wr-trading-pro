@@ -32,6 +32,12 @@ export interface BacktestResult {
 
 type ModelFn = (candles: Candle[], params?: Record<string, unknown>) => ModelPrediction;
 
+/**
+ * @deprecated Tem lookahead bias (CR-9): o sinal é calculado incluindo o close
+ * da própria barra de entrada. Use `runBacktestV2` de `./backtestAdapter`, que
+ * delega ao motor determinístico em `src/domain/v1/models/backtest-run`
+ * (sinal em bar[t] -> entrada em open[t+1]). Mantido apenas para referência.
+ */
 export function runBacktest(candles: Candle[], modelFn: ModelFn, modelParams: Record<string, unknown> = {}, btParams: Partial<BacktestParams> = {}): BacktestResult {
   const { initialCapital = 10_000, positionSizePct = 0.1, stopLossPct = 0.01, takeProfitPct = 0.02, minConfidence = 0.4, warmupBars = 50 } = btParams;
   let capital = initialCapital, peakCap = initialCapital, maxDD = 0;
