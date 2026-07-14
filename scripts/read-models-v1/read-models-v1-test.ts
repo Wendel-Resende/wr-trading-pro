@@ -50,20 +50,32 @@ async function expectError(promise: Promise<unknown>, code: string, label: strin
   }
 }
 
-/** Test 16: no route.ts under src/app/api/v1 exports a non-GET HTTP method. */
+/** Test 16: no read-model route under src/app/api/v1/{reference,fundamentals,market-bars}
+ *  exports a non-GET HTTP method. This intentionally scopes the check to the
+ *  point-in-time read-model surfaces (which must be GET-only); resource-creating
+ *  routes such as agent-runs/risk-policy/order-intents/research-runs legitimately
+ *  use POST and are NOT in scope here. */
 function noNonGetExportsTest(): void {
   const root = join(process.cwd(), 'src', 'app', 'api', 'v1');
+  const readModelDirs = ['reference', 'fundamentals', 'market-bars'];
   const forbidden = ['POST', 'PUT', 'PATCH', 'DELETE'];
   const routeFiles: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name === 'route.ts') routeFiles.push(full);
+  for (const dir of readModelDirs) {
+    const fullDir = join(root, dir);
+    const walk = (d: string): void => {
+      for (const entry of readdirSync(d, { withFileTypes: true })) {
+        const full = join(d, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name === 'route.ts') routeFiles.push(full);
+      }
+    };
+    try {
+      walk(fullDir);
+    } catch {
+      // diretório de read-model ausente neste checkout — ignora
     }
-  };
-  walk(root);
-  assert.ok(routeFiles.length >= 5, `esperava >= 5 route.ts, encontrou ${routeFiles.length}`);
+  }
+  assert.ok(routeFiles.length >= 5, `esperava >= 5 route.ts de read-model, encontrou ${routeFiles.length}`);
   for (const file of routeFiles) {
     const content = readFileSync(file, 'utf8');
     assert.match(content, /export\s+async\s+function\s+GET\s*\(/, `${file} deve exportar GET`);
@@ -75,7 +87,7 @@ function noNonGetExportsTest(): void {
       );
     }
   }
-  console.log('no non-GET exports: OK (todas as rotas /api/v1 exportam somente GET)');
+  console.log('no non-GET exports (read-models): OK (rotas de read-model /api/v1/{reference,fundamentals,market-bars} exportam somente GET)');
 }
 
 /** Test 17: no protected legacy file was modified in this working tree. */
