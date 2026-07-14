@@ -1,4 +1,4 @@
-import type { AgentRun, AgentRunOutput, AgentRunStatus, AgentRunSubmission } from '../models/agent-run';
+import type { AgentRun, AgentRunNodeStates, AgentRunOutput, AgentRunStatus, AgentRunSubmission } from '../models/agent-run';
 
 export interface AgentRunListQuery {
   readonly requestedBy?: string;
@@ -8,10 +8,11 @@ export interface AgentRunListQuery {
 }
 
 /**
- * Port do runtime assíncrono de agentes (Fase 3 / Item 1). Nenhum método
+ * Port do runtime assíncrono de agentes (Fase 3 / Item 2). Nenhum método
  * conecta a `ExecutionBroker`/ordens reais; `transitionTo` é o único ponto
- * de mutação de estado, e é usado tanto pelo processamento simulado
- * quanto pelo cancelamento.
+ * de mutação de status, e `recordProgress` é o único ponto de mutação de
+ * observabilidade do DAG (`nodeStatesJson`/`stepsUsed`/`costUsed`) durante
+ * a execução em `RUNNING`.
  */
 export interface AgentRunRepository {
   create(submission: AgentRunSubmission): Promise<AgentRun>;
@@ -21,5 +22,10 @@ export interface AgentRunRepository {
     runId: string,
     status: AgentRunStatus,
     detail?: { readonly output?: AgentRunOutput; readonly error?: { readonly code: string; readonly message: string } },
+  ): Promise<AgentRun>;
+  /** Persiste progresso de execução do DAG sem alterar `status`; exige que o run esteja `RUNNING`. */
+  recordProgress(
+    runId: string,
+    progress: { readonly nodeStates: AgentRunNodeStates; readonly stepsUsed: number; readonly costUsed: number },
   ): Promise<AgentRun>;
 }

@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { canTransition } from '../../../domain/v1/models/agent-run';
-import type { AgentRun, AgentRunOutput, AgentRunStatus, AgentRunSubmission } from '../../../domain/v1/models/agent-run';
+import type { AgentRun, AgentRunNodeStates, AgentRunOutput, AgentRunStatus, AgentRunSubmission } from '../../../domain/v1/models/agent-run';
 import type { AgentRunListQuery, AgentRunRepository } from '../../../domain/v1/ports/agent-run-repository';
-import { toAgentRun, stringifyBudget, stringifyDag, stringifyErrorDetail, stringifyInput, stringifyOutput } from './mapping';
-import { AgentRunListQuerySchema, AgentRunSubmissionSchema } from './schemas';
+import { toAgentRun, stringifyBudget, stringifyDag, stringifyErrorDetail, stringifyInput, stringifyNodeStates, stringifyOutput } from './mapping';
+import { AgentRunListQuerySchema, AgentRunNodeStatesSchema, AgentRunSubmissionSchema } from './schemas';
 import { AgentRunNotFoundError, InvalidAgentRunTransitionError } from './errors';
 
 /**
@@ -32,6 +32,9 @@ export class PrismaAgentRunRepository implements AgentRunRepository {
         budgetJson: stringifyBudget(normalized.budget),
         decisionTime: new Date(normalized.decisionTime),
         knowledgeTime: new Date(normalized.knowledgeTime),
+        nodeStatesJson: null,
+        stepsUsed: 0,
+        costUsed: 0,
       },
     });
 
@@ -79,6 +82,32 @@ export class PrismaAgentRunRepository implements AgentRunRepository {
         outputJson: status === 'SUCCEEDED' && detail?.output ? stringifyOutput(detail.output) : undefined,
         errorJson: status === 'FAILED' && detail?.error ? stringifyErrorDetail(detail.error) : undefined,
         finishedAt: isTerminal ? new Date() : undefined,
+      },
+    });
+
+    return toAgentRun(row);
+  }
+
+  async recordProgress(
+    runId: string,
+    progress: { readonly nodeStates: AgentRunNodeStates; readonly stepsUsed: number; readonly costUsed: number },
+  ): Promise<AgentRun> {
+    const existing = await this.prisma.agentRun.findUnique({ where: { runId } });
+    if (!existing) throw new AgentRunNotFoundError(`AgentRun não encontrado: ${runId}`);
+
+    const currentStatus = existing.status as AgentRunStatus;
+    if (currentStatus !== 'RUNNING') {
+      throw new InvalidAgentRunTransitionError(`progresso só pode ser registrado em RUNNING (status atual: ${currentStatus})`);
+    }
+
+    const normalized = AgentRunNodeStatesSchema.parse(progress.nodeStates);
+
+    const row = await this.prisma.agentRun.update({
+      where: { runId },
+      data: {
+        nodeStatesJson: stringifyNodeStates(normalized),
+        stepsUsed: progress.stepsUsed,
+        costUsed: progress.costUsed,
       },
     });
 

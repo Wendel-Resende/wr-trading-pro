@@ -25,35 +25,74 @@ async function expectRejection<T extends new (...args: never[]) => Error>(
   }
 }
 
+async function expectReadModelError(promise: Promise<unknown>, code: string, label: string): Promise<void> {
+  try {
+    await promise;
+    assert.fail(`esperava ReadModelError(${code}) em ${label}`);
+  } catch (error) {
+    if (error instanceof assert.AssertionError) throw error;
+    assert.ok(error instanceof ReadModelError, `${label}: esperava ReadModelError, recebeu ${(error as Error)?.constructor?.name}`);
+    assert.equal((error as ReadModelError).code, code, `${label}: código esperado ${code}, recebido ${(error as ReadModelError).code}`);
+  }
+}
+
 function migrationAdditivityTests(): void {
-  const migrationPath = join(
-    process.cwd(),
-    'prisma',
-    'migrations',
-    '20260714000000_add_agent_run_foundation',
-    'migration.sql',
+  const foundationSql = readFileSync(
+    join(process.cwd(), 'prisma', 'migrations', '20260714000000_add_agent_run_foundation', 'migration.sql'),
+    'utf8',
   );
-  const sql = readFileSync(migrationPath, 'utf8');
-  assert.doesNotMatch(sql, /\bALTER\s+TABLE\b/i, 'migração aditiva não pode conter ALTER TABLE');
-  assert.doesNotMatch(sql, /\bDROP\s+TABLE\b/i, 'migração aditiva não pode conter DROP TABLE');
-  assert.doesNotMatch(sql, /\bDROP\s+INDEX\b/i, 'migração aditiva não pode conter DROP INDEX');
-  const statements = sql
+  assert.doesNotMatch(foundationSql, /\bALTER\s+TABLE\b/i, 'migração aditiva do Item 1 não pode conter ALTER TABLE');
+  assert.doesNotMatch(foundationSql, /\bDROP\s+TABLE\b/i, 'migração aditiva não pode conter DROP TABLE');
+  assert.doesNotMatch(foundationSql, /\bDROP\s+INDEX\b/i, 'migração aditiva não pode conter DROP INDEX');
+  assert.match(foundationSql, /CREATE TABLE "AgentRun"/);
+  assert.match(foundationSql, /CREATE UNIQUE INDEX "AgentRun_runId_key"/);
+  console.log('migration additivity (Item 1): OK (somente CREATE TABLE/INDEX/UNIQUE INDEX, sem ALTER/DROP)');
+
+  const dagSql = readFileSync(
+    join(process.cwd(), 'prisma', 'migrations', '20260714010000_add_agent_run_dag_foundation', 'migration.sql'),
+    'utf8',
+  );
+  assert.doesNotMatch(dagSql, /\bDROP\s+TABLE\b/i, 'migração aditiva do Item 2 não pode conter DROP TABLE');
+  assert.doesNotMatch(dagSql, /\bDROP\s+COLUMN\b/i, 'migração aditiva do Item 2 não pode conter DROP COLUMN');
+  assert.doesNotMatch(dagSql, /\bDROP\s+INDEX\b/i, 'migração aditiva do Item 2 não pode conter DROP INDEX');
+  const dagSqlWithoutComments = dagSql
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('--'))
+    .join('\n');
+  const statements = dagSqlWithoutComments
     .split(';')
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !s.startsWith('--'));
+    .filter((s) => s.length > 0);
   for (const statement of statements) {
     assert.match(
       statement,
-      /^CREATE\s+(TABLE|(UNIQUE\s+)?INDEX)\b/i,
-      `migração aditiva só pode conter CREATE TABLE/CREATE INDEX/CREATE UNIQUE INDEX, encontrado: ${statement.slice(0, 60)}`,
+      /^(ALTER\s+TABLE\s+"AgentRun"\s+ADD\s+COLUMN|CREATE\s+(UNIQUE\s+)?INDEX)\b/i,
+      `migração aditiva do Item 2 só pode conter ALTER TABLE ... ADD COLUMN ou CREATE INDEX, encontrado: ${statement.slice(0, 60)}`,
     );
   }
-  assert.match(sql, /CREATE TABLE "AgentRun"/);
-  assert.match(sql, /CREATE UNIQUE INDEX "AgentRun_runId_key"/);
-  console.log('migration additivity: OK (somente CREATE TABLE/INDEX/UNIQUE INDEX, sem ALTER/DROP)');
+  assert.match(dagSql, /ADD COLUMN "nodeStatesJson"/);
+  assert.match(dagSql, /ADD COLUMN "stepsUsed"/);
+  assert.match(dagSql, /ADD COLUMN "costUsed"/);
+  assert.match(dagSql, /CREATE INDEX "AgentRun_status_updatedAt_idx"/);
+  console.log('migration additivity (Item 2): OK (somente ALTER TABLE ADD COLUMN/CREATE INDEX, sem DROP)');
 }
 
-const DAG: AgentRunDag = { nodes: ['fetch', 'analyze'], edges: [['fetch', 'analyze']] };
+const DAG: AgentRunDag = {
+  nodes: [
+    { id: 'in1', type: 'INPUT', provides: ['ticker'] },
+    { id: 'ag1', type: 'AGENT', role: 'valuation', reads: ['in1.ticker'], provides: ['thesisDraft'] },
+    { id: 'ev1', type: 'EVIDENCE', reads: ['ag1.thesisDraft'], provides: ['evidenceList'] },
+    { id: 'sy1', type: 'SYNTHESIS', reads: ['ag1.thesisDraft', 'ev1.evidenceList'], provides: ['finding'] },
+    { id: 'out1', type: 'OUTPUT', reads: ['sy1.finding'] },
+  ],
+  edges: [
+    ['in1', 'ag1'],
+    ['ag1', 'ev1'],
+    ['ag1', 'sy1'],
+    ['ev1', 'sy1'],
+    ['sy1', 'out1'],
+  ],
+};
 
 async function submissionAndQueuedTests(prisma: PrismaClient): Promise<void> {
   const service = createAgentRunService(prisma);
@@ -61,45 +100,107 @@ async function submissionAndQueuedTests(prisma: PrismaClient): Promise<void> {
     requestedBy: 'tester',
     kind: 'RESEARCH',
     dag: DAG,
-    input: { symbol: 'PETR4' },
+    input: { ticker: 'PETR4' },
     decisionTime: '2099-01-01T00:00:00.000Z',
   });
 
   assert.equal(run.status, 'QUEUED');
   assert.equal(run.kind, 'RESEARCH');
   assert.equal(run.output, null);
+  assert.equal(run.stepsUsed, 0);
+  assert.equal(run.costUsed, 0);
   assert.ok(run.runId.length > 0);
 
   const fetched = await service.get(run.runId);
   assert.equal(fetched.status, 'QUEUED');
 
-  console.log('submissão + QUEUED: OK (POST cria run com status QUEUED e runId gerado no servidor)');
+  console.log('submissão + QUEUED: OK (POST cria run com DAG semântico, status QUEUED e runId gerado no servidor)');
 }
 
-async function lifecycleTransitionTests(prisma: PrismaClient): Promise<void> {
+async function dagValidationTests(prisma: PrismaClient): Promise<void> {
+  const service = createAgentRunService(prisma);
+  const base = {
+    requestedBy: 'tester',
+    kind: 'RESEARCH' as const,
+    input: {},
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  };
+
+  const cyclicDag: AgentRunDag = {
+    nodes: [
+      { id: 'a', type: 'AGENT', provides: ['x'] },
+      { id: 'b', type: 'SYNTHESIS', reads: ['a.x'], provides: ['y'] },
+      { id: 'out', type: 'OUTPUT', reads: ['b.y'] },
+    ],
+    edges: [
+      ['a', 'b'],
+      ['b', 'a'],
+      ['b', 'out'],
+    ],
+  };
+  await expectReadModelError(service.submit({ ...base, dag: cyclicDag }), 'INVALID_DAG', 'DAG com ciclo');
+
+  const orphanEdgeDag: AgentRunDag = {
+    nodes: [
+      { id: 'a', type: 'INPUT', provides: ['x'] },
+      { id: 'out', type: 'OUTPUT', reads: ['a.x'] },
+    ],
+    edges: [['a', 'ghost']],
+  };
+  await expectReadModelError(service.submit({ ...base, dag: orphanEdgeDag }), 'INVALID_DAG', 'aresta referencia nó inexistente');
+
+  const noOutputDag: AgentRunDag = {
+    nodes: [
+      { id: 'a', type: 'INPUT', provides: ['x'] },
+      { id: 'b', type: 'AGENT', reads: ['a.x'], provides: ['y'] },
+    ],
+    edges: [['a', 'b']],
+  };
+  await expectReadModelError(service.submit({ ...base, dag: noOutputDag }), 'INVALID_DAG', 'DAG sem nó OUTPUT');
+
+  const twoOutputsDag: AgentRunDag = {
+    nodes: [
+      { id: 'a', type: 'INPUT', provides: ['x'] },
+      { id: 'out1', type: 'OUTPUT', reads: ['a.x'] },
+      { id: 'out2', type: 'OUTPUT', reads: ['a.x'] },
+    ],
+    edges: [
+      ['a', 'out1'],
+      ['a', 'out2'],
+    ],
+  };
+  await expectReadModelError(service.submit({ ...base, dag: twoOutputsDag }), 'INVALID_DAG', 'DAG com mais de um nó OUTPUT');
+
+  console.log('validação de DAG: OK (ciclo/aresta órfã/sem OUTPUT/múltiplos OUTPUT rejeitados com 400 INVALID_DAG)');
+}
+
+async function topologicalExecutionTests(prisma: PrismaClient): Promise<void> {
   const service = createAgentRunService(prisma);
   const run = await service.submit({
     requestedBy: 'tester',
     kind: 'RESEARCH',
     dag: DAG,
-    input: {},
+    input: { ticker: 'PETR4' },
     decisionTime: '2099-01-01T00:00:00.000Z',
   });
-
-  const running = await service.get(run.runId);
-  assert.equal(running.status, 'QUEUED');
 
   const finished = await service.advance(run.runId);
   assert.equal(finished.status, 'SUCCEEDED');
   assert.ok(finished.output);
   assert.equal(finished.output!.kind, 'RESEARCH');
+  assert.equal(finished.stepsUsed, DAG.nodes.length);
+  assert.equal(finished.costUsed, 0 + 2 + 1 + 1 + 0);
+  for (const node of DAG.nodes) {
+    assert.equal(finished.nodeStates[node.id]?.status, 'DONE', `nó ${node.id} deveria estar DONE`);
+  }
   assert.ok(finished.finishedAt);
 
   const fetched = await service.get(run.runId);
   assert.equal(fetched.status, 'SUCCEEDED');
+  assert.deepEqual(fetched.nodeStates, finished.nodeStates);
   assert.deepEqual(fetched.output, finished.output);
 
-  console.log('ciclo de vida QUEUED -> RUNNING -> SUCCEEDED: OK (GET reflete transições e contrato de saída)');
+  console.log('execução topológica: OK (nodeStates DONE em ordem; stepsUsed/costUsed acumulados corretamente)');
 }
 
 async function proposalOutputTests(prisma: PrismaClient): Promise<void> {
@@ -140,6 +241,63 @@ async function knowledgeTimeLookaheadTests(prisma: PrismaClient): Promise<void> 
   console.log('no-lookahead: OK (knowledgeTime derivado não pode exceder decisionTime)');
 }
 
+async function budgetMaxStepsTests(prisma: PrismaClient): Promise<void> {
+  const service = createAgentRunService(prisma);
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: {},
+    budget: { maxSteps: 2 },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'FAILED');
+  assert.equal(finished.error?.code, 'MAX_STEPS_EXCEEDED');
+  assert.ok(finished.stepsUsed > 2);
+  assert.ok(finished.finishedAt);
+
+  console.log('orçamento maxSteps: OK (estouro de passos leva a FAILED com errorJson explícito)');
+}
+
+async function budgetMaxCostTests(prisma: PrismaClient): Promise<void> {
+  const service = createAgentRunService(prisma);
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: {},
+    budget: { maxCost: 1 },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'FAILED');
+  assert.equal(finished.error?.code, 'MAX_COST_EXCEEDED');
+  assert.ok(finished.costUsed > 1);
+
+  console.log('orçamento maxCost: OK (estouro de custo leva a FAILED com errorJson explícito)');
+}
+
+async function budgetTimeoutTests(prisma: PrismaClient): Promise<void> {
+  const service = createAgentRunService(prisma);
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: {},
+    budget: { timeoutMs: 1 },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'FAILED');
+  assert.equal(finished.error?.code, 'TIMEOUT_EXCEEDED');
+
+  console.log('orçamento timeoutMs: OK (estouro de tempo leva a FAILED com errorJson explícito)');
+}
+
 async function cancelTests(prisma: PrismaClient): Promise<void> {
   const service = createAgentRunService(prisma);
 
@@ -164,6 +322,20 @@ async function cancelTests(prisma: PrismaClient): Promise<void> {
     const response = jsonError(error);
     assert.equal(response.status, 409);
   }
+
+  const repository = new PrismaAgentRunRepository(prisma);
+  const runningRun = await repository.create({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: {},
+    budget: {},
+    decisionTime: '2099-01-01T00:00:00.000Z',
+    knowledgeTime: new Date().toISOString(),
+  });
+  await repository.transitionTo(runningRun.runId, 'RUNNING');
+  const cancelledRunning = await service.cancel(runningRun.runId);
+  assert.equal(cancelledRunning.status, 'CANCELLED');
 
   const succeededRun = await service.submit({
     requestedBy: 'tester',
@@ -202,7 +374,13 @@ async function failedTransitionTests(prisma: PrismaClient): Promise<void> {
     'transição inválida a partir de estado terminal FAILED',
   );
 
-  console.log('transição FAILED: OK (RUNNING -> FAILED persiste errorJson; transições a partir de estado terminal são rejeitadas)');
+  await expectRejection(
+    repository.recordProgress(created.runId, { nodeStates: {}, stepsUsed: 0, costUsed: 0 }),
+    InvalidAgentRunTransitionError,
+    'recordProgress em run não-RUNNING',
+  );
+
+  console.log('transição FAILED: OK (RUNNING -> FAILED persiste errorJson; transições/progresso a partir de estado terminal são rejeitados)');
 }
 
 async function paginationDeterminismTests(prisma: PrismaClient): Promise<void> {
@@ -252,16 +430,20 @@ async function main(): Promise<void> {
   const prisma = new PrismaClient();
   try {
     await submissionAndQueuedTests(prisma);
-    await lifecycleTransitionTests(prisma);
+    await dagValidationTests(prisma);
+    await topologicalExecutionTests(prisma);
     await proposalOutputTests(prisma);
     await knowledgeTimeLookaheadTests(prisma);
+    await budgetMaxStepsTests(prisma);
+    await budgetMaxCostTests(prisma);
+    await budgetTimeoutTests(prisma);
     await cancelTests(prisma);
     await failedTransitionTests(prisma);
     await paginationDeterminismTests(prisma);
   } finally {
     await prisma.$disconnect();
   }
-  console.log('Fase 3 / Item 1 — AgentRun assíncrono persistente: TODOS OS TESTES PASSARAM');
+  console.log('Fase 3 / Item 2 — DAG semântico + orçamento/cancelamento reais: TODOS OS TESTES PASSARAM');
 }
 
 void main().catch((error: unknown) => {

@@ -717,11 +717,14 @@ model AgentRun {
   requestedBy   String
   kind          String // RESEARCH | PROPOSAL
   status        String // QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED
-  dag           String // JSON: { nodes: string[]; edges: [string, string][] }
+  dag           String // JSON: DAG semântico { nodes: {id,type,role?,reads?,provides?}[]; edges: [string, string][] }
   inputJson     String // JSON do payload de entrada validado por Zod
   budgetJson    String // JSON: { maxSteps?, maxCost?, timeoutMs? }
   outputJson    String? // JSON do contrato de saída; só em SUCCEEDED
   errorJson     String? // JSON sanitizado; só em FAILED
+  nodeStatesJson String? // JSON: Record<nodeId, { status, output? }> — observabilidade do DAG (Item 2)
+  stepsUsed     Int       @default(0) // contador de nós executados (orçamento maxSteps, Item 2)
+  costUsed      Int       @default(0) // custo estimado acumulado (orçamento maxCost, Item 2)
   decisionTime  DateTime
   knowledgeTime DateTime
   createdAt     DateTime  @default(now())
@@ -731,4 +734,5 @@ model AgentRun {
   @@index([status, createdAt])
   @@index([requestedBy, createdAt])
   @@index([decisionTime, knowledgeTime])
+  @@index([status, updatedAt])
 }

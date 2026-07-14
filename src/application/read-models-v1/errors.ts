@@ -7,6 +7,7 @@ export type ReadModelErrorCode =
   | 'AMBIGUOUS_INSTRUMENT_VERSION'
   | 'AGENT_RUN_NOT_FOUND'
   | 'INVALID_TRANSITION'
+  | 'INVALID_DAG'
   | 'INTERNAL_ERROR';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
@@ -18,6 +19,7 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   AMBIGUOUS_INSTRUMENT_VERSION: 409,
   AGENT_RUN_NOT_FOUND: 404,
   INVALID_TRANSITION: 409,
+  INVALID_DAG: 400,
   INTERNAL_ERROR: 500,
 };
 

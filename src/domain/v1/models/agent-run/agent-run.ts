@@ -8,14 +8,23 @@
  * qualquer intenção de execução (fora do escopo deste item).
  */
 
+import type { AgentRunDag } from './dag';
+
+export type { AgentRunDag, AgentRunNode, AgentRunNodeType } from './dag';
+export { InvalidAgentRunDagError, validateAndSortDag } from './dag';
+
 export type AgentRunKind = 'RESEARCH' | 'PROPOSAL';
 
 export type AgentRunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
-export interface AgentRunDag {
-  readonly nodes: readonly string[];
-  readonly edges: readonly (readonly [string, string])[];
+export type AgentRunNodeStatus = 'PENDING' | 'DONE' | 'FAILED';
+
+export interface AgentRunNodeState {
+  readonly status: AgentRunNodeStatus;
+  readonly output?: Record<string, unknown>;
 }
+
+export type AgentRunNodeStates = Readonly<Record<string, AgentRunNodeState>>;
 
 export interface AgentRunBudget {
   readonly maxSteps?: number;
@@ -61,6 +70,9 @@ export interface AgentRun {
   readonly budget: AgentRunBudget;
   readonly output: AgentRunOutput | null;
   readonly error: AgentRunError | null;
+  readonly nodeStates: AgentRunNodeStates;
+  readonly stepsUsed: number;
+  readonly costUsed: number;
   readonly decisionTime: string;
   readonly knowledgeTime: string;
   readonly createdAt: string;

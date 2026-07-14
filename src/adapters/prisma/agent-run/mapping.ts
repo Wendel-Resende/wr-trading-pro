@@ -1,6 +1,6 @@
 import type { AgentRun as AgentRunRow } from '@prisma/client';
-import type { AgentRun, AgentRunBudget, AgentRunDag, AgentRunError as AgentRunErrorDetail, AgentRunKind, AgentRunOutput, AgentRunStatus } from '../../../domain/v1/models/agent-run';
-import { AgentRunBudgetSchema, AgentRunDagSchema, AgentRunOutputSchema } from './schemas';
+import type { AgentRun, AgentRunBudget, AgentRunDag, AgentRunError as AgentRunErrorDetail, AgentRunKind, AgentRunNodeStates, AgentRunOutput, AgentRunStatus } from '../../../domain/v1/models/agent-run';
+import { AgentRunBudgetSchema, AgentRunDagSchema, AgentRunNodeStatesSchema, AgentRunOutputSchema } from './schemas';
 import { InvalidAgentRunInputError } from './errors';
 
 /** JSON parse/stringify for the AgentRun physical TEXT columns happens ONLY at this adapter boundary. */
@@ -65,6 +65,17 @@ export function stringifyErrorDetail(error: AgentRunErrorDetail): string {
   return JSON.stringify(error);
 }
 
+export function parseNodeStates(raw: string): AgentRunNodeStates {
+  const parsed = safeJsonParse(raw, 'nodeStatesJson');
+  const result = AgentRunNodeStatesSchema.safeParse(parsed);
+  if (!result.success) throw new InvalidAgentRunInputError('nodeStatesJson: formato inválido na linha persistida');
+  return result.data;
+}
+
+export function stringifyNodeStates(nodeStates: AgentRunNodeStates): string {
+  return JSON.stringify(nodeStates);
+}
+
 function safeJsonParse(raw: string, field: string): unknown {
   try {
     return JSON.parse(raw);
@@ -83,6 +94,9 @@ export const toAgentRun = (row: AgentRunRow): AgentRun => ({
   budget: parseBudget(row.budgetJson),
   output: row.outputJson !== null ? parseOutput(row.outputJson) : null,
   error: row.errorJson !== null ? parseErrorDetail(row.errorJson) : null,
+  nodeStates: row.nodeStatesJson !== null ? parseNodeStates(row.nodeStatesJson) : {},
+  stepsUsed: row.stepsUsed,
+  costUsed: row.costUsed,
   decisionTime: row.decisionTime.toISOString(),
   knowledgeTime: row.knowledgeTime.toISOString(),
   createdAt: row.createdAt.toISOString(),

@@ -22,12 +22,35 @@ export const AgentRunKindSchema = z.enum(['RESEARCH', 'PROPOSAL']);
 
 export const AgentRunStatusSchema = z.enum(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED']);
 
-export const AgentRunDagSchema = z
+export const AgentRunNodeTypeSchema = z.enum(['INPUT', 'AGENT', 'EVIDENCE', 'SYNTHESIS', 'OUTPUT']);
+
+export const AgentRunNodeSchema = z
   .object({
-    nodes: z.array(z.string().min(1)).min(1),
-    edges: z.array(z.tuple([z.string().min(1), z.string().min(1)])),
+    id: z.string().min(1).max(100),
+    type: AgentRunNodeTypeSchema,
+    role: z.string().min(1).max(100).optional(),
+    reads: z.array(z.string().min(1).max(200)).max(50).optional(),
+    provides: z.array(z.string().min(1).max(200)).max(50).optional(),
   })
   .strict();
+
+export const AgentRunDagSchema = z
+  .object({
+    nodes: z.array(AgentRunNodeSchema).min(1).max(200),
+    edges: z.array(z.tuple([z.string().min(1), z.string().min(1)])).max(1000),
+  })
+  .strict();
+
+export const AgentRunNodeStatusSchema = z.enum(['PENDING', 'DONE', 'FAILED']);
+
+export const AgentRunNodeStateSchema = z
+  .object({
+    status: AgentRunNodeStatusSchema,
+    output: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+export const AgentRunNodeStatesSchema = z.record(AgentRunNodeStateSchema);
 
 export const AgentRunBudgetSchema = z
   .object({
