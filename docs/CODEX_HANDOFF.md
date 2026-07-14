@@ -1,6 +1,33 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-05-20
+Última atualização: 2026-07-11
+
+## Sessão 2026-07-11 — Revisão independente do dossiê de upgrade
+
+### O que foi feito
+
+- Revisão crítica do dossiê `docs/architecture/upgrade-dossier-2026-07-11.md` (43 achados do Guardião_Hermes), com verificação achado-a-achado contra o código real.
+- Todos os 9 achados críticos confirmados no código; nenhum falso positivo.
+- Documento de revisão criado: `docs/architecture/fable5-review-2026-07-11.md`.
+
+### Arquivos alterados
+
+- Criado: `docs/architecture/fable5-review-2026-07-11.md`
+- Atualizado: este arquivo. Nenhum arquivo de código foi alterado (regra da tarefa).
+
+### Comandos de verificação executados
+
+- Nenhum build necessário (mudança somente em docs). Verificação foi por leitura de código: `mt5_bridge.py`, `backtesting.ts`, `agents/route.ts`, `schema.prisma`, `llmService.ts`, `mt5Service.ts`, `login/page.tsx`, `electron/main.ts`, `electron/preload.ts`, `workers.py`, `package.json`, grep de `CORS`/`0.0.0.0`/`NEXT_PUBLIC`.
+
+### Próximos passos recomendados
+
+1. Guardião_Hermes revisar `fable5-review-2026-07-11.md` e decidir o conflito do item 10 da Fase 0 (userData vs regra do CLAUDE.md sobre dados locais — risco real é SQLite sob OneDrive).
+2. Aprovar as correções obrigatórias do esquema CVM (Decimal → BigInt + expoente; periodStart não-nulo).
+3. Iniciar Fase 0 na ordem recomendada na seção 4 da revisão (começa por fail-closed no tipo de ordem, 1 linha em `mt5_bridge.py:1081`).
+
+### git status relevante
+
+- Branch `main` limpa antes da tarefa; após: 1 arquivo novo + este handoff modificado, sem commit (aguardando pedido do usuário).
 
 ## Pausa 2026-05-20 — retomar subida ao GitHub
 
