@@ -9,12 +9,18 @@
 import type { OptionStrike, OptionsConfig, OptionsScanResult, CoveredCall, CashSecuredPut, VolatilityData, TopOption } from '@/types/options';
 import { mt5Service } from '@/services/mt5Service';
 import { DEFAULT_OPTIONS_CONFIG } from '@/types/options';
+import {
+  anualizar as pureAnualizar,
+  calcExerciseProb as pureCalcExerciseProb,
+  determineType as pureDetermineType,
+  getDTE as pureGetDTE,
+  mean as pureMean,
+  parseStrike as pureParseStrike,
+  std as pureStd,
+} from '@/domain/v1/models/option-position/option-math';
 
 // ─── Constantes B3 ─────────────────────────────────────────────────────────────
 
-// B3 month letters (CORRIGIDO: A-H=CALL, J-R=PUT — igual dashboard de referência)
-const CALL_LETTERS = 'ABCDEFGH';
-const PUT_LETTERS = 'JKLMNOPQR';
 const LOT_SIZE = 100; // 1 lote B3 = 100 ações
 
 // ─── Volatilidade (v4) ────────────────────────────────────────────────────────
@@ -64,16 +70,8 @@ export async function getVolatility(asset: string): Promise<VolatilityResult | n
   });
 }
 
-function mean(arr: number[]): number {
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
-
-function std(arr: number[]): number {
-  if (arr.length < 2) return 0;
-  const m = mean(arr);
-  const squaredDiffs = arr.map((v) => (v - m) ** 2);
-  return Math.sqrt(squaredDiffs.reduce((a, b) => a + b, 0) / (arr.length - 1));
-}
+const mean = pureMean;
+const std = pureStd;
 
 // ─── Estilo e Periodicidade (v4) ─────────────────────────────────────────────
 
@@ -146,99 +144,31 @@ export async function saveScanToDBIPC(
  * Extrai os dígitos do final, ignora letras do meio.
  * PETRF480 → 48.00, VALEG420 → 42.00
  */
-export function parseStrike(symbol: string): number {
-  // Remove suffixes like .BVSP, .B3
-  const name = symbol.replace('.BVSP', '').replace('.B3', '');
-  // Extract digits from end
-  let digits = '';
-  for (let i = name.length - 1; i >= 0; i--) {
-    const ch = name[i];
-    if (/\d/.test(ch)) {
-      digits = ch + digits;
-    } else {
-      break;
-    }
-  }
-  if (!digits) return 0;
-  const val = parseInt(digits, 10);
-  return val >= 1000 ? val / 100 : val / 10;
-}
+export const parseStrike = pureParseStrike;
 
 /**
  * Identifica se é CALL ou PUT pela letra do código B3
  * A-H = CALL, J-R = PUT (genérico: usa última letra antes do strike)
  */
-export function determineType(symbol: string): 'CALL' | 'PUT' | 'UNKNOWN' {
-  const base = symbol.replace(/\d+$/, ''); // strip trailing digits
-  const letter = base.slice(-1).toUpperCase();
-  if (CALL_LETTERS.includes(letter)) return 'CALL';
-  if (PUT_LETTERS.includes(letter)) return 'PUT';
-  return 'UNKNOWN';
-}
+export const determineType = pureDetermineType;
 
 /**
  * Calcula DTE (Days To Expiration) a partir do timestamp Unix
  */
 export function getDTE(expirationTs: number): number {
-  if (!expirationTs) return 999;
-  const expDate = new Date(expirationTs * 1000);
-  const now = new Date();
-  return Math.floor((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  return pureGetDTE(expirationTs, Date.now());
 }
 
 /**
  * Anualiza o prêmio em base 365, alinhado ao scanner Python.
  */
-export function anualizar(premioPorAcao: number, strike: number, dte: number): number {
-  if (dte <= 0 || strike <= 0) return 0;
-  return (premioPorAcao / strike) * (365 / dte);
-}
+export const anualizar = pureAnualizar;
 
 /**
  * Probabilidade de exercício (v4 - modelo log-normal simplificado)
  * P(S_T > K) para calls, P(S_T < K) para puts
  */
-export function calcExerciseProb(
-  spot: number,
-  strike: number,
-  dte: number,
-  dailyStd: number,
-  optType: 'CALL' | 'PUT'
-): number {
-  if (dte <= 0 || dailyStd <= 0) return 0;
-
-  const sigma = dailyStd * Math.sqrt(dte);
-  if (sigma <= 0) return 0;
-
-  const d = Math.log(strike / spot) / sigma;
-
-  if (optType === 'CALL') {
-    // P(spot_T > strike) = 1 - Phi(d)
-    return Math.max(0, Math.min(1, 1 - normCdf(d))) * 100;
-  } else {
-    // P(spot_T < strike) = Phi(d)
-    return Math.max(0, Math.min(1, normCdf(d))) * 100;
-  }
-}
-
-/**
- * Aproxima a CDF da distribuição normal padrão
- */
-function normCdf(x: number): number {
-  const a1 = 0.254829592;
-  const a2 = -0.284496736;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const p = 0.3275911;
-
-  const sign = x < 0 ? -1 : 1;
-  x = Math.abs(x) / Math.sqrt(2);
-  const t = 1 / (1 + p * x);
-  const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-
-  return 0.5 * (1 + sign * y);
-}
+export const calcExerciseProb = pureCalcExerciseProb;
 
 // ─── Busca de opções no MT5 ───────────────────────────────────────────────────
 

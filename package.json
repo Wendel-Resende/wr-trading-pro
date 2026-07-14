@@ -42,6 +42,7 @@
     "test:model-version": "node scripts/model-version/run-model-version-tests.cjs",
     "test:signal": "node scripts/signal/run-signal-tests.cjs",
     "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
+    "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
     "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js"
   },
   "build": {

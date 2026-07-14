@@ -874,3 +874,38 @@ model BacktestRun {
   @@index([researchRunId])
   @@index([modelVersionId, instrumentId])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 6 — Consolidação (repository governado, replay, auditoria). ADITIVO:
+// nenhum modelo anterior foi alterado, inclusive `SpreadOrder` (legado, acima).
+// Ver docs/architecture/phase-6-consolidation.md
+// ---------------------------------------------------------------------------
+model OptionPosition {
+  id            String   @id @default(cuid())
+  instrumentId  String
+  kind          String // CALL | PUT
+  strike        Int // em centavos
+  expiration    DateTime
+  side          String // LONG | SHORT
+  quantity      Int
+  source        String // MT5 | MANUAL | REPLAY
+  knowledgeTime DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([instrumentId, expiration])
+}
+
+model SpreadOrderAudit {
+  auditId       String   @id @default(cuid())
+  orderId       String
+  action        String // CREATE | CANCEL
+  requestedBy   String
+  payloadJson   String
+  policyVersion String
+  decisionTime  DateTime
+  knowledgeTime DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([orderId])
+  @@index([action, createdAt])
+}
