@@ -16,7 +16,7 @@
 
 ### Em aberto
 
-1. Correções obrigatórias do esquema CVM: `Decimal` → `BigInt` + expoente; `periodStart` não-nulo (C-1/C-2 da revisão).
+1. ~~Correções obrigatórias do esquema CVM (C-1/C-2)~~ **Verificado em 2026-07-14: já implementadas na Fase 2 Item 2 (`ca213b2`)** — `CvmFact.valueRaw BigInt` + `scalePow`, `periodStart` NOT NULL com `INSTANT ⇒ periodStart === periodEnd`; `npm run test:cvm-facts` passando integralmente.
 2. Cifragem de segredos no banco (`AIProvider.apiKey`, `DataSource.config`) via `safeStorage`/keyring — Fase 1.
 3. Demais riscos da seção 5 da revisão (empacotamento com `asar: false`, `getPythonPath()` hardcoded).
 

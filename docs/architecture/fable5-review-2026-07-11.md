@@ -124,8 +124,12 @@ scalePow   Int      // expoente decimal: valor real = valueRaw * 10^scalePow
 ```
 (ou, alternativamente, `valueText String` com parse para decimal na aplicação). `BigInt` é armazenado como INTEGER de 64 bits no SQLite — exato. Manter `scale` (UNIT/THOUSAND/MILLION) como metadado de auditoria do arquivo original, mas normalizar `valueRaw` para unidades na ingestão, senão toda query comparativa precisa reescalar.
 
+> **Resolvido (verificado em 2026-07-14):** implementado na Fase 2 Item 2 (`ca213b2`). `CvmFact` usa `valueRaw BigInt` + `scalePow Int` + `originalScale` como metadado (`schema.prisma:467-469`); não há nenhum `Decimal` no schema. Coberto por `npm run test:cvm-facts` (limites signed 64-bit inclusos).
+
 ### C-2 — `@@unique` com `periodStart` nullable não deduplica fatos INSTANT (obrigatório corrigir)
 No SQLite (e no padrão SQL), `NULL` é distinto de `NULL` em índices únicos. Como fatos de balanço (INSTANT) terão `periodStart = null`, a constraint `@@unique([filingId, statementType, scope, accountCode, periodStart, periodEnd])` **não impede duplicatas** exatamente na classe de fatos mais comum (BPA/BPP). Correção: tornar `periodStart` obrigatório com a convenção `periodStart = periodEnd` para INSTANT (o campo `durationType` já desambigua), ou usar coluna computada não-nula.
+
+> **Resolvido (verificado em 2026-07-14):** implementado na Fase 2 Item 2 (`ca213b2`). `periodStart` é NOT NULL com a convenção `INSTANT ⇒ periodStart === periodEnd` (`schema.prisma:464`, invariante validada em `cvm-fact.ts` e no unit-of-work); o `@@unique` deduplica porque todos os campos da chave são NOT NULL. Coberto por `npm run test:cvm-facts` (duplicata e cronologia INSTANT/DURATION falham fechado).
 
 ### C-3 — Ajustes recomendados (não bloqueantes)
 - **Relações explícitas:** o resumo usa FKs como String solta (`issuerId`, `filingId`...). No Prisma, sem `@relation` não há constraint de integridade referencial no banco. Adicionar `@relation` em todas.
@@ -143,4 +147,4 @@ No SQLite (e no padrão SQL), `NULL` é distinto de `NULL` em índices únicos. 
 2. Fase 0 primeiro está certo. Ajustes: incluir `dashboard_opcoes.py` e o bind do Next no item 1; dividir o item 2 (Origin já, token após sessão); adicionar kill switch + `order_check()` como item 11; promover A7 (Zod em spread-orders); implementar itens 5 e 6 juntos.
 3. ~~Item 10 está bloqueado por conflito com o CLAUDE.md~~ **Resolvido em 2026-07-14:** o usuário moveu o projeto para fora do OneDrive (opção (a) do R-1). Item 10 descartado; regra do CLAUDE.md mantida.
 4. Riscos novos identificados: corrupção por OneDrive sync, credenciais em claro em `AIProvider`/`DataSource`, broadcast de respostas de ordem para todos os clientes WS, ausência total de testes justamente nas mudanças de segurança.
-5. Esquema CVM: aprovado condicionado a duas correções — `Decimal` → `BigInt` + expoente (SQLite armazena Decimal como float) e `periodStart` não-nulo (NULL quebra o `@@unique` para fatos INSTANT).
+5. ~~Esquema CVM: aprovado condicionado a duas correções~~ **Resolvido (verificado em 2026-07-14):** C-1 (`BigInt` + `scalePow`) e C-2 (`periodStart` não-nulo, `INSTANT ⇒ periodStart === periodEnd`) foram implementados na Fase 2 Item 2 (`ca213b2`) e estão cobertos por `test:cvm-facts` — todos os testes passando.
