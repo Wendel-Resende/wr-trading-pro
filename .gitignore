@@ -37,7 +37,8 @@ yarn-error.log*
 next-env.d.ts
 
 # prisma
-prisma/migrations/
+# (prisma/migrations/ NÃO está ignorado — migrations são versionadas no git
+#  para garantir que os testes de harness SQLite temp passem em clone limpo)
 
 # IDE
 .vscode/
