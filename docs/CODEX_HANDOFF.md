@@ -17,7 +17,7 @@
 ### Em aberto
 
 1. ~~Correções obrigatórias do esquema CVM (C-1/C-2)~~ **Verificado em 2026-07-14: já implementadas na Fase 2 Item 2 (`ca213b2`)** — `CvmFact.valueRaw BigInt` + `scalePow`, `periodStart` NOT NULL com `INSTANT ⇒ periodStart === periodEnd`; `npm run test:cvm-facts` passando integralmente.
-2. Cifragem de segredos no banco (`AIProvider.apiKey`, `DataSource.config`) via `safeStorage`/keyring — Fase 1.
+2. ~~Cifragem de segredos no banco~~ **Resolvido em 2026-07-14 por remoção:** `AIProvider`/`DataSource` eram modelos mortos (zero uso no código, tabelas vazias; chaves LLM já são env vars server-side desde a Fase 0 item 7). Removidos do schema + types espelho, migração `20260714184514_drop_plaintext_secret_models`. Validado com `tsc --noEmit`, `npm run build` e `test:cvm-facts` (cadeia de migrações íntegra em banco limpo). Obs.: o `dev.db` local estava 11 migrações atrás — todas aplicadas com `migrate deploy` (backup em `prisma/dev.db.backup-20260714`).
 3. Demais riscos da seção 5 da revisão (empacotamento com `asar: false`, `getPythonPath()` hardcoded).
 
 ## Sessão 2026-07-11 — Revisão independente do dossiê de upgrade

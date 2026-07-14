@@ -77,26 +77,8 @@ export interface Alert {
   createdAt: Date;
 }
 
-export interface AIProvider {
-  id: string;
-  name: 'OPENAI' | 'DEEPSEEK' | 'OLLAMA' | 'QWEN' | 'GROQ';
-  apiKey?: string;
-  endpoint?: string;
-  isActive: boolean;
-  priority: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface DataSource {
-  id: string;
-  name: 'MOCK' | 'B3' | 'PROFITDLL' | 'MT5';
-  type: string;
-  config: string;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
+// AIProvider e DataSource removidos em 2026-07-14 junto com os modelos
+// Prisma correspondentes — segredos não são persistidos no banco.
 
 export interface SystemMetrics {
   id: string;
