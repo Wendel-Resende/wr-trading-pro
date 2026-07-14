@@ -808,3 +808,69 @@ model OrderIntent {
   @@index([requestedBy, createdAt])
   @@index([status, createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// Fase 5 — Pesquisa, backtest e ML (point-in-time, sem lookahead). ADITIVO:
+// nenhum modelo anterior foi alterado. Ver
+// docs/architecture/phase-5-research-backtest-ml.md
+// ---------------------------------------------------------------------------
+model ResearchRun {
+  runId          String    @id @default(cuid())
+  name           String
+  hypothesis     String // texto livre / proveniência (pode vir de LLM, mas NÃO decide trade)
+  datasetId      String
+  windowStart    DateTime
+  windowEnd      DateTime
+  paramsJson     String // hiperparâmetros (snapshot)
+  createdBy      String
+  createdAt      DateTime  @default(now())
+  modelVersionId String?
+
+  @@index([datasetId, createdAt])
+  @@index([createdBy, createdAt])
+}
+
+model ModelVersion {
+  modelVersion         String    @id @default(cuid())
+  kind                 String // 'ML' | 'RULE'
+  label                String
+  asOf                 DateTime
+  hyperparametersJson  String
+  trainingEvidenceJson String? // métricas de fit/validation/test; obrigatório quando kind='ML'
+  invalidatedAt        DateTime?
+  invalidationReason   String?
+  createdAt            DateTime  @default(now())
+
+  @@index([kind, asOf])
+}
+
+model Signal {
+  signalId      String   @id @default(cuid())
+  modelVersionId String
+  instrumentId  String
+  barTime       DateTime // instante do sinal (ex.: close[t])
+  direction     String // BUY | SELL | HOLD
+  score         Float?
+  knowledgeTime DateTime // point-in-time: dados usados até aqui
+  createdAt     DateTime @default(now())
+
+  @@index([modelVersionId, barTime])
+  @@index([instrumentId, barTime])
+}
+
+model BacktestRun {
+  backtestId     String   @id @default(cuid())
+  researchRunId  String
+  modelVersionId String
+  instrumentId   String
+  entryRule      String // 'open_next_bar' (único permitido: t+1)
+  costsJson      String // corretagem, emolumentos, spreadBps, slippageBps, lote
+  windowStart    DateTime
+  windowEnd      DateTime
+  metricsJson    String // Sharpe por período, retorno, drawdown, n_trades, etc.
+  embargoDays    Int // purge/embargo entre treino e teste
+  createdAt      DateTime @default(now())
+
+  @@index([researchRunId])
+  @@index([modelVersionId, instrumentId])
+}

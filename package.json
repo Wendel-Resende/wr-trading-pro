@@ -38,6 +38,10 @@
     "test:risk-policy": "node scripts/risk-policy/run-risk-policy-tests.cjs",
     "test:order-intent": "node scripts/order-intent/run-order-intent-tests.cjs",
     "test:mcp": "node scripts/mcp/run-mcp-tests.cjs",
+    "test:research-run": "node scripts/research-run/run-research-run-tests.cjs",
+    "test:model-version": "node scripts/model-version/run-model-version-tests.cjs",
+    "test:signal": "node scripts/signal/run-signal-tests.cjs",
+    "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
     "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js"
   },
   "build": {
