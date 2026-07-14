@@ -240,6 +240,28 @@ Migração aditiva (não remover tabelas atuais):
 - Tools: `cvm.get_facts`, `b3.get_instrument`, `market.get_bars`, `portfolio.snapshot`
 - Sem `execute_order` no primeiro ciclo
 
+**CHECKPOINT — Fase 4 CONCLUÍDA em 2026-07-14**
+
+| Item | Título | Commit | Resumo da entrega |
+|------|--------|--------|-------------------|
+| F4 | Servidor MCP read-only | `b7b44b8` | Servidor MCP local (stdio) sobre services de aplicação (Fases 2/3). 8 tools: `cvm.get_facts`, `b3.get_instrument`, `market.get_bars`, `agent_run.get`, `risk_decision.get`, `order_intent.get`, `reconciliation.report`, `dataset.feature_values` |
+
+**Características garantidas por construção:**
+- SEM LLM no servidor; apenas repassa chamadas de tool para services de leitura.
+- NENHUMA tool escreve: `save*`/`create*`/`update*`/`cancel*`/`execute*` proibidos — provado por spy em `test:mcp` R-LO-1.
+- Transporte `stdio` no primeiro ciclo; `http` fora de escopo (quando vier, exige `WR_MCP_HTTP_TOKEN` + bind 127.0.0.1, fail-closed sem token — `config.ts`).
+- Reutiliza `compose.ts` de `agent-run`, `risk-policy`, `order-intent`, `reconciliation`, `feature-value`, `read-models-v1`. `@modelcontextprotocol/sdk` + `zod` adicionados como dependências.
+- Desvio aceitável: `portfolio.snapshot` NÃO implementada (não existe application service de leitura para `PortfolioProvider`; proibido inventar consulta Prisma fora dos adapters).
+
+**Correção de infraestrutura (mesmo commit train):** as 4 migrations `20260112022825_init_stock_monitoring`, `20260317224647_add_historical_candle`, `20260714020000_add_risk_decision_ledger` (Item 3) e `20260714030000_add_order_intent_approval` (Item 4) estavam no disco mas NÃO no git (`prisma/migrations/` estava no `.gitignore`). Isso quebrava `test:risk-policy`, `test:order-intent` e `test:reconciliation` em clone limpo. Corrigido em `b3e7c91`: removido `prisma/migrations/` do `.gitignore` e versionadas as 4 migrations (todas CREATE TABLE/INDEX puras, aditivas). Agora todos os harness passam em qualquer clone.
+
+**Validação acumulada (Guardião, fonte primária):**
+- `test:mcp` ✅ R-LO-1..8 · `prisma validate` ✅ · `tsc --noEmit` ✅ · `build` Next.js ✅
+- `test:risk-policy` ✅ · `test:agent-run` ✅ · `test:order-intent` ✅ · `test:reconciliation` ✅ · `test:dataset-feature` ✅ · `test:cvm-facts` ✅ · `test:market-bar` ✅ · `test:reference-data` ✅ · `smoke:auth` ✅ 62 PASS
+- Todos os harness de Fase 3 e Fase 4 verdes; repositório consistente em clone limpo.
+
+**Próximo:** Fase 5 — Pesquisa, backtest e ML.
+
 ### Fase 5 — Pesquisa, backtest e ML
 - `ResearchRun`, `ModelVersion`, `Signal`, `BacktestRun` persistidos
 - Walk-forward, custos, embargo/purge
