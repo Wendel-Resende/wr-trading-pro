@@ -44,6 +44,8 @@ Ambos os lados têm mérito: o problema real que o achado M8 identifica é **SQL
 
 Implementar o item 10 como está seria violar uma decisão registrada sem revogá-la formalmente.
 
+> **Resolvido em 2026-07-14 — opção (a).** O usuário moveu o projeto para fora do OneDrive; o caminho atual é `C:\WR\wr_trade_pro_`. A regra do CLAUDE.md permanece válida (dados locais em `data/` dentro do projeto) e o item 10 do dossiê (migração para `userData`) fica **descartado** — a causa raiz do risco (sync do OneDrive sobre o SQLite) foi eliminada.
+
 ### R-2 — CR-2 está incompleto: dashboard de opções também expõe 0.0.0.0
 `python/options/dashboard_opcoes.py:466` (e a versão base de apoio, linha 669) também fazem `app.run(host='0.0.0.0', ...)`. O item 1 da Fase 0 deve incluí-los, senão a contenção fica furada.
 
@@ -90,7 +92,7 @@ Critério: risco eliminado por hora de esforço, respeitando dependências. Nume
 | 8 | (8) Sessão HttpOnly + middleware de autenticação | Maior item. Criar `src/middleware.ts`, rota de sessão, cobrir as 21 rotas de API. Nota: app roda em `http://localhost`, então cookie sem flag `Secure` — aceitável local, registrar como limitação. |
 | 9 | (2b) Token efêmero no WebSocket derivado da sessão | Depende do item 8 (R-4). |
 | 10 | (9) `sandbox: true` + `will-navigate` + `setWindowOpenHandler` | Independente; deixei por último apenas porque exige smoke test Electron completo (R-8). Pode adiantar se houver folga. |
-| — | (10) Mover estado para `userData` | **Bloqueado** até decisão do Guardião sobre o conflito com o CLAUDE.md (R-1). |
+| — | (10) Mover estado para `userData` | ~~Bloqueado~~ **Descartado em 2026-07-14**: projeto movido para fora do OneDrive (opção (a) do R-1); regra do CLAUDE.md mantida. |
 | + | (A7 promovido) Zod no `spread-orders` POST | R-6. Encaixar entre os itens 5 e 8, esforço mínimo. |
 
 Com esses ajustes, respondo à pergunta central: **os 10 itens são quase suficientes, mas não exatamente** — faltam o dashboard de opções e o Next no bind local, falta o kill switch mínimo, o item 2 precisa de split por dependência, e o item 10 não deve ser executado como está.
@@ -99,8 +101,8 @@ Com esses ajustes, respondo à pergunta central: **os 10 itens são quase sufici
 
 ## 5. Riscos não cobertos pelo dossiê
 
-1. **SQLite sob OneDrive** — risco de corrupção por sync durante write (detalhado em R-1). É indiscutivelmente o risco de integridade de dados mais imediato do projeto e não aparece nomeado em nenhum achado.
-2. **Credenciais em texto claro no banco** — `AIProvider.apiKey` (`schema.prisma:113`) e `DataSource.config` ("JSON string with credentials/settings", `schema.prisma:125`) persistem segredos sem cifragem no `dev.db`. Combinado com o banco dentro do OneDrive, os segredos sobem para a nuvem da Microsoft. Sugiro achado novo, severidade alta, com remediação via `safeStorage` do Electron ou keyring do SO (Fase 1).
+1. **SQLite sob OneDrive** — risco de corrupção por sync durante write (detalhado em R-1). É indiscutivelmente o risco de integridade de dados mais imediato do projeto e não aparece nomeado em nenhum achado. **Resolvido em 2026-07-14:** projeto movido para fora do OneDrive (`C:\WR\wr_trade_pro_`).
+2. **Credenciais em texto claro no banco** — `AIProvider.apiKey` (`schema.prisma:113`) e `DataSource.config` ("JSON string with credentials/settings", `schema.prisma:125`) persistem segredos sem cifragem no `dev.db`. Combinado com o banco dentro do OneDrive, os segredos sobem para a nuvem da Microsoft. Sugiro achado novo, severidade alta, com remediação via `safeStorage` do Electron ou keyring do SO (Fase 1). *(Nota 2026-07-14: com o projeto fora do OneDrive, o vetor de upload para a nuvem deixou de existir; a cifragem dos segredos no banco segue recomendada para a Fase 1.)*
 3. **Vazamento entre clientes via broadcast** — o dossiê cobre a sessão MT5 global (CR-3), mas não que respostas de erro e execução de ordem usam `broadcast()` em vez de resposta ao cliente solicitante (`mt5_bridge.py:1024,1050,1062...`). Mesmo com token por sessão, todo cliente conectado vê as ordens dos demais. A correção do CR-3 precisa incluir *scoping* de respostas, não só autenticação.
 4. **Empacotamento distribui código-fonte e config** — `package.json` build inclui `python/**/*` e `agents/**/*` com `asar: false`. Hoje é risco baixo (app local), mas qualquer distribuição futura do instalador carrega tudo. Registrar para a Fase 6.
 5. **`getPythonPath()` hardcoded quebra o empacotado em qualquer outra máquina** — o dossiê lista como A13, correto, mas vale explicitar a consequência: o executável Electron atual **só funciona na máquina do desenvolvedor**. Isso eleva a urgência prática de A13 caso haja intenção de rodar em segunda máquina antes da Fase 1.
@@ -139,6 +141,6 @@ No SQLite (e no padrão SQL), `NULL` é distinto de `NULL` em índices únicos. 
 
 1. Os 9 críticos estão confirmados no código, sem falso positivo. Única imprecisão: a citação de linha do CR-4 no bridge (o vazamento é `mt5_bridge.py:114`, não :171-174).
 2. Fase 0 primeiro está certo. Ajustes: incluir `dashboard_opcoes.py` e o bind do Next no item 1; dividir o item 2 (Origin já, token após sessão); adicionar kill switch + `order_check()` como item 11; promover A7 (Zod em spread-orders); implementar itens 5 e 6 juntos.
-3. **Item 10 está bloqueado por conflito com o CLAUDE.md** — precisa de decisão sua antes de qualquer implementação. O risco subjacente real é SQLite dentro do OneDrive.
+3. ~~Item 10 está bloqueado por conflito com o CLAUDE.md~~ **Resolvido em 2026-07-14:** o usuário moveu o projeto para fora do OneDrive (opção (a) do R-1). Item 10 descartado; regra do CLAUDE.md mantida.
 4. Riscos novos identificados: corrupção por OneDrive sync, credenciais em claro em `AIProvider`/`DataSource`, broadcast de respostas de ordem para todos os clientes WS, ausência total de testes justamente nas mudanças de segurança.
 5. Esquema CVM: aprovado condicionado a duas correções — `Decimal` → `BigInt` + expoente (SQLite armazena Decimal como float) e `periodStart` não-nulo (NULL quebra o `@@unique` para fatos INSTANT).

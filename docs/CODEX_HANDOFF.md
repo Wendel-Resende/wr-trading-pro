@@ -1,6 +1,24 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-11
+Última atualização: 2026-07-14
+
+## Sessão 2026-07-14 — Decisão R-1 resolvida + commits pendentes
+
+### Decisão do usuário
+
+- **R-1 resolvido pela opção (a):** o projeto foi movido para fora do OneDrive; caminho atual `C:\WR\wr_trade_pro_`. A regra do CLAUDE.md (dados locais em `data/`) permanece válida e o item 10 do dossiê (migração para `userData`) foi **descartado** — a causa raiz (sync do OneDrive sobre o SQLite) foi eliminada.
+- `fable5-review-2026-07-11.md` anotado com a resolução (R-1, seção 4, seção 5 e resumo executivo).
+
+### O que foi feito
+
+- Commits das pendências da árvore: `96b9b04` (electron/dist recompilado do fix e812799) e `f0a7140` (handoff da sessão de 2026-07-11).
+- Verificado no código que a Fase 0 da revisão está toda implementada e commitada: fail-closed no tipo de ordem, redator de segredos, binds 127.0.0.1, validação de Origin no WS, kill switch `WR_TRADING_ENABLED` + `order_check()`, `NO_DECISION`, `src/middleware.ts`, token efêmero no WS, sandbox Electron, Zod em spread-orders.
+
+### Em aberto
+
+1. Correções obrigatórias do esquema CVM: `Decimal` → `BigInt` + expoente; `periodStart` não-nulo (C-1/C-2 da revisão).
+2. Cifragem de segredos no banco (`AIProvider.apiKey`, `DataSource.config`) via `safeStorage`/keyring — Fase 1.
+3. Demais riscos da seção 5 da revisão (empacotamento com `asar: false`, `getPythonPath()` hardcoded).
 
 ## Sessão 2026-07-11 — Revisão independente do dossiê de upgrade
 
