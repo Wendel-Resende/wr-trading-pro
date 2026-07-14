@@ -36,8 +36,17 @@ CSVs copiados de `/root/.hermes/workspace/cvm_fundamentos/data/exports/`
 Consumidos read-only por `/api/cvm/dividends` e pelo detalhe de empresa
 (`src/lib/server/cvm-exports.ts`). Mesma proveniência derivada do banco.
 
-**Nota (2026-07-14):** os exports foram gerados em **2026-06-01** — são a
-versão da carteira/scores posterior à tabela do inventário do vault (por
-isso VIVA3 81,7 lidera e ITUB4 saiu), mas **ainda não incluem o 1T2026**
-(presente só no banco). Quando o Guardião regenerar o pipeline de
-dividendos/scores com o 1T2026, recopiar os CSVs daqui.
+**Gerações (recopiados em 2026-07-14 ~20:15, após regeneração com 1T2026):**
+
+- `portfolio_12_dividendos_jcp.csv` e `dividend_quality_score.csv` —
+  **2026-07-14 20:11, com 1T2026**. Carteira vigente: VIVA3, CXSE3, BBSE3,
+  ENGI11, LAVV3, TRIS3, LEVE3, GRND3, ALUP11, SHUL4, VIVT3, INTB3
+  (entraram CXSE3/LEVE3/GRND3/SHUL4/INTB3; saíram ITUB4/ITSA4/WEGE3/ABEV3/
+  KEPL3 — ver inventário no vault).
+- `financial_health_scores.csv` — regenerado 2026-07-14 20:10, mas o painel
+  vai até **2025T4** (confirmar com o Guardião se é regra de janela).
+- `dividendos_jcp_*.csv` (série/resumo/cobertura) — geração **2026-05-26**,
+  até 2025T4.
+- `portfolio_ranking.csv` (2026-05-30) e `monte_carlo_sustainability.csv`
+  (2026-05-25) — não regenerados; o gate MC exibido pode defasar da
+  carteira nova.
