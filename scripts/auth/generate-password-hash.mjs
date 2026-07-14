@@ -50,6 +50,9 @@ if (password !== confirm) {
 }
 
 console.log('\nAdicione ao seu .env (NUNCA commitar):\n');
-console.log(`WR_AUTH_PASSWORD_HASH="${hashPassword(password)}"`);
+// Os "$" do hash precisam ser escapados como "\$": o dotenv-expand usado pelo
+// Next.js expande "$..." como variável de ambiente (mesmo entre aspas) e
+// corromperia o hash silenciosamente.
+console.log(`WR_AUTH_PASSWORD_HASH="${hashPassword(password).replace(/\$/g, '\\$')}"`);
 console.log(`WR_AUTH_SESSION_SECRET="${randomBytes(32).toString('hex')}"`);
 console.log('\nDefina também WR_AUTH_USERNAME. Detalhes em docs/AUTH_SETUP.md.');

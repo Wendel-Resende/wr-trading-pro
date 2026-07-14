@@ -22,9 +22,14 @@ Copie `.env.example` para `.env` (se ainda não existir) e preencha:
 
 ```dotenv
 WR_AUTH_USERNAME="seu_usuario_local"
-WR_AUTH_PASSWORD_HASH="scrypt$16384$8$1$<salt>$<hash>"   # saída do script
-WR_AUTH_SESSION_SECRET="<64 caracteres hex>"              # saída do script
+WR_AUTH_PASSWORD_HASH="scrypt\$16384\$8\$1\$<salt>\$<hash>"   # saída do script
+WR_AUTH_SESSION_SECRET="<64 caracteres hex>"                  # saída do script
 ```
+
+> **Importante:** os `$` do hash devem ficar escapados como `\$` (o script já
+> imprime assim). O loader de `.env` do Next.js (dotenv-expand) expande `$...`
+> como variável de ambiente — mesmo entre aspas simples ou duplas — e
+> corromperia o hash silenciosamente, fazendo o login responder 503.
 
 Opcionais:
 

@@ -1,6 +1,6 @@
 @echo off
 title WR Trading Pro
-cd /d "C:\Users\rwres\OneDrive\Área de Trabalho\AI\wr_trade_pro_"
+cd /d "C:\WR\wr_trade_pro_"
 echo Iniciando WR Trading Pro...
 echo.
 echo Electron: %cd%
