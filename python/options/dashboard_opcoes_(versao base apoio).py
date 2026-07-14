@@ -666,4 +666,4 @@ if __name__ == '__main__':
     print(f"  Porta: {PORT}")
     print(f"  http://localhost:{PORT}")
     print(f"{'=' * 50}\n")
-    app.run(debug=False, host='0.0.0.0', port=PORT)
+    app.run(debug=False, host='127.0.0.1', port=PORT)

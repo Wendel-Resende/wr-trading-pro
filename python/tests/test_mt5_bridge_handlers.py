@@ -38,13 +38,22 @@ class FakeMt5:
     TIMEFRAME_W1 = 10080
     TIMEFRAME_MN1 = 43200
 
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TYPE_BUY_LIMIT = 2
+    ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
+
     def __init__(self):
         self.info = None
         self.rates = []
         self.chart_calls = []
         self.raise_info = False
+        self.symbol_info_calls = []
 
     def symbol_info(self, symbol):
+        self.symbol_info_calls.append(symbol)
         if self.raise_info:
             raise RuntimeError("terminal failure")
         return self.info
@@ -112,6 +121,82 @@ class BridgeHandlerTests(unittest.IsolatedAsyncioTestCase):
         await self.bridge.broadcast({"value": math.inf})
         self.assertEqual(self.requester.messages, [])
         self.assertEqual(self.other.messages, [])
+
+    async def test_unknown_order_type_fails_closed_and_requester_only(self):
+        """CR-5: tipo de ordem desconhecido deve ser rejeitado, nunca cair
+        para um default (ex.: ORDER_TYPE_BUY), e o erro deve ir só para
+        quem enviou a ordem, não para todos os clientes (CR-3)."""
+        import os
+
+        os.environ["WR_TRADING_ENABLED"] = "true"
+        try:
+            await self.bridge.handle_send_order(
+                self.requester,
+                {"symbol": "PETR4", "type": "ORDER_TYPE_TYPO", "volume": 1},
+            )
+        finally:
+            del os.environ["WR_TRADING_ENABLED"]
+
+        self.assertEqual(len(self.requester.messages), 1)
+        data = self.requester.messages[0]["data"]
+        self.assertEqual(data["code"], "INVALID_ORDER_TYPE")
+        self.assertEqual(self.other.messages, [])
+        # Nunca deve avançar para consultar informações do símbolo/enviar ordem.
+        self.assertEqual(self.mt5.symbol_info_calls, [])
+
+    async def test_kill_switch_blocks_order_when_disabled(self):
+        """R-5: sem WR_TRADING_ENABLED=true, nenhuma ordem real é enviada."""
+        import os
+
+        os.environ.pop("WR_TRADING_ENABLED", None)
+        await self.bridge.handle_send_order(
+            self.requester,
+            {"symbol": "PETR4", "type": "ORDER_TYPE_BUY", "volume": 1},
+        )
+        self.assertEqual(self.requester.messages[0]["data"]["code"], "TRADING_DISABLED")
+        self.assertEqual(self.other.messages, [])
+        self.assertEqual(self.mt5.symbol_info_calls, [])
+
+
+class RedactionTests(unittest.TestCase):
+    """R-9: testes unitários do redator central de segredos em log (CR-4)."""
+
+    def test_redact_value_masks_known_sensitive_keys(self):
+        self.assertEqual(bridge_module._redact_value("password", "abc123"), "***")
+        self.assertEqual(bridge_module._redact_value("api_key", "xyz"), "***")
+        self.assertEqual(bridge_module._redact_value("Authorization", "Bearer xyz"), "***")
+
+    def test_redact_value_preserves_non_sensitive_keys(self):
+        self.assertEqual(bridge_module._redact_value("symbol", "PETR4"), "PETR4")
+        self.assertEqual(bridge_module._redact_value("volume", 10), 10)
+
+    def test_redact_masks_nested_dict_fields(self):
+        payload = {
+            "login": 12345,
+            "password": "supersecret",
+            "server": "Demo-Server",
+            "nested": {"token": "abcdef", "symbol": "WIN"},
+        }
+        result = bridge_module.redact(payload)
+        self.assertEqual(result["password"], "***")
+        self.assertEqual(result["nested"]["token"], "***")
+        self.assertEqual(result["login"], 12345)
+        self.assertEqual(result["nested"]["symbol"], "WIN")
+
+    def test_redact_masks_fields_inside_lists(self):
+        payload = {"accounts": [{"password": "p1"}, {"password": "p2"}]}
+        result = bridge_module.redact(payload)
+        self.assertEqual([item["password"] for item in result["accounts"]], ["***", "***"])
+
+    def test_redact_masks_raw_strings_that_look_like_secrets(self):
+        result = bridge_module.redact("token=abc123secret")
+        self.assertEqual(result, "***")
+
+    def test_redacted_str_never_leaks_password_in_output(self):
+        payload = {"login": 1, "password": "topsecret", "server": "Demo"}
+        output = bridge_module.redacted_str(payload)
+        self.assertNotIn("topsecret", output)
+        self.assertIn("***", output)
 
 
 if __name__ == "__main__":
