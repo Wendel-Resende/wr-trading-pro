@@ -15,6 +15,7 @@ import type { AgentRunRepository } from '../../domain/v1/ports/agent-run-reposit
 import type { AgentLlmPort } from '../../domain/v1/ports/agent-llm';
 import { compareInstants, parseInstant } from '../../domain/v1/time';
 import { ReadModelError } from '../read-models-v1/errors';
+import { buildPromptContext } from '../../lib/agent-data-context';
 
 export interface AgentRunServicePorts {
   readonly agentRunRepository: AgentRunRepository;
@@ -240,14 +241,20 @@ async function executeAgentNodeLive(
   const readContext = (node.reads ?? [])
     .map((ref) => `- ${ref}: ${JSON.stringify(resolveRef(ref, nodeStates) ?? null)}`)
     .join('\n');
+
+  // Contexto de dados da plataforma (fundamentos, dividendos, carteira)
+  const tickerHint = typeof input.ticker === 'string' ? input.ticker : typeof input.symbol === 'string' ? input.symbol : undefined;
+  const dataContext = buildPromptContext(tickerHint);
+
   const system =
     `Você é o agente "${node.role ?? node.id}" do runtime governado da WR Trading Pro (B3/Brasil). ` +
     `Objetivo do run: ${kind === 'RESEARCH' ? 'pesquisa/análise' : 'avaliação de proposta (nunca execução)'}. ` +
-    'Responda em português, de forma objetiva e fundamentada. Você não executa ordens e não tem autoridade de execução.';
+    'Responda em português, de forma objetiva e fundamentada. Você não executa ordens e não tem autoridade de execução.\n\n' +
+    `DADOS DA PLATAFORMA (contexto real, use estes dados na sua análise):\n${dataContext}`;
   const user =
     `Contexto de entrada (JSON): ${JSON.stringify(input)}\n` +
     (readContext ? `Saídas de nós anteriores:\n${readContext}\n` : '') +
-    'Produza sua análise em texto corrido (sem JSON).';
+    'Produza sua análise em texto corrido (sem JSON). Use os dados da plataforma fornecidos no system prompt como base factual.';
 
   try {
     const completion = await llm.complete(
@@ -332,9 +339,10 @@ async function synthesizeOutputLive(
           role: 'system',
           content:
             'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
-            `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON.`,
+            `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON. ` +
+            'Use os dados da plataforma como base factual quando relevante.',
         },
-        { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}` },
+        { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}\n\nDados da plataforma (referência):\n${buildPromptContext()}` },
       ],
       llmPreferences(input)
     );
