@@ -36,17 +36,21 @@ CSVs copiados de `/root/.hermes/workspace/cvm_fundamentos/data/exports/`
 Consumidos read-only por `/api/cvm/dividends` e pelo detalhe de empresa
 (`src/lib/server/cvm-exports.ts`). Mesma proveniência derivada do banco.
 
-**Gerações (recopiados em 2026-07-14 ~20:15, após regeneração com 1T2026):**
+**Gerações (recopiados em 2026-07-14 ~22:20 — conjunto completo com 1T2026):**
 
-- `portfolio_12_dividendos_jcp.csv` e `dividend_quality_score.csv` —
-  **2026-07-14 20:11, com 1T2026**. Carteira vigente: VIVA3, CXSE3, BBSE3,
-  ENGI11, LAVV3, TRIS3, LEVE3, GRND3, ALUP11, SHUL4, VIVT3, INTB3
+- Carteira vigente (`portfolio_12_dividendos_jcp.csv`, 20:11): VIVA3, CXSE3,
+  BBSE3, ENGI11, LAVV3, TRIS3, LEVE3, GRND3, ALUP11, SHUL4, VIVT3, INTB3
   (entraram CXSE3/LEVE3/GRND3/SHUL4/INTB3; saíram ITUB4/ITSA4/WEGE3/ABEV3/
   KEPL3 — ver inventário no vault).
-- `financial_health_scores.csv` — regenerado 2026-07-14 20:10, mas o painel
-  vai até **2025T4** (confirmar com o Guardião se é regra de janela).
-- `dividendos_jcp_*.csv` (série/resumo/cobertura) — geração **2026-05-26**,
-  até 2025T4.
-- `portfolio_ranking.csv` (2026-05-30) e `monte_carlo_sustainability.csv`
-  (2026-05-25) — não regenerados; o gate MC exibido pode defasar da
-  carteira nova.
+- `dividendos_jcp_*.csv` (22:14) — série por trimestre com **134 linhas de
+  2026T1** (7.064 registros).
+- `financial_health_scores.csv` (22:xx) — painel até **2026T1** (7.062
+  registros).
+- `monte_carlo_sustainability.csv` (22:xx) — **138 tickers** (cobertura
+  completa; antes só a carteira antiga de 12).
+- `dividend_quality_score.csv` (20:11) e `portfolio_ranking.csv` (21:49).
+
+**Nota operacional:** a cópia WSL → `C:\WR` feita pelo Guardião falhou
+silenciosamente duas vezes (os arquivos nunca chegaram); quem copia da
+fonte (`/root/.hermes/workspace/cvm_fundamentos/data/exports/`) para cá é
+o Claude Code, validando contagens/2026T1 após cada cópia.
