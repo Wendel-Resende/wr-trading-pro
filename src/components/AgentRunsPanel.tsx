@@ -5,9 +5,12 @@
  *
  * Consome /api/v1/agent-runs: criação (202 + runId), processamento via
  * /advance, acompanhamento com ciclo de vida completo, DAG semântico,
- * orçamento (steps/custo/timeout) e cancelamento. O processamento ainda é
- * determinístico/simulado (sem LLM real) — o banner deixa isso explícito;
- * conectar os nós AGENT ao proxy LLM server-side é a próxima etapa.
+ * orçamento (steps/custo/timeout) e cancelamento. Suporta dois templates:
+ * - SIMPLES: 1 agente (analista-pesquisa ou analista-proposta)
+ * - COMITE: 5 nós AGENT em debate (3 analistas paralelos + cético + síntese do gestor)
+ *
+ * Os nós AGENT/SYNTHESIS usam o LLM do servidor via proxy (Ollama/OpenAI/etc.);
+ * sem provedor disponível, cai para modo simulado. O banner deixa isso explícito.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -74,6 +77,53 @@ function buildDefaultDag(role: string) {
   };
 }
 
+/** DAG do Comitê (spec 2026-07-15): 3 analistas em paralelo → cético rebate → gestor sintetiza. */
+function buildCommitteeDag() {
+  return {
+    nodes: [
+      { id: "in", type: "INPUT" as const },
+      { id: "fund", type: "AGENT" as const, role: "fundamentalista-cvm", provides: ["parecer"] },
+      { id: "divs", type: "AGENT" as const, role: "dividendos", provides: ["parecer"] },
+      { id: "risco", type: "AGENT" as const, role: "risco", provides: ["parecer"] },
+      {
+        id: "cetico",
+        type: "AGENT" as const,
+        role: "cetico",
+        reads: ["fund.parecer", "divs.parecer", "risco.parecer"],
+        provides: ["parecer"],
+      },
+      {
+        id: "evidence",
+        type: "EVIDENCE" as const,
+        reads: ["fund.parecer", "divs.parecer", "risco.parecer", "cetico.parecer"],
+      },
+      { id: "synthesis", type: "SYNTHESIS" as const, role: "gestor", provides: ["finding"] },
+      { id: "out", type: "OUTPUT" as const, reads: ["synthesis.finding"] },
+    ],
+    edges: [
+      ["in", "fund"],
+      ["in", "divs"],
+      ["in", "risco"],
+      ["fund", "cetico"],
+      ["divs", "cetico"],
+      ["risco", "cetico"],
+      ["cetico", "evidence"],
+      ["evidence", "synthesis"],
+      ["synthesis", "out"],
+    ] as [string, string][],
+  };
+}
+
+const COMMITTEE_TITLES: Record<string, string> = {
+  "fundamentalista-cvm": "Fundamentalista CVM",
+  dividendos: "Dividendos",
+  risco: "Risco",
+  cetico: "Cético (contraditor)",
+  gestor: "Gestor (síntese)",
+};
+
+const TICKER_INPUT_RE = /^[A-Za-z]{4}\d{1,2}$/;
+
 interface LlmProviders {
   providers: string[];
   ollama: { models: string[]; defaultModel: string };
@@ -90,6 +140,8 @@ export default function AgentRunsPanel() {
   const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [template, setTemplate] = useState<"SIMPLES" | "COMITE">("SIMPLES");
+  const [ticker, setTicker] = useState("");
 
   useEffect(() => {
     fetch("/api/llm/providers")
@@ -126,6 +178,10 @@ export default function AgentRunsPanel() {
   }, [runs, refresh]);
 
   const submit = async () => {
+    if (template === "COMITE" && !TICKER_INPUT_RE.test(ticker.trim())) {
+      setError("O comitê delibera sobre 1 ativo: informe um ticker B3 válido (ex.: WEGE3).");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
@@ -134,14 +190,22 @@ export default function AgentRunsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           kind,
-          dag: buildDefaultDag(kind === "RESEARCH" ? "analista-pesquisa" : "analista-proposta"),
+          dag:
+            template === "COMITE"
+              ? buildCommitteeDag()
+              : buildDefaultDag(kind === "RESEARCH" ? "analista-pesquisa" : "analista-proposta"),
           input: {
             question: question.trim() || "(sem pergunta)",
+            ...(template === "COMITE" ? { ticker: ticker.trim().toUpperCase() } : {}),
             ...(provider ? { llmProvider: provider } : {}),
             ...(model ? { llmModel: model } : {}),
           },
-          // 5 min: chamadas a LLM local (Ollama em CPU) podem levar minutos
-          budget: { maxSteps, timeoutMs: 300_000 },
+          // Comitê: ~5 chamadas LLM — teto de tokens explícito (spec) e o
+          // mesmo timeout de 5 min (Ollama local pode levar minutos por chamada).
+          budget:
+            template === "COMITE"
+              ? { maxSteps, maxCost: 30_000, timeoutMs: 300_000 }
+              : { maxSteps, timeoutMs: 300_000 },
           // Margem de 60s: o servidor fixa knowledgeTime = now() e rejeita
           // knowledgeTime > decisionTime — clock do browser + latência não
           // podem ficar atrás do relógio do servidor.
@@ -193,6 +257,19 @@ export default function AgentRunsPanel() {
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
+              Template
+            </label>
+            <select
+              value={template}
+              onChange={(e) => setTemplate(e.target.value as "SIMPLES" | "COMITE")}
+              className="bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+            >
+              <option value="SIMPLES">Simples (1 agente)</option>
+              <option value="COMITE">Comitê (4 papéis + gestor)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
               Tipo
             </label>
             <select
@@ -216,6 +293,21 @@ export default function AgentRunsPanel() {
               className="w-full bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
             />
           </div>
+          {template === "COMITE" && (
+            <div>
+              <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
+                Ticker (obrigatório)
+              </label>
+              <input
+                type="text"
+                value={ticker}
+                onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                placeholder="WEGE3"
+                maxLength={6}
+                className="w-28 bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
               Provedor
@@ -423,6 +515,67 @@ export default function AgentRunsPanel() {
                   <p className="text-xs text-red-400 font-space">
                     {selected.error.code ?? "ERRO"}: {selected.error.message ?? "sem detalhe"}
                   </p>
+                </div>
+              )}
+
+              {selected.dag.nodes.some((n) => n.role && COMMITTEE_TITLES[n.role]) && (
+                <div>
+                  <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">
+                    Pareceres do Comitê
+                  </p>
+                  <div className="space-y-2">
+                    {selected.dag.nodes
+                      .filter((n) => n.type === "AGENT" && n.role && COMMITTEE_TITLES[n.role])
+                      .map((n) => {
+                        const state = selected.nodeStates[n.id];
+                        const parecer = state?.output?.parecer;
+                        const llm = state?.output?._llm;
+                        const isCetico = n.role === "cetico";
+                        return (
+                          <div
+                            key={n.id}
+                            className={`border rounded-lg p-3 ${
+                              isCetico ? "border-cyber-pink/40 bg-cyber-pink/5" : "border-cyber-border bg-cyber-dark/40"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <p className={`text-xs font-orbitron uppercase tracking-wider ${isCetico ? "text-cyber-pink" : "text-cyber-cyan"}`}>
+                                {COMMITTEE_TITLES[n.role!]}
+                              </p>
+                              <p className="text-[0.6rem] text-gray-500 font-space">
+                                {llm
+                                  ? llm.simulated
+                                    ? `simulado (${llm.reason ?? "sem LLM"})`
+                                    : `${llm.provider}/${llm.model} · ${llm.totalTokens ?? "?"} tokens`
+                                  : "pendente"}
+                              </p>
+                            </div>
+                            <p className="text-xs text-gray-300 font-space whitespace-pre-wrap max-h-40 overflow-y-auto">
+                              {typeof parecer === "string" ? parecer : "—"}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    {selected.output && (
+                      <div className="border border-green-500/40 bg-green-500/5 rounded-lg p-3">
+                        <p className="text-xs font-orbitron uppercase tracking-wider text-green-400 mb-1">
+                          {COMMITTEE_TITLES.gestor}
+                        </p>
+                        <p className="text-xs text-gray-300 font-space whitespace-pre-wrap max-h-40 overflow-y-auto">
+                          {String(
+                            (selected.output as Record<string, unknown>).thesis ??
+                              (selected.output as Record<string, unknown>).rationale ??
+                              "—",
+                          )}
+                        </p>
+                        {Array.isArray((selected.output as Record<string, unknown>).risks) && (
+                          <p className="text-[0.65rem] text-yellow-400/80 font-space mt-1">
+                            Riscos: {((selected.output as Record<string, unknown>).risks as string[]).join(" · ")}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
