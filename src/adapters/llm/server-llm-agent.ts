@@ -7,8 +7,18 @@
  * cliente chega aqui (Fase 0, itens 5-7).
  */
 
-import type { AgentLlmCompletion, AgentLlmMessage, AgentLlmPort } from '../../domain/v1/ports/agent-llm';
+import type { LLMProvider } from '../../types/llm';
+import type { AgentLlmCompletion, AgentLlmMessage, AgentLlmOptions, AgentLlmPort } from '../../domain/v1/ports/agent-llm';
 import { serverLlmService } from '../../lib/server/llm-providers';
+
+const KNOWN_PROVIDERS: readonly LLMProvider[] = ['OPENAI', 'DEEPSEEK', 'QWEN', 'GROQ', 'OLLAMA', 'MANUS'];
+const MODEL_NAME_PATTERN = /^[\w][\w.\-:]{0,63}$/;
+
+function normalizeProvider(value: string | undefined): LLMProvider | undefined {
+  if (!value) return undefined;
+  const upper = value.toUpperCase();
+  return KNOWN_PROVIDERS.find((p) => p === upper);
+}
 
 /** Estimativa conservadora (~4 chars/token) quando o provedor não informa usage. */
 function estimateTokens(text: string): number {
@@ -16,13 +26,12 @@ function estimateTokens(text: string): number {
 }
 
 export class ServerLlmAgentAdapter implements AgentLlmPort {
-  async complete(
-    messages: readonly AgentLlmMessage[],
-    opts?: { readonly maxTokens?: number }
-  ): Promise<AgentLlmCompletion> {
+  async complete(messages: readonly AgentLlmMessage[], opts?: AgentLlmOptions): Promise<AgentLlmCompletion> {
+    const provider = normalizeProvider(opts?.provider);
+    const model = opts?.model && MODEL_NAME_PATTERN.test(opts.model) ? opts.model : undefined;
     const response = await serverLlmService.chat({
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      config: { maxTokens: opts?.maxTokens ?? 1200, temperature: 0.2 },
+      config: { maxTokens: opts?.maxTokens ?? 1200, temperature: 0.2, provider, model },
     });
 
     const promptChars = messages.reduce((acc, m) => acc + m.content.length, 0);

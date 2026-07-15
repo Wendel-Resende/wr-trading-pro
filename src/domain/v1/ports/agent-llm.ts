@@ -25,6 +25,14 @@ export interface AgentLlmCompletion {
   readonly totalTokens: number;
 }
 
+export interface AgentLlmOptions {
+  readonly maxTokens?: number;
+  /** Provedor preferido (ex.: 'OLLAMA'); inválido/indisponível cai no fallback do proxy. */
+  readonly provider?: string;
+  /** Modelo preferido no provedor (ex.: 'qwen3.5:4b'). */
+  readonly model?: string;
+}
+
 export interface AgentLlmPort {
-  complete(messages: readonly AgentLlmMessage[], opts?: { readonly maxTokens?: number }): Promise<AgentLlmCompletion>;
+  complete(messages: readonly AgentLlmMessage[], opts?: AgentLlmOptions): Promise<AgentLlmCompletion>;
 }

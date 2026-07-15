@@ -74,14 +74,31 @@ function buildDefaultDag(role: string) {
   };
 }
 
+interface LlmProviders {
+  providers: string[];
+  ollama: { models: string[]; defaultModel: string };
+}
+
 export default function AgentRunsPanel() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selected, setSelected] = useState<AgentRun | null>(null);
   const [kind, setKind] = useState<"RESEARCH" | "PROPOSAL">("RESEARCH");
   const [question, setQuestion] = useState("");
   const [maxSteps, setMaxSteps] = useState(100);
+  const [llmInfo, setLlmInfo] = useState<LlmProviders | null>(null);
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/llm/providers")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.providers) setLlmInfo(data);
+      })
+      .catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -118,7 +135,11 @@ export default function AgentRunsPanel() {
         body: JSON.stringify({
           kind,
           dag: buildDefaultDag(kind === "RESEARCH" ? "analista-pesquisa" : "analista-proposta"),
-          input: { question: question.trim() || "(sem pergunta)" },
+          input: {
+            question: question.trim() || "(sem pergunta)",
+            ...(provider ? { llmProvider: provider } : {}),
+            ...(model ? { llmModel: model } : {}),
+          },
           // 5 min: chamadas a LLM local (Ollama em CPU) podem levar minutos
           budget: { maxSteps, timeoutMs: 300_000 },
           // Margem de 60s: o servidor fixa knowledgeTime = now() e rejeita
@@ -195,6 +216,41 @@ export default function AgentRunsPanel() {
               className="w-full bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
             />
           </div>
+          <div>
+            <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
+              Provedor
+            </label>
+            <select
+              value={provider}
+              onChange={(e) => {
+                setProvider(e.target.value);
+                setModel("");
+              }}
+              className="bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+            >
+              <option value="">Auto (fallback)</option>
+              {(llmInfo?.providers ?? []).map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+          {provider === "OLLAMA" && (llmInfo?.ollama.models.length ?? 0) > 0 && (
+            <div>
+              <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
+                Modelo
+              </label>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+              >
+                <option value="">{llmInfo?.ollama.defaultModel} (padrão)</option>
+                {llmInfo?.ollama.models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
               Max steps

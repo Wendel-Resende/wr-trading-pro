@@ -38,12 +38,6 @@ interface MarketData {
   changePercent?: number;
 }
 
-const LOCAL_MODELS = [
-  { id: 'ministral-3:8b', name: 'Ministral 3 (8B)', desc: 'Melhor para analise' },
-  { id: 'gemma4:e2b', name: 'Gemma 4 (2B)', desc: 'Mais rapido' },
-  { id: 'qwen3.5:0.8b', name: 'Qwen 3.5 (0.8B)', desc: 'Mais leve' },
-];
-
 export default function AgentPanel() {
   const [ticker, setTicker] = useState('');
   const [marketData, setMarketData] = useState<MarketData | null>(null);
@@ -55,10 +49,26 @@ export default function AgentPanel() {
 
   // Settings — chaves de API e endpoint Ollama vivem SOMENTE no servidor (.env)
   const [llmMode, setLlmMode] = useState<'mock' | 'openai' | 'local'>('local');
-  const [localModel, setLocalModel] = useState('ministral-3:8b');
+  const [localModel, setLocalModel] = useState('');
+  const [localModels, setLocalModels] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
 
   const currentSymbolRef = useRef<string | null>(null);
+
+  // Modelos realmente instalados no Ollama local (via servidor)
+  useEffect(() => {
+    fetch('/api/llm/providers')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.ollama) return;
+        setLocalModels(data.ollama.models ?? []);
+        setLocalModel((prev) => {
+          if (prev && (data.ollama.models ?? []).includes(prev)) return prev;
+          return data.ollama.defaultModel ?? prev;
+        });
+      })
+      .catch(() => {});
+  }, []);
 
   // Load saved settings
   useEffect(() => {
@@ -67,10 +77,10 @@ export default function AgentPanel() {
     localStorage.removeItem('agent-local-url');
 
     const savedLlmMode = localStorage.getItem('agent-llm-mode') || 'local';
-    const savedLocalModel = localStorage.getItem('agent-local-model') || 'ministral-3:8b';
+    const savedLocalModel = localStorage.getItem('agent-local-model');
 
     setLlmMode(savedLlmMode as any);
-    setLocalModel(savedLocalModel);
+    if (savedLocalModel) setLocalModel(savedLocalModel);
   }, []);
 
   // MT5 connection listener
@@ -270,8 +280,11 @@ export default function AgentPanel() {
                   onChange={(e) => setLocalModel(e.target.value)}
                   className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
                 >
-                  {LOCAL_MODELS.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} - {m.desc}</option>
+                  {localModels.length === 0 && (
+                    <option value={localModel}>{localModel || 'Ollama indisponível'}</option>
+                  )}
+                  {localModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
               </div>

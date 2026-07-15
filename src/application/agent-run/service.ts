@@ -189,6 +189,17 @@ interface NodeExecution {
   readonly cost: number;
 }
 
+/**
+ * Preferência de provedor/modelo vinda do input do run (auditável na linha
+ * persistida). Sanitizada aqui; provedores/modelos inválidos são ignorados
+ * pelo adapter, caindo no fallback do proxy.
+ */
+function llmPreferences(input: Record<string, unknown>): { provider?: string; model?: string } {
+  const provider = typeof input.llmProvider === 'string' && input.llmProvider.length <= 20 ? input.llmProvider : undefined;
+  const model = typeof input.llmModel === 'string' && input.llmModel.length <= 64 ? input.llmModel : undefined;
+  return { provider, model };
+}
+
 function simulatedAgentOutput(node: AgentRunNode, reason: string): Record<string, unknown> {
   const provides = node.provides ?? ['thesisDraft'];
   const output: Record<string, unknown> = {};
@@ -239,10 +250,13 @@ async function executeAgentNodeLive(
     'Produza sua análise em texto corrido (sem JSON).';
 
   try {
-    const completion = await llm.complete([
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ]);
+    const completion = await llm.complete(
+      [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      llmPreferences(input)
+    );
     const provides = node.provides ?? ['thesisDraft'];
     const output: Record<string, unknown> = {};
     for (const key of provides) output[key] = completion.content;
@@ -312,15 +326,18 @@ async function synthesizeOutputLive(
       : '{"direction": "BUY"|"SELL"|"HOLD", "rationale": "justificativa", "risks": ["risco 1"], "confidence": 0.0 a 1.0, "instrumentId": "ticker"}';
 
   try {
-    const completion = await llm.complete([
-      {
-        role: 'system',
-        content:
-          'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
-          `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON.`,
-      },
-      { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}` },
-    ]);
+    const completion = await llm.complete(
+      [
+        {
+          role: 'system',
+          content:
+            'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
+            `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON.`,
+        },
+        { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}` },
+      ],
+      llmPreferences(input)
+    );
 
     const parsed = extractJsonObject(completion.content);
     const meta: NodeLlmMeta = {
