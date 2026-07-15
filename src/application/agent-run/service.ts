@@ -204,6 +204,8 @@ function llmPreferences(input: Record<string, unknown>): { provider?: string; mo
 
 /** Padrão de ticker B3: 4 letras + 1-2 dígitos (ex: WEGE3, VIVA3, ENG1, KLBN11) */
 const TICKER_RE = /\b[A-Z]{4}\d{1,2}\b/g;
+/** Mesma forma, ancorada: usada para validar campos explícitos (ticker/symbol) antes de embuti-los no system prompt. */
+const TICKER_EXACT_RE = /^[A-Z]{4}\d{1,2}$/;
 
 function extractTickerFromInput(input: Record<string, unknown>): string | undefined {
   for (const value of Object.values(input)) {
@@ -216,8 +218,11 @@ function extractTickerFromInput(input: Record<string, unknown>): string | undefi
 
 /** Ticker do run: campo explícito primeiro, senão extração por regex do texto. */
 function resolveTicker(input: Record<string, unknown>): string | undefined {
-  if (typeof input.ticker === 'string' && input.ticker.trim().length > 0) return input.ticker.trim().toUpperCase();
-  if (typeof input.symbol === 'string' && input.symbol.trim().length > 0) return input.symbol.trim().toUpperCase();
+  for (const field of [input.ticker, input.symbol]) {
+    if (typeof field !== 'string') continue;
+    const candidate = field.trim().toUpperCase();
+    if (TICKER_EXACT_RE.test(candidate)) return candidate;
+  }
   return extractTickerFromInput(input);
 }
 
