@@ -1,6 +1,74 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-14
+Última atualização: 2026-07-15 (madrugada)
+
+## Sessão 2026-07-14/15 — Checkpoint do dia (Claude Code direto)
+
+Dia inteiro de evolução da plataforma trabalhando direto no Claude Code
+(novo fluxo: usuário → Claude Code; Guardião_Hermes em paralelo no WSL;
+coordenação pelo log do vault Obsidian `hermes-knowledge`). HEAD publicado:
+`97da73d` (main sincronizada com o GitHub). Detalhes de cada entrega no
+log do vault, nas entradas de 2026-07-14/15.
+
+### Infra e segurança
+
+1. **R-1 fechado:** projeto movido para fora do OneDrive (`C:\WR\wr_trade_pro_`);
+   item "userData" descartado; revisão fable5 anotada.
+2. **Vault Obsidian integrado** como segundo cérebro (instrução no CLAUDE.md).
+3. **C-1/C-2 do esquema CVM:** verificados como já resolvidos na Fase 2.
+4. **Segredos no banco:** modelos mortos `AIProvider`/`DataSource` removidos
+   (migração `drop_plaintext_secret_models`).
+5. **Regressão NEXT_PUBLIC_ revertida** (commit do Guardião 06b9918 aceitava
+   chaves públicas no servidor): chaves renomeadas no .env para nomes
+   server-side; bundle verificado limpo. Regra: nunca aceitar NEXT_PUBLIC_
+   no servidor — renomear a env.
+
+### Acesso e app
+
+6. **Primeiro acesso na tela de login** (cria usuário/senha; fail-closed;
+   middleware migrado para runtime nodejs). Bug real corrigido: dotenv-expand
+   corrompia o hash scrypt (`\$` obrigatório — gerador e docs atualizados).
+7. **Atalho da Área de Trabalho recriado** + `launch.bat` corrigido.
+8. **Serviços Python sobem em modo não-empacotado** (isPortInUse pula os já
+   ativos) → conexão MT5 funcionando pelo atalho. Validado pelo usuário.
+
+### Dados CVM na UI
+
+9. **Tab Fundamentos CVM** (138 empresas, snapshot em `data/cvm/`, proveniência
+   explícita, APIs `/api/cvm/*` read-only) + **visão Dividendos & Carteira**
+   (score de qualidade, carteira 12 vigente com gates Monte Carlo).
+10. **1T2026 completo** após 2 rodadas de regeneração do Guardião (a cópia
+    WSL→Windows dele falha silenciosamente; processo acordado: Guardião
+    regenera a fonte, Claude Code copia e valida contagens).
+
+### Agentes (o grosso do dia)
+
+11. **Aba Agentes ligada ao runtime AgentRun v1** (visão Runs Governados:
+    criar/processar/acompanhar DAG/cancelar). 2 bugs do runtime corrigidos:
+    rota `/advance` inexistente (runs ficavam QUEUED) e run "venenoso"
+    (output `{}` fora do contrato quebrava get/list).
+12. **LLM real nos nós AGENT/SYNTHESIS** via porta injetável (`AgentLlmPort` +
+    adapter do proxy server-side). LLM fornece conteúdo; runtime monta e
+    sanitiza o contrato. Custo do orçamento em tokens reais. Fallback
+    simulado sempre marcado.
+13. **Ollama 55x mais rápido na RTX 4060:** `num_ctx=8192` (100% GPU) +
+    `think:false`. Run completo: ~9min → ~10s. `OLLAMA_DEFAULT_MODEL` no .env.
+14. **Seleção de provedor/modelo** nas duas telas (`GET /api/llm/providers`);
+    preferência auditável no input do run. DeepSeek/OpenAI/Qwen/Groq ativos
+    após renomeação das chaves.
+15. **Dados reais nos prompts** (implantação do Guardião e362b1f revisada):
+    3 correções — percentuais duplicados (ROE "890%"), fonte de proventos
+    trocada para a série DFC validada (tabela dmpl inconsistente — Guardião
+    deve revisar no pipeline), carteira dinâmica do CSV. Validado: WEGE3
+    payout 83%, lucro 12m R$ 6,7 bi (plausíveis).
+
+### Em aberto / próximos passos
+
+- Guardião: revisar tabela `dividendos_jcp_dmpl` do pipeline; método de cópia
+  WSL→Windows; `financial_health` painel 2026T1 (regra de janela?).
+- Ideias na fila: papéis de comitê nos agentes (qualidade/risco/cético),
+  walk-forward no backtest (inspiração Vibe-Trading), login Google (adiado),
+  `asar: false` e `getPythonPath()` hardcoded (baixa prioridade).
 
 ## Sessão 2026-07-14 — Decisão R-1 resolvida + commits pendentes
 
