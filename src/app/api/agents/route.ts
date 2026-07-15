@@ -40,7 +40,7 @@ const agentsRequestSchema = z.object({
   ticker: z.string().trim().regex(/^[A-Z0-9]{3,12}$/i, 'Ticker inválido').transform(v => v.toUpperCase()).optional(),
   thesis: z.string().max(4000).optional(),
   market_data: marketDataSchema.optional(),
-  llm_mode: z.enum(['mock', 'openai', 'local']).optional(),
+  llm_mode: z.enum(['mock', 'openai', 'deepseek', 'local']).optional(),
   local_model: z.string().trim().regex(/^[\w][\w.\-:]{0,63}$/, 'Modelo inválido').optional(),
 }).strict();
 
@@ -221,6 +221,47 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
       };
     } catch {
       return getNoDecision(ticker, 'Resposta do OpenAI inválida — nenhuma decisão gerada.');
+    }
+
+  } else if (llmMode === 'deepseek') {
+    const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY?.trim() || '';
+    if (!deepseekKey) {
+      return getNoDecision(ticker, 'DEEPSEEK_API_KEY não configurada no servidor — nenhuma decisão gerada.');
+    }
+
+    response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${deepseekKey}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 1200,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`DeepSeek API error: ${response.status}${errText ? ' — ' + errText.slice(0, 200) : ''}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content || '{}';
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        ...parsed,
+        ticker,
+        timestamp: new Date().toISOString(),
+        mode: 'live',
+        eligibleForExecution: false,
+      };
+    } catch {
+      return getNoDecision(ticker, 'Resposta do DeepSeek inválida — nenhuma decisão gerada.');
     }
 
   } else if (llmMode === 'local') {
@@ -437,7 +478,7 @@ export async function POST(request: NextRequest) {
         data: {
           status: 'ready',
           llm_mode: llm_mode || 'mock',
-          available_models: ['mock', 'openai', 'local'],
+          available_models: ['mock', 'openai', 'deepseek', 'local'],
           available_pipelines: ['single', 'multi-agent'],
           timestamp: new Date().toISOString(),
         },

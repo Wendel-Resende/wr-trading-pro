@@ -48,7 +48,7 @@ export default function AgentPanel() {
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
 
   // Settings — chaves de API e endpoint Ollama vivem SOMENTE no servidor (.env)
-  const [llmMode, setLlmMode] = useState<'mock' | 'openai' | 'local'>('local');
+  const [llmMode, setLlmMode] = useState<'mock' | 'openai' | 'deepseek' | 'local'>('mock');
   const [localModel, setLocalModel] = useState('');
   const [localModels, setLocalModels] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
@@ -264,8 +264,9 @@ export default function AgentPanel() {
               onChange={(e) => setLlmMode(e.target.value as any)}
               className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
             >
-              <option value="local">Ollama Local (Recomendado)</option>
+              <option value="local">Ollama Local</option>
               <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
               <option value="mock">Mock (Teste)</option>
             </select>
           </div>
@@ -378,7 +379,7 @@ export default function AgentPanel() {
                 {status === 'running' ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Analisando com {llmMode === 'local' ? localModel : llmMode === 'openai' ? 'OpenAI' : 'Mock'}...
+                    Analisando com {llmMode === 'local' ? localModel : llmMode === 'openai' ? 'OpenAI' : llmMode === 'deepseek' ? 'DeepSeek' : 'Mock'}...
                   </>
                 ) : (
                   <>

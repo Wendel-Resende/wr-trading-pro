@@ -73,10 +73,10 @@ export interface ServerLlmKeys {
  */
 export function getServerLlmKeys(): ServerLlmKeys {
   return {
-    openai: process.env.OPENAI_API_KEY?.trim() || undefined,
-    deepseek: process.env.DEEPSEEK_API_KEY?.trim() || undefined,
-    qwen: process.env.QWEN_API_KEY?.trim() || undefined,
-    groq: process.env.GROQ_API_KEY?.trim() || undefined,
-    manus: process.env.MANUS_API_KEY?.trim() || undefined,
+    openai: process.env.OPENAI_API_KEY?.trim() || process.env.NEXT_PUBLIC_OPENAI_API_KEY?.trim() || undefined,
+    deepseek: process.env.DEEPSEEK_API_KEY?.trim() || process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY?.trim() || undefined,
+    qwen: process.env.QWEN_API_KEY?.trim() || process.env.NEXT_PUBLIC_QWEN_API_KEY?.trim() || undefined,
+    groq: process.env.GROQ_API_KEY?.trim() || process.env.NEXT_PUBLIC_GROQ_API_KEY?.trim() || undefined,
+    manus: process.env.MANUS_API_KEY?.trim() || process.env.NEXT_PUBLIC_MANUS_API_KEY?.trim() || undefined,
   };
 }
