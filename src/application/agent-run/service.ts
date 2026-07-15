@@ -15,7 +15,8 @@ import type { AgentRunRepository } from '../../domain/v1/ports/agent-run-reposit
 import type { AgentLlmPort } from '../../domain/v1/ports/agent-llm';
 import { compareInstants, parseInstant } from '../../domain/v1/time';
 import { ReadModelError } from '../read-models-v1/errors';
-import { buildPromptContext } from '../../lib/agent-data-context';
+import { buildPromptContext, buildSingleTickerContext } from '../../lib/agent-data-context';
+import { buildGestorSystemPrompt, getCommitteeRole, GESTOR_ROLE_KEY } from './committee';
 
 export interface AgentRunServicePorts {
   readonly agentRunRepository: AgentRunRepository;
@@ -213,6 +214,13 @@ function extractTickerFromInput(input: Record<string, unknown>): string | undefi
   return undefined;
 }
 
+/** Ticker do run: campo explícito primeiro, senão extração por regex do texto. */
+function resolveTicker(input: Record<string, unknown>): string | undefined {
+  if (typeof input.ticker === 'string' && input.ticker.trim().length > 0) return input.ticker.trim().toUpperCase();
+  if (typeof input.symbol === 'string' && input.symbol.trim().length > 0) return input.symbol.trim().toUpperCase();
+  return extractTickerFromInput(input);
+}
+
 function simulatedAgentOutput(node: AgentRunNode, reason: string): Record<string, unknown> {
   const provides = node.provides ?? ['thesisDraft'];
   const output: Record<string, unknown> = {};
@@ -223,7 +231,10 @@ function simulatedAgentOutput(node: AgentRunNode, reason: string): Record<string
   return output;
 }
 
-function collectAgentMaterial(nodeStates: AgentRunNodeStates): { texts: string[]; liveNodeIds: string[]; providers: Set<string> } {
+function collectAgentMaterial(
+  nodeStates: AgentRunNodeStates,
+  roleByNodeId: ReadonlyMap<string, string>,
+): { texts: string[]; liveNodeIds: string[]; providers: Set<string> } {
   const texts: string[] = [];
   const liveNodeIds: string[] = [];
   const providers = new Set<string>();
@@ -231,9 +242,10 @@ function collectAgentMaterial(nodeStates: AgentRunNodeStates): { texts: string[]
     const out = state.output;
     if (!out) continue;
     const meta = out._llm as NodeLlmMeta | undefined;
+    const label = roleByNodeId.get(nodeId) ?? nodeId;
     for (const [key, value] of Object.entries(out)) {
       if (key === '_llm' || typeof value !== 'string' || value.trim().length === 0) continue;
-      texts.push(`[${nodeId}.${key}] ${value}`);
+      texts.push(`[${label}.${key}] ${value}`);
     }
     if (meta && meta.simulated === false) {
       liveNodeIds.push(nodeId);
@@ -255,16 +267,16 @@ async function executeAgentNodeLive(
     .join('\n');
 
   // Contexto de dados da plataforma (fundamentos, dividendos, carteira)
-  const tickerHint = typeof input.ticker === 'string' ? input.ticker 
-    : typeof input.symbol === 'string' ? input.symbol 
-    : extractTickerFromInput(input);
-  const dataContext = buildPromptContext(tickerHint);
+  const tickerHint = resolveTicker(input);
+  const committeeRole = getCommitteeRole(node.role);
 
   const system =
-    `Você é o agente "${node.role ?? node.id}" do runtime governado da WR Trading Pro (B3/Brasil). ` +
-    `Objetivo do run: ${kind === 'RESEARCH' ? 'pesquisa/análise' : 'avaliação de proposta (nunca execução)'}. ` +
-    'Responda em português, de forma objetiva e fundamentada. Você não executa ordens e não tem autoridade de execução.\n\n' +
-    `DADOS DA PLATAFORMA (contexto real, use estes dados na sua análise):\n${dataContext}`;
+    committeeRole && tickerHint
+      ? committeeRole.systemPrompt(tickerHint, committeeRole.buildContext(tickerHint))
+      : `Você é o agente "${node.role ?? node.id}" do runtime governado da WR Trading Pro (B3/Brasil). ` +
+        `Objetivo do run: ${kind === 'RESEARCH' ? 'pesquisa/análise' : 'avaliação de proposta (nunca execução)'}. ` +
+        'Responda em português, de forma objetiva e fundamentada. Você não executa ordens e não tem autoridade de execução.\n\n' +
+        `DADOS DA PLATAFORMA (contexto real, use estes dados na sua análise):\n${buildPromptContext(tickerHint)}`;
   const user =
     `Contexto de entrada (JSON): ${JSON.stringify(input)}\n` +
     (readContext ? `Saídas de nós anteriores:\n${readContext}\n` : '') +
@@ -295,13 +307,15 @@ async function executeAgentNodeLive(
 }
 
 async function synthesizeOutputLive(
+  node: AgentRunNode,
   nodeStates: AgentRunNodeStates,
   input: Record<string, unknown>,
   kind: AgentRunKind,
   decisionTime: string,
   llm: AgentLlmPort,
+  roleByNodeId: ReadonlyMap<string, string>,
 ): Promise<{ contract: AgentRunOutput; meta: NodeLlmMeta; cost: number }> {
-  const material = collectAgentMaterial(nodeStates);
+  const material = collectAgentMaterial(nodeStates, roleByNodeId);
   const sourceLabel = material.providers.size > 0 ? `llm:${Array.from(material.providers).join(',')}` : 'simulated';
   const evidence = Object.freeze(
     (material.liveNodeIds.length > 0 ? material.liveNodeIds : ['simulated']).map((nodeId) =>
@@ -346,17 +360,26 @@ async function synthesizeOutputLive(
       ? '{"thesis": "tese principal", "risks": ["risco 1"], "confidence": 0.0 a 1.0, "invalidation": "o que invalidaria a tese"}'
       : '{"direction": "BUY"|"SELL"|"HOLD", "rationale": "justificativa", "risks": ["risco 1"], "confidence": 0.0 a 1.0, "instrumentId": "ticker"}';
 
+  const isGestor = node.role === GESTOR_ROLE_KEY;
+  const tickerHint = resolveTicker(input);
+  // Gestor: pareceres do comitê + compacto do ativo (sem dump da carteira);
+  // síntese genérica: comportamento atual preservado.
+  const synthesisSystem = isGestor
+    ? buildGestorSystemPrompt(kind, schemaHint)
+    : 'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
+      `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON. ` +
+      'Use os dados da plataforma como base factual quando relevante.';
+  const synthesisUser = isGestor
+    ? `Pareceres do comitê:\n${material.texts.join('\n\n')}\n\nDados de referência do ativo:\n${
+        tickerHint ? buildSingleTickerContext(tickerHint).context : buildPromptContext()
+      }`
+    : `Análises dos agentes:\n${material.texts.join('\n\n')}\n\nDados da plataforma (referência):\n${buildPromptContext()}`;
+
   try {
     const completion = await llm.complete(
       [
-        {
-          role: 'system',
-          content:
-            'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
-            `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON. ` +
-            'Use os dados da plataforma como base factual quando relevante.',
-        },
-        { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}\n\nDados da plataforma (referência):\n${buildPromptContext()}` },
+        { role: 'system', content: synthesisSystem },
+        { role: 'user', content: synthesisUser },
       ],
       llmPreferences(input)
     );
@@ -415,6 +438,7 @@ async function executeNode(
   kind: AgentRunKind,
   decisionTime: string,
   llm: AgentLlmPort | undefined,
+  roleByNodeId: ReadonlyMap<string, string>,
 ): Promise<NodeExecution> {
   switch (node.type) {
     case 'INPUT': {
@@ -442,7 +466,7 @@ async function executeNode(
     case 'SYNTHESIS': {
       const provides = node.provides ?? ['finding'];
       if (llm) {
-        const { contract, meta, cost } = await synthesizeOutputLive(nodeStates, input, kind, decisionTime, llm);
+        const { contract, meta, cost } = await synthesizeOutputLive(node, nodeStates, input, kind, decisionTime, llm, roleByNodeId);
         const output: Record<string, unknown> = {};
         for (const key of provides) output[key] = contract as unknown as Record<string, unknown>;
         output._llm = meta;
@@ -485,10 +509,14 @@ async function executeNode(
 /**
  * Application service for the async agent-run DAG runtime (Fase 3 / Item
  * 2). Depends only on the injected AgentRunRepository port — never
- * touches Prisma, an LLM, or ExecutionBroker directly. `advance` valida
- * o DAG semântico, executa os nós em ordem topológica determinística
- * (sem LLM real), acumula `nodeStates`/`stepsUsed`/`costUsed`, e aplica
- * orçamento real (`maxSteps`/`maxCost`/`timeoutMs`).
+ * touches Prisma or ExecutionBroker directly. `advance` valida o DAG
+ * semântico e executa os nós em ordem topológica determinística,
+ * acumulando `nodeStates`/`stepsUsed`/`costUsed` e aplicando orçamento
+ * real (`maxSteps`/`maxCost`/`timeoutMs`). Quando a porta `agentLlm`
+ * está presente, nós AGENT e SYNTHESIS usam o provedor real (custo em
+ * tokens); papéis do Comitê de Agentes (`role` do nó) recebem prompt e
+ * fatia de dados próprios via o registro em `committee.ts` — papel
+ * desconhecido ou porta ausente caem no caminho genérico/simulado.
  */
 export class AgentRunService {
   constructor(private readonly ports: AgentRunServicePorts) {}
@@ -554,6 +582,10 @@ export class AgentRunService {
 
     await this.ports.agentRunRepository.transitionTo(runId, 'RUNNING');
 
+    const roleByNodeId: ReadonlyMap<string, string> = new Map(
+      sortedNodes.filter((n) => n.role).map((n) => [n.id, n.role!] as const),
+    );
+
     const nodeStates: Record<string, AgentRunNodeState> = {};
     let stepsUsed = 0;
     let costUsed = 0;
@@ -561,7 +593,7 @@ export class AgentRunService {
     let finalOutput: AgentRunOutput | null = null;
 
     for (const node of sortedNodes) {
-      const execution = await executeNode(node, nodeStates, run.input, run.kind, run.decisionTime, this.ports.agentLlm);
+      const execution = await executeNode(node, nodeStates, run.input, run.kind, run.decisionTime, this.ports.agentLlm, roleByNodeId);
       const output = execution.output;
       if (!this.ports.agentLlm) simulateNodeWork(node.type);
 

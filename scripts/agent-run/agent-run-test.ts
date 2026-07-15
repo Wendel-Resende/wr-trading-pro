@@ -9,6 +9,7 @@ import { PrismaAgentRunRepository, InvalidAgentRunTransitionError } from '../../
 import type { AgentRunDag } from '../../src/domain/v1/models/agent-run';
 import { buildRoleContext } from '../../src/lib/agent-data-context';
 import { getCommitteeRole, buildGestorSystemPrompt, GESTOR_ROLE_KEY } from '../../src/application/agent-run/committee';
+import type { AgentLlmCompletion, AgentLlmMessage, AgentLlmOptions, AgentLlmPort } from '../../src/domain/v1/ports/agent-llm';
 
 async function expectRejection<T extends new (...args: never[]) => Error>(
   promise: Promise<unknown>,
@@ -144,6 +145,40 @@ const DAG: AgentRunDag = {
     ['ag1', 'sy1'],
     ['ev1', 'sy1'],
     ['sy1', 'out1'],
+  ],
+};
+
+const COMMITTEE_DAG: AgentRunDag = {
+  nodes: [
+    { id: 'in', type: 'INPUT' },
+    { id: 'fund', type: 'AGENT', role: 'fundamentalista-cvm', provides: ['parecer'] },
+    { id: 'divs', type: 'AGENT', role: 'dividendos', provides: ['parecer'] },
+    { id: 'risco', type: 'AGENT', role: 'risco', provides: ['parecer'] },
+    {
+      id: 'cetico',
+      type: 'AGENT',
+      role: 'cetico',
+      reads: ['fund.parecer', 'divs.parecer', 'risco.parecer'],
+      provides: ['parecer'],
+    },
+    {
+      id: 'evidence',
+      type: 'EVIDENCE',
+      reads: ['fund.parecer', 'divs.parecer', 'risco.parecer', 'cetico.parecer'],
+    },
+    { id: 'synthesis', type: 'SYNTHESIS', role: 'gestor', provides: ['finding'] },
+    { id: 'out', type: 'OUTPUT', reads: ['synthesis.finding'] },
+  ],
+  edges: [
+    ['in', 'fund'],
+    ['in', 'divs'],
+    ['in', 'risco'],
+    ['fund', 'cetico'],
+    ['divs', 'cetico'],
+    ['risco', 'cetico'],
+    ['cetico', 'evidence'],
+    ['evidence', 'synthesis'],
+    ['synthesis', 'out'],
   ],
 };
 
@@ -457,6 +492,88 @@ async function paginationDeterminismTests(prisma: PrismaClient): Promise<void> {
   console.log('paginação determinística: OK (mesma query repetida é estável; ordenação por createdAt desc)');
 }
 
+async function committeeSimulatedTests(prisma: PrismaClient): Promise<void> {
+  // Sem porta LLM: o comitê inteiro roda no caminho simulado e continua
+  // produzindo um run legível com output contratual.
+  const service = createAgentRunService(prisma);
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: COMMITTEE_DAG,
+    input: { ticker: 'WEGE3', question: 'WEGE3 sustenta os dividendos?' },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'SUCCEEDED');
+  assert.equal(finished.stepsUsed, COMMITTEE_DAG.nodes.length);
+  for (const node of COMMITTEE_DAG.nodes) {
+    assert.equal(finished.nodeStates[node.id]?.status, 'DONE', `nó ${node.id} deveria estar DONE`);
+  }
+  // reads do cético resolveram (parecer simulado dos 3 colegas disponível)
+  const ceticoOut = finished.nodeStates['cetico']?.output as Record<string, unknown>;
+  assert.ok(typeof ceticoOut.parecer === 'string' && (ceticoOut.parecer as string).length > 0);
+  assert.equal(finished.output!.kind, 'RESEARCH');
+  console.log('comitê simulado: OK (8 nós DONE sem LLM; output contratual; run legível)');
+}
+
+class StubCommitteeLlm implements AgentLlmPort {
+  readonly calls: { system: string; user: string; opts?: AgentLlmOptions }[] = [];
+  async complete(messages: readonly AgentLlmMessage[], opts?: AgentLlmOptions): Promise<AgentLlmCompletion> {
+    const system = messages.find((m) => m.role === 'system')?.content ?? '';
+    const user = messages.find((m) => m.role === 'user')?.content ?? '';
+    this.calls.push({ system, user, opts });
+    const isSynthesis = system.includes('APENAS com um objeto JSON');
+    const content = isSynthesis
+      ? '{"thesis": "Tese do gestor: comitê dividido, cético venceu no payout.", "risks": ["payout apertado"], "confidence": 0.7, "invalidation": "queda do FCO por 2 trimestres"}'
+      : `Parecer ${this.calls.length}: análise do papel sobre WEGE3.`;
+    return { content, provider: 'STUB', model: 'stub-1', totalTokens: 10 };
+  }
+}
+
+async function committeeLiveStubTests(prisma: PrismaClient): Promise<void> {
+  const stub = new StubCommitteeLlm();
+  const service = createAgentRunService(prisma, { agentLlm: stub });
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: COMMITTEE_DAG,
+    input: { ticker: 'WEGE3', question: 'WEGE3 sustenta os dividendos?' },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'SUCCEEDED');
+
+  // 5 chamadas LLM: fund, divs, risco, cetico (ordem topológica) + gestor
+  assert.equal(stub.calls.length, 5, `esperava 5 chamadas LLM, houve ${stub.calls.length}`);
+  const [fund, divs, risco, cetico, gestor] = stub.calls;
+  // Cada papel recebeu SEU prompt (não o genérico) com SUA fatia de dados
+  assert.match(fund.system, /Analista Fundamentalista CVM/);
+  assert.match(fund.system, /Evolução trimestral/);
+  assert.match(divs.system, /Analista de Dividendos/);
+  assert.match(divs.system, /Proventos por trimestre/);
+  assert.match(risco.system, /Analista de Risco/);
+  assert.match(risco.system, /Indicadores de risco/);
+  // Fatias focadas: papéis do comitê NÃO recebem o dump da carteira inteira
+  assert.doesNotMatch(fund.system, /Carteira 12 Dividendos\/JCP/);
+  // O cético recebeu os pareceres dos 3 colegas via reads
+  assert.match(cetico.system, /Cético/);
+  assert.match(cetico.user, /fund\.parecer/);
+  assert.match(cetico.user, /Parecer 1/);
+  assert.match(cetico.user, /Parecer 3/);
+  // O gestor recebeu material rotulado por papel e devolveu o contrato
+  assert.match(gestor.system, /Gestor/);
+  assert.match(gestor.user, /fundamentalista-cvm/);
+  assert.match(gestor.user, /cetico/);
+  assert.equal(finished.output!.kind, 'RESEARCH');
+  assert.equal(
+    (finished.output as unknown as Record<string, unknown>).thesis,
+    'Tese do gestor: comitê dividido, cético venceu no payout.',
+  );
+  // Custo: 5 chamadas LLM × 10 tokens + 1 do nó EVIDENCE (custo determinístico por tipo)
+  assert.equal(finished.costUsed, 51);
+  console.log('comitê com stub LLM: OK (prompts por papel; cético rebate; gestor sintetiza; custo em tokens)');
+}
+
 async function internalErrorSanitizationTests(): Promise<void> {
   const fakePrismaError = Object.assign(new Error('SELECT * FROM "AgentRun" WHERE ... syntax error near "%^&"'), {
     name: 'PrismaClientKnownRequestError',
@@ -495,6 +612,8 @@ async function main(): Promise<void> {
     await cancelTests(prisma);
     await failedTransitionTests(prisma);
     await paginationDeterminismTests(prisma);
+    await committeeSimulatedTests(prisma);
+    await committeeLiveStubTests(prisma);
   } finally {
     await prisma.$disconnect();
   }
