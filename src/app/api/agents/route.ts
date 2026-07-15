@@ -224,7 +224,9 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
     }
 
   } else if (llmMode === 'deepseek') {
-    const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY?.trim() || '';
+    // Sem fallback NEXT_PUBLIC_: prefixo público do Next vaza para o bundle
+    // do cliente (regra da Fase 0, item 7) — a chave vive em DEEPSEEK_API_KEY.
+    const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || '';
     if (!deepseekKey) {
       return getNoDecision(ticker, 'DEEPSEEK_API_KEY não configurada no servidor — nenhuma decisão gerada.');
     }

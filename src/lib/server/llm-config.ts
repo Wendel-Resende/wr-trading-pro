@@ -71,12 +71,16 @@ export interface ServerLlmKeys {
 /**
  * Chaves de provedores remotos — apenas env vars server-side.
  */
+// NUNCA aceitar NEXT_PUBLIC_* aqui: o Next embute variáveis com esse prefixo
+// no bundle do navegador se qualquer código client as referenciar — foi
+// exatamente o vazamento eliminado na Fase 0 (item 7). Chaves DEVEM usar os
+// nomes server-side (DEEPSEEK_API_KEY etc.); renomear no .env, não no código.
 export function getServerLlmKeys(): ServerLlmKeys {
   return {
-    openai: process.env.OPENAI_API_KEY?.trim() || process.env.NEXT_PUBLIC_OPENAI_API_KEY?.trim() || undefined,
-    deepseek: process.env.DEEPSEEK_API_KEY?.trim() || process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY?.trim() || undefined,
-    qwen: process.env.QWEN_API_KEY?.trim() || process.env.NEXT_PUBLIC_QWEN_API_KEY?.trim() || undefined,
-    groq: process.env.GROQ_API_KEY?.trim() || process.env.NEXT_PUBLIC_GROQ_API_KEY?.trim() || undefined,
-    manus: process.env.MANUS_API_KEY?.trim() || process.env.NEXT_PUBLIC_MANUS_API_KEY?.trim() || undefined,
+    openai: process.env.OPENAI_API_KEY?.trim() || undefined,
+    deepseek: process.env.DEEPSEEK_API_KEY?.trim() || undefined,
+    qwen: process.env.QWEN_API_KEY?.trim() || undefined,
+    groq: process.env.GROQ_API_KEY?.trim() || undefined,
+    manus: process.env.MANUS_API_KEY?.trim() || undefined,
   };
 }

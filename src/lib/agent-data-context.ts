@@ -9,21 +9,11 @@ import {
   listCompanies,
   getQuarters,
   getShareCapital,
-  getCompany,
   CVM_LEGACY_PROVENANCE,
   type CvmCompany,
   type CvmQuarter,
 } from './server/cvm-legacy-db';
-import { DatabaseSync } from 'node:sqlite';
-import path from 'node:path';
-
-let _db: DatabaseSync | null = null;
-function getDb(): DatabaseSync {
-  if (_db) return _db;
-  const file = path.join(process.cwd(), 'data', 'cvm', 'cvm_fundamentos.db');
-  _db = new DatabaseSync(file, { readOnly: true });
-  return _db;
-}
+import { getDividendQuarters, getPortfolio12 } from './server/cvm-exports';
 
 // ── Tipos ──────────────────────────────────────────────────────────
 
@@ -49,9 +39,12 @@ const BRL = (v: number | null, scale: 'mi' | 'bi' = 'mi'): string => {
   return `R$ ${(v / d).toFixed(1)} ${s}`;
 };
 
+// ATENÇÃO: os indicadores do banco (roe, margens, divida_pl, endividamento)
+// JÁ ESTÃO em percentual (ex.: roe=8.9 significa 8,9%). Não multiplicar por
+// 100 — esse bug injetava "ROE de 890%" nos prompts e contaminava as análises.
 const PCT = (v: number | null): string => {
   if (v === null || v === undefined || !Number.isFinite(v)) return 'N/D';
-  return `${(v * 100).toFixed(1)}%`;
+  return `${v.toFixed(1)}%`;
 };
 
 /** Último trimestre disponível nos dados. */
@@ -80,36 +73,45 @@ function trailing12m(quarters: CvmQuarter[], field: keyof CvmQuarter): number | 
 
 // ── Tickers da carteira 12 vigente ─────────────────────────────────
 
-const PORTFOLIO_TICKERS = [
+// Fallback apenas para quando o export da carteira não estiver disponível;
+// a fonte primária é o CSV vigente (getPortfolio12), que acompanha as
+// regenerações do pipeline sem exigir mudança de código.
+const PORTFOLIO_TICKERS_FALLBACK = [
   'VIVA3', 'CXSE3', 'BBSE3', 'ENGI11', 'LAVV3', 'TRIS3',
   'LEVE3', 'GRND3', 'ALUP11', 'SHUL4', 'VIVT3', 'INTB3',
 ];
 
-// ── Queries de dividendos e score ──────────────────────────────────
+function portfolioTickers(): string[] {
+  try {
+    const tickers = getPortfolio12().map((p) => p.ticker);
+    return tickers.length > 0 ? tickers : PORTFOLIO_TICKERS_FALLBACK;
+  } catch {
+    return PORTFOLIO_TICKERS_FALLBACK;
+  }
+}
+
+// ── Proventos (fonte validada: série trimestral da DFC nos exports) ─
 
 interface DividendRow {
   ano: number;
   trimestre: number;
-  dividendos: number | null;
-  jcp: number | null;
+  /** Saída de caixa com dividendos+JCP no trimestre (valor positivo). */
+  proventos: number | null;
 }
 
-function getDividends(cdCvm: string): DividendRow[] {
-  const d = getDb();
-  const rows = d
-    .prepare(
-      `SELECT ano, trimestre, dividendos_mil, jcp_mil
-       FROM dividendos_jcp_dmpl
-       WHERE cd_cvm = ?
-       ORDER BY ano, trimestre`
-    )
-    .all(cdCvm) as Record<string, unknown>[];
-  return rows.map((r) => ({
-    ano: Number(r.ano),
-    trimestre: Number(r.trimestre),
-    dividendos: typeof r.dividendos_mil === 'number' ? (r.dividendos_mil as number) * 1000 : null,
-    jcp: typeof r.jcp_mil === 'number' ? (r.jcp_mil as number) * 1000 : null,
-  }));
+// A tabela dividendos_jcp_dmpl do banco tem apenas 1 registro/ano com
+// valores inconsistentes de escala — usar a série trimestral validada
+// (mesma fonte da aba Fundamentos CVM), indexada por ticker.
+function getDividends(ticker: string): DividendRow[] {
+  try {
+    return getDividendQuarters(ticker).map((q) => ({
+      ano: q.ano,
+      trimestre: q.trimestre,
+      proventos: q.proventosSaidaCaixa,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // ── Construção do contexto ─────────────────────────────────────────
@@ -117,7 +119,7 @@ function getDividends(cdCvm: string): DividendRow[] {
 function buildTickerContext(ticker: string, company: CvmCompany): string {
   const quarters = getQuarters(company.cdCvm);
   const latest = latestQuarter(quarters);
-  const dividends = getDividends(company.cdCvm);
+  const dividends = getDividends(ticker);
   const capital = getShareCapital(company.cdCvm);
 
   if (!latest) return `  ${ticker} (${company.nome}): sem dados disponíveis.`;
@@ -125,26 +127,22 @@ function buildTickerContext(ticker: string, company: CvmCompany): string {
   const t12_receita = trailing12m(quarters, 'receitaLiquida');
   const t12_lucro = trailing12m(quarters, 'lucroLiquido');
 
-  // Últimos 4 trimestres de dividendos
+  // Últimos 4 trimestres de proventos (saída de caixa real, fonte DFC)
   const recentDivs = dividends.slice(-4);
-  const totalDiv12m = recentDivs.reduce(
-    (sum, d) => sum + (d.dividendos ?? 0) + (d.jcp ?? 0),
-    0
-  );
+  const totalDiv12m = recentDivs.reduce((sum, d) => sum + (d.proventos ?? 0), 0);
 
   let block = `  **${ticker}** — ${company.nome} (${company.setor ?? 'setor não informado'})\n`;
   block += `    Último trimestre: ${latest.ano}T${latest.trimestre}\n`;
   block += `    Receita Líquida 12m: ${BRL(t12_receita, 'bi')} | Lucro Líquido 12m: ${BRL(t12_lucro, 'bi')}\n`;
-  block += `    Margem Líquida: ${PCT(latest.margemLiquida)} | ROE: ${PCT(latest.roe)}\n`;
+  block += `    Margem Líquida: ${PCT(latest.margemLiquida)} | ROE (trimestre): ${PCT(latest.roe)}\n`;
   if (latest.ebitda) {
     block += `    EBITDA: ${BRL(latest.ebitda, 'bi')} | Margem EBITDA: ${PCT(latest.margemEbitda)}\n`;
-    block += `    Dívida/PL: ${latest.dividaPl !== null ? (latest.dividaPl).toFixed(2) : 'N/D'}\n`;
+    block += `    Dívida/PL: ${PCT(latest.dividaPl)}\n`;
   }
   if (totalDiv12m > 0) {
-    block += `    Dividendos+JCP 12m: ${BRL(totalDiv12m)}`;
-    if (latest.lucroLiquido) {
-      const payout = t12_lucro ? (totalDiv12m / t12_lucro * 100).toFixed(0) : 'N/D';
-      block += ` | Payout: ~${payout}%`;
+    block += `    Dividendos+JCP 12m (saída de caixa): ${BRL(totalDiv12m)}`;
+    if (t12_lucro && t12_lucro > 0) {
+      block += ` | Payout 12m: ~${((totalDiv12m / t12_lucro) * 100).toFixed(0)}%`;
     }
     block += '\n';
   }
@@ -169,8 +167,8 @@ function buildTickerContext(ticker: string, company: CvmCompany): string {
  */
 export function buildAgentContext(): AgentDataContext {
   const companies = listCompanies();
-  const portfolio = companies.filter((c) => PORTFOLIO_TICKERS.includes(c.ticker));
-  const others = companies.filter((c) => !PORTFOLIO_TICKERS.includes(c.ticker));
+  const tickers = portfolioTickers();
+  const portfolio = companies.filter((c) => tickers.includes(c.ticker));
 
   // Resumo da carteira
   let portfolioSummary = '## Carteira 12 Dividendos/JCP (vigente)\n';
@@ -188,12 +186,12 @@ export function buildAgentContext(): AgentDataContext {
 
   // Dividendos
   let dividends = '## Proventos (Dividendos + JCP)\n';
-  dividends += 'Fonte: DMPL/DFC — CVM. Valores declarados, não necessariamente pagos no trimestre.\n\n';
+  dividends += 'Fonte: DFC — CVM (saída de caixa efetiva por trimestre).\n\n';
   for (const c of portfolio) {
-    const divs = getDividends(c.cdCvm);
+    const divs = getDividends(c.ticker);
     if (divs.length === 0) continue;
     const last4 = divs.slice(-4);
-    const total = last4.reduce((s, d) => s + (d.dividendos ?? 0) + (d.jcp ?? 0), 0);
+    const total = last4.reduce((s, d) => s + (d.proventos ?? 0), 0);
     if (total > 0) {
       dividends += `- ${c.ticker}: ${BRL(total)} nos últimos 4 trimestres\n`;
     }
