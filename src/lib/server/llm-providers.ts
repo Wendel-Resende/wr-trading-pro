@@ -116,17 +116,36 @@ class OllamaProvider implements ILLMProvider {
     const model = config?.model || this.defaultModel;
 
     try {
-      const response = await fetch(`${this.endpoint}/api/chat`, {
+      // num_ctx 8192: contexto padrão de modelos recentes (256k) infla o KV
+      // cache além da VRAM de GPUs de 8 GB e derruba o modelo para CPU
+      // (validado: 125s -> 1s numa RTX 4060). think:false desliga o
+      // raciocínio interno de modelos thinking (qwen3.5 etc.) — minutos de
+      // tokens invisíveis por resposta; modelos sem suporte podem rejeitar o
+      // campo, então há retry sem ele.
+      const basePayload = {
+        model,
+        messages,
+        stream: false,
+        options: { num_ctx: 8192 },
+      };
+
+      let response = await fetch(`${this.endpoint}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          stream: false,
-        }),
+        body: JSON.stringify({ ...basePayload, think: false }),
       });
+
+      if (!response.ok && (response.status === 400 || response.status === 422)) {
+        response = await fetch(`${this.endpoint}/api/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(basePayload),
+        });
+      }
 
       if (!response.ok) {
         throw new Error(`Ollama API error: ${response.statusText}`);
