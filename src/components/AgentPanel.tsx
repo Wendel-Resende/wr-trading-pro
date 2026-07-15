@@ -15,7 +15,7 @@ import {
 import { MT5ServiceSingleton } from '@/services/mt5Service';
 
 interface OperationSuggestion {
-  action: 'BUY' | 'SELL' | 'HOLD';
+  action: 'BUY' | 'SELL' | 'HOLD' | 'NO_DECISION';
   ticker: string;
   entry_price: number;
   stop_loss: number;
@@ -25,6 +25,8 @@ interface OperationSuggestion {
   confidence: number;
   rationale: string;
   timestamp: string;
+  mode?: 'live' | 'degraded' | 'mock';
+  eligibleForExecution?: boolean;
 }
 
 interface MarketData {
@@ -197,6 +199,7 @@ export default function AgentPanel() {
       case 'BUY': return 'text-green-400 bg-green-400/20 border-green-400/50';
       case 'SELL': return 'text-red-400 bg-red-400/20 border-red-400/50';
       case 'HOLD': return 'text-yellow-400 bg-yellow-400/20 border-yellow-400/50';
+      case 'NO_DECISION': return 'text-gray-300 bg-gray-500/20 border-gray-500/50';
       default: return 'text-gray-400';
     }
   };
@@ -400,9 +403,17 @@ export default function AgentPanel() {
           {/* Action Badge */}
           <div className="px-4 py-4 bg-gray-850">
             <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg border ${getActionColor(result.action)}`}>
-              <span className="text-2xl font-bold">{result.action}</span>
+              <span className="text-2xl font-bold">
+                {result.action === 'NO_DECISION' ? 'SEM DECISÃO' : result.action}
+              </span>
               <span className="text-sm opacity-80">{result.ticker}</span>
             </div>
+            {result.mode === 'degraded' && (
+              <p className="mt-2 text-xs text-yellow-400/90">
+                Modo degradado: nenhum provedor LLM disponível — sem sugestão. Verifique o Ollama
+                ou as chaves configuradas no servidor.
+              </p>
+            )}
           </div>
 
           {/* Price Levels */}

@@ -71,6 +71,8 @@ export function jsonError(error: unknown): NextResponse {
   }
   // Any non-ReadModelError (Prisma error, unexpected exception, etc.) is
   // sanitized: never leak stack traces, SQL, or raw driver messages.
+  // Logado no servidor para diagnóstico — nunca enviado ao cliente.
+  console.error('[api/v1] erro interno inesperado:', error);
   return NextResponse.json(
     { success: false, error: { code: 'INTERNAL_ERROR', message: 'erro interno inesperado' } },
     { status: 500 },

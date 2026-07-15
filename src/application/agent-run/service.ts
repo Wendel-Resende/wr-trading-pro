@@ -84,6 +84,27 @@ function costForNodeType(type: AgentRunNodeType): number {
 /** Tempo simulado de processamento por nó, para exercitar `timeoutMs` de forma determinística (sem I/O real). */
 const NODE_WORK_MS = 5;
 
+/**
+ * Validação estrutural do contrato de saída (ResearchFinding/TradeProposal)
+ * sem depender do adapter: garante que o que vai para SUCCEEDED é relegível.
+ */
+function isContractualOutput(output: AgentRunOutput, kind: AgentRunKind): boolean {
+  if (typeof output !== 'object' || output === null) return false;
+  const o = output as unknown as Record<string, unknown>;
+  if (o.kind !== kind) return false;
+  if (typeof o.confidence !== 'number' || typeof o.decisionTime !== 'string') return false;
+  if (!Array.isArray(o.risks)) return false;
+  if (kind === 'RESEARCH') {
+    return typeof o.thesis === 'string' && Array.isArray(o.evidence) && typeof o.invalidation === 'string';
+  }
+  return (
+    typeof o.instrumentId === 'string'
+    && typeof o.rationale === 'string'
+    && (o.direction === 'BUY' || o.direction === 'SELL' || o.direction === 'HOLD')
+    && o.requiresHumanApproval === true
+  );
+}
+
 function simulateNodeWork(type: AgentRunNodeType): void {
   if (type === 'INPUT' || type === 'OUTPUT') return;
   const start = Date.now();
@@ -146,7 +167,11 @@ function executeNode(
     case 'OUTPUT': {
       const ref = (node.reads ?? [])[0];
       const value = ref ? resolveRef(ref, nodeStates) : undefined;
-      return (value ?? {}) as Record<string, unknown>;
+      // Sem `reads` (opcional no schema) ou referência não resolvida, o nó
+      // OUTPUT cai para o contrato simulado — nunca devolve `{}`, que seria
+      // persistido como output final e rejeitado pelo mapping na releitura
+      // (deixando o run SUCCEEDED ilegível e quebrando get/list).
+      return (value ?? buildSimulatedOutput(kind, decisionTime)) as unknown as Record<string, unknown>;
     }
     default:
       return {};
@@ -263,6 +288,19 @@ export class AgentRunService {
     if (!finalOutput) {
       return this.ports.agentRunRepository.transitionTo(runId, 'FAILED', {
         error: { code: 'MISSING_OUTPUT_NODE', message: 'DAG não produziu saída no nó OUTPUT' },
+      });
+    }
+
+    // Fail-closed sem envenenar a linha: um output fora do contrato
+    // (ResearchFinding/TradeProposal) seria persistido e depois rejeitado
+    // pelo mapping em toda leitura — o run ficaria ilegível e derrubaria
+    // get/list. Melhor falhar aqui com erro explícito e linha legível.
+    if (!isContractualOutput(finalOutput, run.kind)) {
+      return this.ports.agentRunRepository.transitionTo(runId, 'FAILED', {
+        error: {
+          code: 'INVALID_OUTPUT_CONTRACT',
+          message: 'nó OUTPUT produziu valor fora do contrato ResearchFinding/TradeProposal',
+        },
       });
     }
 
