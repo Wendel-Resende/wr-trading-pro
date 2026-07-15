@@ -201,6 +201,18 @@ function llmPreferences(input: Record<string, unknown>): { provider?: string; mo
   return { provider, model };
 }
 
+/** Padrão de ticker B3: 4 letras + 1-2 dígitos (ex: WEGE3, VIVA3, ENG1, KLBN11) */
+const TICKER_RE = /\b[A-Z]{4}\d{1,2}\b/g;
+
+function extractTickerFromInput(input: Record<string, unknown>): string | undefined {
+  for (const value of Object.values(input)) {
+    if (typeof value !== 'string') continue;
+    const matches = value.match(TICKER_RE);
+    if (matches) return matches[0];
+  }
+  return undefined;
+}
+
 function simulatedAgentOutput(node: AgentRunNode, reason: string): Record<string, unknown> {
   const provides = node.provides ?? ['thesisDraft'];
   const output: Record<string, unknown> = {};
@@ -243,7 +255,9 @@ async function executeAgentNodeLive(
     .join('\n');
 
   // Contexto de dados da plataforma (fundamentos, dividendos, carteira)
-  const tickerHint = typeof input.ticker === 'string' ? input.ticker : typeof input.symbol === 'string' ? input.symbol : undefined;
+  const tickerHint = typeof input.ticker === 'string' ? input.ticker 
+    : typeof input.symbol === 'string' ? input.symbol 
+    : extractTickerFromInput(input);
   const dataContext = buildPromptContext(tickerHint);
 
   const system =
