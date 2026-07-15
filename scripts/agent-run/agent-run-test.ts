@@ -8,6 +8,7 @@ import { jsonError } from '../../src/app/api/v1/_shared/http';
 import { PrismaAgentRunRepository, InvalidAgentRunTransitionError } from '../../src/adapters/prisma/agent-run';
 import type { AgentRunDag } from '../../src/domain/v1/models/agent-run';
 import { buildRoleContext } from '../../src/lib/agent-data-context';
+import { getCommitteeRole, buildGestorSystemPrompt, GESTOR_ROLE_KEY } from '../../src/application/agent-run/committee';
 
 async function expectRejection<T extends new (...args: never[]) => Error>(
   promise: Promise<unknown>,
@@ -97,6 +98,36 @@ function roleContextTests(): void {
   const generic = buildRoleContext('papel-desconhecido', 'WEGE3');
   assert.match(generic, /Carteira 12 Dividendos\/JCP/);
   console.log('fatias de contexto por papel: OK (4 fatias distintas por papel; papel desconhecido cai no genérico)');
+}
+
+function committeeRegistryTests(): void {
+  const keys = ['fundamentalista-cvm', 'dividendos', 'risco', 'cetico'];
+  for (const key of keys) {
+    const role = getCommitteeRole(key);
+    assert.ok(role, `papel ${key} deveria existir no registro`);
+    assert.equal(role!.key, key);
+    assert.ok(role!.title.length > 0);
+    const prompt = role!.systemPrompt('WEGE3', 'DADOS-DE-TESTE');
+    assert.match(prompt, /WEGE3/, `prompt de ${key} deveria citar o ticker`);
+    assert.match(prompt, /DADOS-DE-TESTE/, `prompt de ${key} deveria embutir a fatia de dados`);
+    assert.match(prompt, /não executa ordens/i, `prompt de ${key} deveria negar autoridade de execução`);
+  }
+  // Instruções distintivas por papel
+  assert.match(getCommitteeRole('fundamentalista-cvm')!.systemPrompt('WEGE3', 'X'), /fundamentos/i);
+  assert.match(getCommitteeRole('dividendos')!.systemPrompt('WEGE3', 'X'), /proventos/i);
+  assert.match(getCommitteeRole('risco')!.systemPrompt('WEGE3', 'X'), /não recomende/i);
+  assert.match(getCommitteeRole('cetico')!.systemPrompt('WEGE3', 'X'), /rebat/i);
+  // Papel desconhecido e gestor: fora do registro de nós AGENT
+  assert.equal(getCommitteeRole('analista-pesquisa'), undefined);
+  assert.equal(getCommitteeRole(undefined), undefined);
+  assert.equal(getCommitteeRole(GESTOR_ROLE_KEY), undefined);
+  // Prompt do gestor embute o schema hint e a regra de aprovação humana em PROPOSAL
+  const gestorResearch = buildGestorSystemPrompt('RESEARCH', '{"thesis": "..."}');
+  assert.match(gestorResearch, /Gestor/);
+  assert.match(gestorResearch, /\{"thesis": "\.\.\."\}/);
+  const gestorProposal = buildGestorSystemPrompt('PROPOSAL', '{"direction": "..."}');
+  assert.match(gestorProposal, /aprovação humana/i);
+  console.log('registro de papéis do comitê: OK (4 papéis + gestor; papel desconhecido → undefined)');
 }
 
 const DAG: AgentRunDag = {
@@ -448,6 +479,7 @@ async function internalErrorSanitizationTests(): Promise<void> {
 async function main(): Promise<void> {
   migrationAdditivityTests();
   roleContextTests();
+  committeeRegistryTests();
   await internalErrorSanitizationTests();
 
   const prisma = new PrismaClient();
