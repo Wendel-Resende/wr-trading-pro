@@ -7,6 +7,7 @@ import { ReadModelError } from '../../src/application/read-models-v1/errors';
 import { jsonError } from '../../src/app/api/v1/_shared/http';
 import { PrismaAgentRunRepository, InvalidAgentRunTransitionError } from '../../src/adapters/prisma/agent-run';
 import type { AgentRunDag } from '../../src/domain/v1/models/agent-run';
+import { buildRoleContext } from '../../src/lib/agent-data-context';
 
 async function expectRejection<T extends new (...args: never[]) => Error>(
   promise: Promise<unknown>,
@@ -75,6 +76,27 @@ function migrationAdditivityTests(): void {
   assert.match(dagSql, /ADD COLUMN "costUsed"/);
   assert.match(dagSql, /CREATE INDEX "AgentRun_status_updatedAt_idx"/);
   console.log('migration additivity (Item 2): OK (somente ALTER TABLE ADD COLUMN/CREATE INDEX, sem DROP)');
+}
+
+function roleContextTests(): void {
+  const keys = ['fundamentalista-cvm', 'dividendos', 'risco', 'cetico'] as const;
+  const contexts = new Map<string, string>();
+  for (const key of keys) {
+    const ctx = buildRoleContext(key, 'WEGE3');
+    assert.ok(ctx.length > 100, `contexto de ${key} deveria ter conteúdo real`);
+    assert.match(ctx, /WEGE3/, `contexto de ${key} deveria citar o ticker`);
+    contexts.set(key, ctx);
+  }
+  // Cada papel recebe uma fatia própria, não o mesmo dump
+  assert.notEqual(contexts.get('fundamentalista-cvm'), contexts.get('dividendos'));
+  assert.notEqual(contexts.get('dividendos'), contexts.get('risco'));
+  assert.match(contexts.get('fundamentalista-cvm')!, /Evolução trimestral/);
+  assert.match(contexts.get('dividendos')!, /Proventos por trimestre/);
+  assert.match(contexts.get('risco')!, /Indicadores de risco/);
+  // Papel desconhecido cai no contexto genérico (carteira) — retrocompat
+  const generic = buildRoleContext('papel-desconhecido', 'WEGE3');
+  assert.match(generic, /Carteira 12 Dividendos\/JCP/);
+  console.log('fatias de contexto por papel: OK (4 fatias distintas por papel; papel desconhecido cai no genérico)');
 }
 
 const DAG: AgentRunDag = {
@@ -425,6 +447,7 @@ async function internalErrorSanitizationTests(): Promise<void> {
 
 async function main(): Promise<void> {
   migrationAdditivityTests();
+  roleContextTests();
   await internalErrorSanitizationTests();
 
   const prisma = new PrismaClient();

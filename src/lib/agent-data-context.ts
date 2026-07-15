@@ -263,3 +263,109 @@ export function buildPromptContext(ticker?: string): string {
 
   return text;
 }
+
+// ── Fatias de contexto por papel do comitê ─────────────────────────
+//
+// Cada papel do comitê recebe apenas a fatia de dados do seu mandato
+// (spec 2026-07-15): prompt + fatia ≤ ~2–3 mil tokens para caber no
+// num_ctx=8192 do Ollama local. O resumo da carteira inteira NÃO entra
+// nos papéis focados — vira ruído e estoura contexto.
+
+function findCompanyByTicker(ticker: string): CvmCompany | null {
+  return (
+    listCompanies().find((c) => c.ticker.toUpperCase() === ticker.toUpperCase()) ?? null
+  );
+}
+
+function lastQuarters(quarters: CvmQuarter[], n: number): CvmQuarter[] {
+  return [...quarters]
+    .sort((a, b) => a.ano - b.ano || a.trimestre - b.trimestre)
+    .slice(-n);
+}
+
+function fundamentalistaContext(ticker: string, company: CvmCompany): string {
+  let ctx = buildSingleTickerContext(ticker).context;
+  const q8 = lastQuarters(getQuarters(company.cdCvm), 8);
+  ctx += '\n## Evolução trimestral (últimos 8 trimestres)\n';
+  for (const q of q8) {
+    ctx += `- ${q.ano}T${q.trimestre}: receita ${BRL(q.receitaLiquida, 'bi')} | lucro ${BRL(q.lucroLiquido, 'bi')} | margem líq. ${PCT(q.margemLiquida)} | ROE ${PCT(q.roe)}\n`;
+  }
+  return ctx;
+}
+
+function dividendosContext(ticker: string, company: CvmCompany): string {
+  let ctx = `## Dados de proventos para ${company.ticker} — ${company.nome} (${company.setor ?? 'setor não informado'})\n\n`;
+  const divs = getDividends(company.ticker);
+  const last20 = divs.slice(-20); // ~5 anos
+  ctx += '## Proventos por trimestre (saída de caixa, fonte DFC/CVM)\n';
+  if (last20.length === 0) {
+    ctx += '- Sem registros de proventos na base.\n';
+  }
+  for (const d of last20) {
+    ctx += `- ${d.ano}T${d.trimestre}: ${BRL(d.proventos)}\n`;
+  }
+  const quarters = getQuarters(company.cdCvm);
+  const t12lucro = trailing12m(quarters, 'lucroLiquido');
+  const total4 = divs.slice(-4).reduce((s, d) => s + (d.proventos ?? 0), 0);
+  if (total4 > 0) {
+    ctx += `\nProventos 12m: ${BRL(total4)}`;
+    if (t12lucro && t12lucro > 0) {
+      ctx += ` | Lucro 12m: ${BRL(t12lucro, 'bi')} | Payout 12m: ~${((total4 / t12lucro) * 100).toFixed(0)}%`;
+    }
+    ctx += '\n';
+  }
+  const inPortfolio = portfolioTickers().includes(company.ticker);
+  ctx += inPortfolio
+    ? 'O ativo PERTENCE à carteira 12 dividendos/JCP vigente da plataforma.\n'
+    : 'O ativo NÃO pertence à carteira 12 dividendos/JCP vigente da plataforma.\n';
+  return ctx;
+}
+
+function riscoContext(ticker: string, company: CvmCompany): string {
+  let ctx = `## Indicadores de risco para ${company.ticker} — ${company.nome} (${company.setor ?? 'setor não informado'})\n\n`;
+  const quarters = getQuarters(company.cdCvm);
+  const latest = latestQuarter(quarters);
+  if (latest) {
+    ctx += `Último trimestre: ${latest.ano}T${latest.trimestre}\n`;
+    ctx += `Dívida/PL: ${PCT(latest.dividaPl)} | Endividamento: ${PCT(latest.endividamento)} | Liquidez corrente: ${latest.liquidezCorrente !== null && Number.isFinite(latest.liquidezCorrente) ? latest.liquidezCorrente.toFixed(2) : 'N/D'}\n`;
+  }
+  const q8 = lastQuarters(quarters, 8);
+  ctx += '\n## Margens por trimestre (volatilidade — últimos 8 trimestres)\n';
+  for (const q of q8) {
+    ctx += `- ${q.ano}T${q.trimestre}: margem líq. ${PCT(q.margemLiquida)} | margem EBITDA ${PCT(q.margemEbitda)}\n`;
+  }
+  // Concentração setorial da carteira vigente
+  const tickers = portfolioTickers();
+  const companies = listCompanies();
+  const sameSector = tickers.filter((t) => {
+    const c = companies.find((x) => x.ticker === t);
+    return c?.setor !== null && c?.setor !== undefined && c.setor === company.setor;
+  });
+  ctx += `\nSetor "${company.setor ?? 'não informado'}" na carteira 12 vigente: ${sameSector.length} de ${tickers.length} ativos`;
+  ctx += sameSector.length > 0 ? ` (${sameSector.join(', ')})\n` : '\n';
+  return ctx;
+}
+
+/**
+ * Fatia de contexto de dados para um papel do comitê (spec 2026-07-15).
+ * Papel desconhecido cai no contexto genérico (`buildPromptContext`) —
+ * retrocompatível com roles antigos como `analista-pesquisa`.
+ */
+export function buildRoleContext(roleKey: string, ticker: string): string {
+  const company = findCompanyByTicker(ticker);
+  if (!company) return `Ticker ${ticker} não encontrado na base CVM (138 empresas).`;
+  switch (roleKey) {
+    case 'fundamentalista-cvm':
+      return fundamentalistaContext(ticker, company);
+    case 'dividendos':
+      return dividendosContext(ticker, company);
+    case 'risco':
+      return riscoContext(ticker, company);
+    case 'cetico':
+      // O material principal do cético são os pareceres dos colegas (via
+      // reads); aqui só o compacto do ticker para checar números citados.
+      return buildSingleTickerContext(ticker).context;
+    default:
+      return buildPromptContext(ticker);
+  }
+}
