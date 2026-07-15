@@ -1,6 +1,50 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-15 (madrugada)
+Última atualização: 2026-07-15
+
+## Sessão 2026-07-15 — Comitê de Agentes v1 (branch `feat/comite-agentes`)
+
+Entrega da v1 do comitê de investimento multiagente sobre o runtime AgentRun
+(ideia registrada no vault em `comite-investimento-multiagente-b3`). Fluxo:
+brainstorm → spec (`docs/superpowers/specs/2026-07-15-comite-agentes-design.md`)
+→ plano (`docs/superpowers/plans/2026-07-15-comite-agentes.md`) → execução por
+subagentes com review por task.
+
+### O que foi entregue
+
+1. **`buildRoleContext`** (`agent-data-context.ts`): fatia de dados por papel —
+   fundamentalista (evolução 8 trimestres), dividendos (série DFC ~5 anos +
+   payout + pertencimento à carteira 12), risco (dívida/liquidez, volatilidade
+   de margens 8 tri, concentração setorial da carteira), cético (compacto do
+   ticker). Papel desconhecido cai no contexto genérico da carteira.
+2. **Registro de papéis** (`src/application/agent-run/committee.ts`): prompts
+   versionados no git para `fundamentalista-cvm`, `dividendos`, `risco`,
+   `cetico` + `buildGestorSystemPrompt` para o nó SYNTHESIS com `role: 'gestor'`.
+3. **Runtime** (`service.ts`): nós AGENT com papel de comitê usam prompt +
+   fatia próprios; SYNTHESIS-gestor pondera pareceres rotulados por papel;
+   caminho genérico intacto (retrocompatível); contrato/schemas/rotas sem mudança.
+4. **UI** (`AgentRunsPanel.tsx`): template "Simples | Comitê", ticker
+   obrigatório no comitê (regex B3), budget maior (maxCost 30k tokens), e seção
+   "Pareceres do Comitê" legível por papel (cético destacado; gestor = contrato final).
+5. **Testes**: `test:agent-run` ganhou 4 blocos — fatias por papel, registro,
+   comitê simulado (8 nós) e comitê com **stub LLM injetado** (verifica prompt
+   por papel, cético lendo os 3 pareceres, gestor sintetizando, custo em tokens).
+6. **E2E live validado** (relatório em `.superpowers/sdd/task-5-report.md`):
+   comitê WEGE3 SUCCEEDED com Ollama (8.274 tokens) e DeepSeek (13.004);
+   4 pareceres distintos, cético rebatendo nominalmente, números batendo com a
+   base CVM (payout ~83%, lucro 12m R$ 6,7 bi); regressão do modo Simples OK.
+
+### Em aberto (achados do E2E, pré-existentes — não desta branch)
+
+- `llm-providers.ts`: `fetch` sem AbortController/timeout — `timeoutMs` do
+  budget só é checado entre nós; provedor pendurado pode deixar run RUNNING
+  indefinidamente.
+- Runs órfãos RUNNING/QUEUED se o processo morre no meio do advance — sem
+  reaper/retomada automática (2 órfãos da validação foram cancelados à mão).
+- Qualidade analítica fina do qwen3.5:4b tem imprecisões numéricas pontuais;
+  DeepSeek não exibiu o problema.
+- Fora da v1 (spec): analista de preço/MT5, otimista, modo carteira inteira,
+  2ª rodada de debate.
 
 ## Sessão 2026-07-14/15 — Checkpoint do dia (Claude Code direto)
 
