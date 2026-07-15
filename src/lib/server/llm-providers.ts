@@ -7,7 +7,7 @@
  */
 
 import { LLMProvider, LLMMessage, LLMConfig, LLMResponse, LLMChatRequest } from '@/types/llm';
-import { getOllamaEndpoint, getServerLlmKeys } from '@/lib/server/llm-config';
+import { getOllamaEndpoint, getOllamaDefaultModel, getServerLlmKeys } from '@/lib/server/llm-config';
 
 interface ILLMProvider {
   name: LLMProvider;
@@ -97,10 +97,11 @@ class OpenAICompatibleProvider implements ILLMProvider {
 class OllamaProvider implements ILLMProvider {
   name: LLMProvider = 'OLLAMA';
   private endpoint: string;
-  private defaultModel = 'llama3.2:3b';
+  private defaultModel: string;
 
-  constructor(endpoint: string) {
+  constructor(endpoint: string, defaultModel: string = getOllamaDefaultModel()) {
     this.endpoint = endpoint;
+    this.defaultModel = defaultModel;
   }
 
   isConfigured(): boolean {

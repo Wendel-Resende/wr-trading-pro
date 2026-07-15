@@ -26,7 +26,15 @@ interface AgentRun {
   budget: { maxSteps?: number; maxCost?: number; timeoutMs?: number };
   output: Record<string, unknown> | null;
   error: { code?: string; message?: string } | null;
-  nodeStates: Record<string, { status: "PENDING" | "DONE" | "FAILED" }>;
+  nodeStates: Record<
+    string,
+    {
+      status: "PENDING" | "DONE" | "FAILED";
+      output?: Record<string, unknown> & {
+        _llm?: { simulated: boolean; provider?: string; model?: string; totalTokens?: number; reason?: string };
+      };
+    }
+  >;
   stepsUsed: number;
   costUsed: number;
   createdAt: string;
@@ -111,7 +119,8 @@ export default function AgentRunsPanel() {
           kind,
           dag: buildDefaultDag(kind === "RESEARCH" ? "analista-pesquisa" : "analista-proposta"),
           input: { question: question.trim() || "(sem pergunta)" },
-          budget: { maxSteps, timeoutMs: 60_000 },
+          // 5 min: chamadas a LLM local (Ollama em CPU) podem levar minutos
+          budget: { maxSteps, timeoutMs: 300_000 },
           // Margem de 60s: o servidor fixa knowledgeTime = now() e rejeita
           // knowledgeTime > decisionTime — clock do browser + latência não
           // podem ficar atrás do relógio do servidor.
@@ -145,12 +154,13 @@ export default function AgentRunsPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-4 py-3 flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-        <p className="text-yellow-400 text-sm font-space">
-          Runtime governado (Fase 3): execução com DAG, orçamento e auditoria — porém o
-          processamento dos nós ainda é <span className="font-bold">simulado (sem LLM real)</span>.
-          Propostas nunca geram ordens, por construção.
+      <div className="bg-cyber-cyan/10 border border-cyber-cyan/30 rounded-lg px-4 py-3 flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-cyber-cyan flex-shrink-0 mt-0.5" />
+        <p className="text-cyber-cyan text-sm font-space">
+          Runtime governado: os nós AGENT/SYNTHESIS usam o <span className="font-bold">LLM do
+          servidor</span> (Ollama/OpenAI/etc., com fallback) e o custo do orçamento é em tokens.
+          Sem provedor disponível, a execução cai para o modo simulado — sempre marcado como tal
+          no detalhe de cada nó. Propostas nunca geram ordens, por construção.
         </p>
       </div>
 
@@ -298,16 +308,31 @@ export default function AgentRunsPanel() {
                 </p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {selected.dag.nodes.map((n, i) => {
-                    const state = selected.nodeStates[n.id]?.status ?? "PENDING";
+                    const nodeState = selected.nodeStates[n.id];
+                    const state = nodeState?.status ?? "PENDING";
+                    const llm = nodeState?.output?._llm;
+                    const llmTag = llm ? (llm.simulated ? "SIM" : llm.provider ?? "LLM") : null;
                     return (
                       <span key={n.id} className="flex items-center gap-1.5">
                         {i > 0 && <span className="text-gray-600">→</span>}
                         <span
                           className={`text-[0.65rem] font-space px-2 py-1 rounded border ${NODE_STATE_STYLE[state]}`}
-                          title={`${n.type}${n.role ? ` (${n.role})` : ""} — ${state}`}
+                          title={`${n.type}${n.role ? ` (${n.role})` : ""} — ${state}${
+                            llm
+                              ? llm.simulated
+                                ? ` · simulado (${llm.reason ?? "sem LLM"})`
+                                : ` · ${llm.provider}/${llm.model} · ${llm.totalTokens ?? "?"} tokens`
+                              : ""
+                          }`}
                         >
                           {n.type}
                           {n.role ? `:${n.role}` : ""}
+                          {llmTag && (
+                            <span className={llm && !llm.simulated ? "text-cyber-cyan" : "text-yellow-400"}>
+                              {" "}
+                              [{llmTag}]
+                            </span>
+                          )}
                         </span>
                       </span>
                     );

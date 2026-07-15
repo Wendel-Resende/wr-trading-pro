@@ -12,11 +12,19 @@ import type {
 } from '../../domain/v1/models/agent-run';
 import { InvalidAgentRunDagError, validateAndSortDag } from '../../domain/v1/models/agent-run';
 import type { AgentRunRepository } from '../../domain/v1/ports/agent-run-repository';
+import type { AgentLlmPort } from '../../domain/v1/ports/agent-llm';
 import { compareInstants, parseInstant } from '../../domain/v1/time';
 import { ReadModelError } from '../read-models-v1/errors';
 
 export interface AgentRunServicePorts {
   readonly agentRunRepository: AgentRunRepository;
+  /**
+   * Porta LLM opcional para os nós AGENT/SYNTHESIS. Ausente (testes,
+   * submit/get/list/cancel) ou indisponível em runtime, o processamento cai
+   * para o caminho determinístico simulado — sempre marcado como simulado
+   * nos nodeStates, nunca apresentado como análise real.
+   */
+  readonly agentLlm?: AgentLlmPort;
 }
 
 export interface SubmitAgentRunInputV1 {
@@ -122,59 +130,316 @@ function resolveRef(ref: string, nodeStates: AgentRunNodeStates): unknown {
   return field ? state.output[field] : state.output;
 }
 
-/** Execução determinística e simulada (sem LLM real) de um único nó do DAG. */
-function executeNode(
+// ---------------------------------------------------------------------------
+// Sanitização de conteúdo vindo do LLM: o modelo fornece CONTEÚDO; a
+// ESTRUTURA do contrato é sempre montada aqui, campo a campo (schemas de
+// persistência são strict — nada fora do contrato pode ser gravado).
+// ---------------------------------------------------------------------------
+
+function cleanText(value: unknown, maxLength: number, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return fallback;
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1)}…` : trimmed;
+}
+
+function cleanRisks(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+    .slice(0, 10)
+    .map((r) => cleanText(r, 500, ''));
+}
+
+function clamp01(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** Extrai o primeiro objeto JSON de um texto de LLM (tolerante a prosa/cercas em volta). */
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  for (let end = text.length; end > start; end--) {
+    if (text[end - 1] !== '}') continue;
+    try {
+      const parsed = JSON.parse(text.slice(start, end));
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* tenta um fechamento anterior */
+    }
+  }
+  return null;
+}
+
+/** Metadata de execução gravada no nodeState (formato livre) — NUNCA no output final (strict). */
+interface NodeLlmMeta {
+  readonly simulated: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly totalTokens?: number;
+  readonly reason?: string;
+}
+
+interface NodeExecution {
+  readonly output: Record<string, unknown>;
+  readonly cost: number;
+}
+
+function simulatedAgentOutput(node: AgentRunNode, reason: string): Record<string, unknown> {
+  const provides = node.provides ?? ['thesisDraft'];
+  const output: Record<string, unknown> = {};
+  for (const key of provides) {
+    output[key] = `Simulado (role=${node.role ?? node.id}): rascunho determinístico para ${key}`;
+  }
+  output._llm = { simulated: true, reason } satisfies NodeLlmMeta;
+  return output;
+}
+
+function collectAgentMaterial(nodeStates: AgentRunNodeStates): { texts: string[]; liveNodeIds: string[]; providers: Set<string> } {
+  const texts: string[] = [];
+  const liveNodeIds: string[] = [];
+  const providers = new Set<string>();
+  for (const [nodeId, state] of Object.entries(nodeStates)) {
+    const out = state.output;
+    if (!out) continue;
+    const meta = out._llm as NodeLlmMeta | undefined;
+    for (const [key, value] of Object.entries(out)) {
+      if (key === '_llm' || typeof value !== 'string' || value.trim().length === 0) continue;
+      texts.push(`[${nodeId}.${key}] ${value}`);
+    }
+    if (meta && meta.simulated === false) {
+      liveNodeIds.push(nodeId);
+      if (meta.provider) providers.add(meta.provider);
+    }
+  }
+  return { texts, liveNodeIds, providers };
+}
+
+async function executeAgentNodeLive(
+  node: AgentRunNode,
+  nodeStates: AgentRunNodeStates,
+  input: Record<string, unknown>,
+  kind: AgentRunKind,
+  llm: AgentLlmPort,
+): Promise<NodeExecution> {
+  const readContext = (node.reads ?? [])
+    .map((ref) => `- ${ref}: ${JSON.stringify(resolveRef(ref, nodeStates) ?? null)}`)
+    .join('\n');
+  const system =
+    `Você é o agente "${node.role ?? node.id}" do runtime governado da WR Trading Pro (B3/Brasil). ` +
+    `Objetivo do run: ${kind === 'RESEARCH' ? 'pesquisa/análise' : 'avaliação de proposta (nunca execução)'}. ` +
+    'Responda em português, de forma objetiva e fundamentada. Você não executa ordens e não tem autoridade de execução.';
+  const user =
+    `Contexto de entrada (JSON): ${JSON.stringify(input)}\n` +
+    (readContext ? `Saídas de nós anteriores:\n${readContext}\n` : '') +
+    'Produza sua análise em texto corrido (sem JSON).';
+
+  try {
+    const completion = await llm.complete([
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ]);
+    const provides = node.provides ?? ['thesisDraft'];
+    const output: Record<string, unknown> = {};
+    for (const key of provides) output[key] = completion.content;
+    output._llm = {
+      simulated: false,
+      provider: completion.provider,
+      model: completion.model,
+      totalTokens: completion.totalTokens,
+    } satisfies NodeLlmMeta;
+    return { output, cost: completion.totalTokens };
+  } catch (error) {
+    const reason = `LLM indisponível: ${error instanceof Error ? error.message : 'erro desconhecido'}`;
+    return { output: simulatedAgentOutput(node, reason), cost: costForNodeType(node.type) };
+  }
+}
+
+async function synthesizeOutputLive(
+  nodeStates: AgentRunNodeStates,
+  input: Record<string, unknown>,
+  kind: AgentRunKind,
+  decisionTime: string,
+  llm: AgentLlmPort,
+): Promise<{ contract: AgentRunOutput; meta: NodeLlmMeta; cost: number }> {
+  const material = collectAgentMaterial(nodeStates);
+  const sourceLabel = material.providers.size > 0 ? `llm:${Array.from(material.providers).join(',')}` : 'simulated';
+  const evidence = Object.freeze(
+    (material.liveNodeIds.length > 0 ? material.liveNodeIds : ['simulated']).map((nodeId) =>
+      Object.freeze({ source: sourceLabel, reference: `agent-run:v1:node:${nodeId}`, asOf: decisionTime })
+    )
+  );
+
+  // Contrato determinístico com o material real dos agentes — usado quando a
+  // síntese estruturada falha, para nunca perder a análise já produzida.
+  const fallbackFromMaterial = (): AgentRunOutput => {
+    const joined = material.texts.join('\n\n');
+    if (kind === 'RESEARCH') {
+      return Object.freeze({
+        kind: 'RESEARCH',
+        thesis: cleanText(joined, 4000, 'Análise indisponível.'),
+        evidence,
+        risks: Object.freeze(['síntese estruturada indisponível; tese montada a partir do texto bruto dos agentes']),
+        confidence: 0.3,
+        decisionTime,
+        invalidation: 'condições de invalidação não especificadas pelo agente',
+      });
+    }
+    return Object.freeze({
+      kind: 'PROPOSAL',
+      instrumentId: cleanText(input.symbol ?? input.ticker ?? input.instrumentId, 30, 'UNSPECIFIED'),
+      direction: 'HOLD',
+      rationale: cleanText(joined, 4000, 'Análise indisponível.'),
+      risks: Object.freeze(['síntese estruturada indisponível; proposta conservadora (HOLD) montada do texto bruto']),
+      confidence: 0.3,
+      decisionTime,
+      requiresHumanApproval: true,
+    });
+  };
+
+  if (material.liveNodeIds.length === 0) {
+    // Nenhum agente rodou com LLM real — não há o que sintetizar de verdade.
+    return { contract: buildSimulatedOutput(kind, decisionTime), meta: { simulated: true, reason: 'nenhum nó AGENT executou com LLM real' }, cost: costForNodeType('SYNTHESIS') };
+  }
+
+  const schemaHint =
+    kind === 'RESEARCH'
+      ? '{"thesis": "tese principal", "risks": ["risco 1"], "confidence": 0.0 a 1.0, "invalidation": "o que invalidaria a tese"}'
+      : '{"direction": "BUY"|"SELL"|"HOLD", "rationale": "justificativa", "risks": ["risco 1"], "confidence": 0.0 a 1.0, "instrumentId": "ticker"}';
+
+  try {
+    const completion = await llm.complete([
+      {
+        role: 'system',
+        content:
+          'Você sintetiza análises de agentes da WR Trading Pro em um contrato estruturado. ' +
+          `Responda APENAS com um objeto JSON no formato: ${schemaHint}. Sem texto fora do JSON.`,
+      },
+      { role: 'user', content: `Análises dos agentes:\n${material.texts.join('\n\n')}` },
+    ]);
+
+    const parsed = extractJsonObject(completion.content);
+    const meta: NodeLlmMeta = {
+      simulated: false,
+      provider: completion.provider,
+      model: completion.model,
+      totalTokens: completion.totalTokens,
+    };
+
+    if (!parsed) return { contract: fallbackFromMaterial(), meta, cost: completion.totalTokens };
+
+    if (kind === 'RESEARCH') {
+      const contract: AgentRunOutput = Object.freeze({
+        kind: 'RESEARCH',
+        thesis: cleanText(parsed.thesis, 4000, cleanText(material.texts.join('\n\n'), 4000, 'Análise indisponível.')),
+        evidence,
+        risks: Object.freeze(cleanRisks(parsed.risks)),
+        confidence: clamp01(parsed.confidence, 0.5),
+        decisionTime,
+        invalidation: cleanText(parsed.invalidation, 1000, 'condições de invalidação não especificadas pelo agente'),
+      });
+      return { contract, meta, cost: completion.totalTokens };
+    }
+
+    const direction = parsed.direction === 'BUY' || parsed.direction === 'SELL' || parsed.direction === 'HOLD' ? parsed.direction : 'HOLD';
+    const contract: AgentRunOutput = Object.freeze({
+      kind: 'PROPOSAL',
+      instrumentId: cleanText(parsed.instrumentId ?? input.symbol ?? input.ticker, 30, 'UNSPECIFIED'),
+      direction,
+      rationale: cleanText(parsed.rationale, 4000, 'justificativa não fornecida pelo agente'),
+      risks: Object.freeze(cleanRisks(parsed.risks)),
+      confidence: clamp01(parsed.confidence, 0.5),
+      decisionTime,
+      requiresHumanApproval: true,
+    });
+    return { contract, meta, cost: completion.totalTokens };
+  } catch (error) {
+    const reason = `síntese LLM indisponível: ${error instanceof Error ? error.message : 'erro desconhecido'}`;
+    return { contract: fallbackFromMaterial(), meta: { simulated: false, reason, provider: sourceLabel }, cost: costForNodeType('SYNTHESIS') };
+  }
+}
+
+/**
+ * Execução de um único nó do DAG. Com a porta LLM presente, os nós AGENT e
+ * SYNTHESIS usam o provedor real (custo em tokens no costUsed); sem porta ou
+ * com provedores indisponíveis, cai para o caminho determinístico simulado —
+ * sempre marcado como tal via `_llm` no nodeState.
+ */
+async function executeNode(
   node: AgentRunNode,
   nodeStates: AgentRunNodeStates,
   input: Record<string, unknown>,
   kind: AgentRunKind,
   decisionTime: string,
-): Record<string, unknown> {
+  llm: AgentLlmPort | undefined,
+): Promise<NodeExecution> {
   switch (node.type) {
     case 'INPUT': {
       const provides = node.provides ?? Object.keys(input);
       const output: Record<string, unknown> = {};
       for (const key of provides) output[key] = input[key];
-      return output;
+      return { output, cost: costForNodeType(node.type) };
     }
     case 'AGENT': {
-      const provides = node.provides ?? ['thesisDraft'];
-      const output: Record<string, unknown> = {};
-      for (const key of provides) {
-        output[key] = `Simulado (role=${node.role ?? node.id}): rascunho determinístico para ${key}`;
-      }
-      return output;
+      if (llm) return executeAgentNodeLive(node, nodeStates, input, kind, llm);
+      return { output: simulatedAgentOutput(node, 'porta LLM não configurada'), cost: costForNodeType(node.type) };
     }
     case 'EVIDENCE': {
       const provides = node.provides ?? ['evidenceList'];
       const evidenceList = (node.reads ?? []).map((ref, index) => ({
-        source: 'simulated',
+        source: llm ? 'agent-run' : 'simulated',
         reference: `agent-run:v1:node:${index}`,
         asOf: decisionTime,
         value: resolveRef(ref, nodeStates) ?? null,
       }));
       const output: Record<string, unknown> = {};
       for (const key of provides) output[key] = evidenceList;
-      return output;
+      return { output, cost: costForNodeType(node.type) };
     }
     case 'SYNTHESIS': {
       const provides = node.provides ?? ['finding'];
+      if (llm) {
+        const { contract, meta, cost } = await synthesizeOutputLive(nodeStates, input, kind, decisionTime, llm);
+        const output: Record<string, unknown> = {};
+        for (const key of provides) output[key] = contract as unknown as Record<string, unknown>;
+        output._llm = meta;
+        return { output, cost };
+      }
       const contract = buildSimulatedOutput(kind, decisionTime);
       const output: Record<string, unknown> = {};
       for (const key of provides) output[key] = contract as unknown as Record<string, unknown>;
-      return output;
+      output._llm = { simulated: true, reason: 'porta LLM não configurada' } satisfies NodeLlmMeta;
+      return { output, cost: costForNodeType(node.type) };
     }
     case 'OUTPUT': {
       const ref = (node.reads ?? [])[0];
       const value = ref ? resolveRef(ref, nodeStates) : undefined;
-      // Sem `reads` (opcional no schema) ou referência não resolvida, o nó
-      // OUTPUT cai para o contrato simulado — nunca devolve `{}`, que seria
-      // persistido como output final e rejeitado pelo mapping na releitura
-      // (deixando o run SUCCEEDED ilegível e quebrando get/list).
-      return (value ?? buildSimulatedOutput(kind, decisionTime)) as unknown as Record<string, unknown>;
+      if (value !== undefined && value !== null) {
+        return { output: value as Record<string, unknown>, cost: costForNodeType(node.type) };
+      }
+      // Sem `reads` (opcionais no schema) ou referência não resolvida: usa o
+      // primeiro contrato válido produzido por um nó SYNTHESIS; em último
+      // caso, o contrato simulado — nunca `{}`, que seria persistido e
+      // rejeitado pelo mapping na releitura (run ilegível, get/list quebrados).
+      for (const state of Object.values(nodeStates)) {
+        for (const [key, candidate] of Object.entries(state.output ?? {})) {
+          if (key === '_llm') continue;
+          if (isContractualOutput(candidate as AgentRunOutput, kind)) {
+            return { output: candidate as Record<string, unknown>, cost: costForNodeType(node.type) };
+          }
+        }
+      }
+      return {
+        output: buildSimulatedOutput(kind, decisionTime) as unknown as Record<string, unknown>,
+        cost: costForNodeType(node.type),
+      };
     }
     default:
-      return {};
+      return { output: {}, cost: costForNodeType(node.type) };
   }
 }
 
@@ -257,11 +522,14 @@ export class AgentRunService {
     let finalOutput: AgentRunOutput | null = null;
 
     for (const node of sortedNodes) {
-      const output = executeNode(node, nodeStates, run.input, run.kind, run.decisionTime);
-      simulateNodeWork(node.type);
+      const execution = await executeNode(node, nodeStates, run.input, run.kind, run.decisionTime, this.ports.agentLlm);
+      const output = execution.output;
+      if (!this.ports.agentLlm) simulateNodeWork(node.type);
 
       stepsUsed += 1;
-      costUsed += costForNodeType(node.type);
+      // Com LLM real, o custo do nó são os tokens consumidos na chamada;
+      // no caminho simulado, o custo determinístico por tipo de nó.
+      costUsed += execution.cost;
       nodeStates[node.id] = { status: 'DONE', output };
       if (node.type === 'OUTPUT') finalOutput = output as unknown as AgentRunOutput;
 

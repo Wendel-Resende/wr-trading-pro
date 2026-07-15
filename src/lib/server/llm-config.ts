@@ -43,6 +43,23 @@ export function getOllamaEndpoint(): string {
   return configured.replace(/\/+$/, '');
 }
 
+const DEFAULT_OLLAMA_MODEL = 'llama3.2:3b';
+const MODEL_NAME_PATTERN = /^[\w][\w.\-:]{0,63}$/;
+
+/**
+ * Modelo padrão do Ollama a partir de OLLAMA_DEFAULT_MODEL (server-side).
+ * Nome fora do padrão seguro é descartado com fallback para o default.
+ */
+export function getOllamaDefaultModel(): string {
+  const configured = process.env.OLLAMA_DEFAULT_MODEL?.trim();
+  if (!configured) return DEFAULT_OLLAMA_MODEL;
+  if (!MODEL_NAME_PATTERN.test(configured)) {
+    console.warn('[llm-config] OLLAMA_DEFAULT_MODEL inválido. Usando modelo padrão.');
+    return DEFAULT_OLLAMA_MODEL;
+  }
+  return configured;
+}
+
 export interface ServerLlmKeys {
   openai?: string;
   deepseek?: string;
