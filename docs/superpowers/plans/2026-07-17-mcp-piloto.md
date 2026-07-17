@@ -21,7 +21,7 @@
 ## Estrutura de arquivos (visão geral)
 
 ```
-src/mcp-pilot/
+src/mcp/pilot/
 ├── config.ts              # envs do piloto (fail-closed)
 ├── server.ts              # HTTP + Bearer + StreamableHTTP + catálogo
 ├── index.ts               # entrypoint (npm run mcp:pilot)
@@ -53,7 +53,7 @@ docs/MCP_PILOT.md
 ### Task 1: Fundação do `wr-mcp-pilot` (config fail-closed, HTTP+Bearer, catálogo com `privilege`)
 
 **Files:**
-- Create: `src/mcp-pilot/config.ts`, `src/mcp-pilot/server.ts`, `src/mcp-pilot/index.ts`
+- Create: `src/mcp/pilot/config.ts`, `src/mcp/pilot/server.ts`, `src/mcp/pilot/index.ts`
 - Modify: `src/mcp/tools/registry-types.ts` (campo `privilege`), `src/mcp/tools/{cvm,market,runtime,reconciliation}.ts` (adicionar `privilege: 'free'` em cada tool), `package.json` (scripts)
 - Create: `scripts/mcp-pilot/run-mcp-pilot-tests.cjs`, `scripts/mcp-pilot/tsconfig.json`, `scripts/mcp-pilot/mcp-pilot-test.ts`
 
@@ -68,8 +68,8 @@ import assert from 'node:assert/strict';
 import { PrismaClient } from '@prisma/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { resolvePilotConfig, PilotConfigError } from '../../src/mcp-pilot/config';
-import { startPilotServer } from '../../src/mcp-pilot/server';
+import { resolvePilotConfig, PilotConfigError } from '../../src/mcp/pilot/config';
+import { startPilotServer } from '../../src/mcp/pilot/server';
 
 const TOKEN = 't'.repeat(48);
 
@@ -117,13 +117,13 @@ async function main(): Promise<void> {
 void main().catch((e) => { console.error(e); process.exitCode = 1; });
 ```
 
-Copiar `scripts/agent-run/run-agent-run-tests.cjs` para `scripts/mcp-pilot/run-mcp-pilot-tests.cjs` trocando os caminhos (`scripts/mcp-pilot/...`, entry `mcp-pilot-test.js`); copiar o `tsconfig.json` de `scripts/agent-run/` ajustando `include` para `mcp-pilot-test.ts` + `../../src/mcp-pilot/**/*.ts` + `../../src/mcp/**/*.ts` + `../../src/application/**/*.ts` + `../../src/adapters/prisma/**/*.ts` + `../../src/domain/v1/**/*.ts` + `../../src/app/api/v1/_shared/http.ts`. Adicionar em `package.json`: `"mcp:pilot": "tsc -p scripts/mcp-pilot/tsconfig.json && node scripts/mcp-pilot/.dist/src/mcp-pilot/index.js"` e `"test:mcp-pilot": "node scripts/mcp-pilot/run-mcp-pilot-tests.cjs"`.
+Copiar `scripts/agent-run/run-agent-run-tests.cjs` para `scripts/mcp-pilot/run-mcp-pilot-tests.cjs` trocando os caminhos (`scripts/mcp-pilot/...`, entry `mcp-pilot-test.js`); copiar o `tsconfig.json` de `scripts/agent-run/` ajustando `include` para `mcp-pilot-test.ts` + `../../src/mcp/**/*.ts` + `../../src/application/**/*.ts` + `../../src/adapters/prisma/**/*.ts` + `../../src/domain/v1/**/*.ts` + `../../src/app/api/v1/_shared/http.ts`. Adicionar em `package.json`: `"mcp:pilot": "tsc -p scripts/mcp-pilot/tsconfig.json && node scripts/mcp-pilot/.dist/src/mcp/pilot/index.js"` e `"test:mcp-pilot": "node scripts/mcp-pilot/run-mcp-pilot-tests.cjs"`.
 
-- [ ] **Step 2: Rodar e ver falhar** — `npm run test:mcp-pilot` → FAIL (módulos `src/mcp-pilot/*` não existem).
+- [ ] **Step 2: Rodar e ver falhar** — `npm run test:mcp-pilot` → FAIL (módulos `src/mcp/pilot/*` não existem).
 
 - [ ] **Step 3: Implementar** —
 
-`src/mcp-pilot/config.ts`:
+`src/mcp/pilot/config.ts`:
 
 ```ts
 /** Envs do wr-mcp-pilot. Fail-closed: sem WR_MCP_HTTP_TOKEN (>=32) não sobe. */
@@ -171,7 +171,7 @@ export function resolvePilotConfig(env: NodeJS.ProcessEnv = process.env): PilotC
 }
 ```
 
-`src/mcp-pilot/server.ts` (auditoria: logar `tool`, args resumidos e latência; comparação de token em tempo constante):
+`src/mcp/pilot/server.ts` (auditoria: logar `tool`, args resumidos e latência; comparação de token em tempo constante):
 
 ```ts
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -179,8 +179,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { PrismaClient } from '@prisma/client';
-import { createMcpReadServices } from '../mcp/ports/mcp-read-service';
-import { buildToolRegistry, type McpToolDefinition } from '../mcp/tools/registry';
+import { createMcpReadServices } from '../ports/mcp-read-service';
+import { buildToolRegistry, type McpToolDefinition } from '../tools/registry';
 import type { PilotConfig } from './config';
 
 function bearerOk(req: IncomingMessage, token: string): boolean {
@@ -231,7 +231,7 @@ export async function startPilotServer(
 }
 ```
 
-`src/mcp-pilot/index.ts`:
+`src/mcp/pilot/index.ts`:
 
 ```ts
 import { PrismaClient } from '@prisma/client';
@@ -334,8 +334,8 @@ Em `src/middleware.ts`, dentro de `middleware()`, logo antes do bloco `if (await
 ### Task 3: Clientes HTTP internos + tools proxy — CVM rico, Monitoramento e Agentes
 
 **Files:**
-- Create: `src/mcp-pilot/clients/http-json.ts`, `src/mcp-pilot/tools/cvm-rich.ts`, `src/mcp-pilot/tools/monitoring.ts`, `src/mcp-pilot/tools/agent-actions.ts`, `src/mcp-pilot/tools/agent-dags.ts`
-- Modify: `src/mcp-pilot/server.ts` já aceita `extraTools` (nada a mudar); `src/mcp-pilot/index.ts` passa a montar as tools (ver Step 3)
+- Create: `src/mcp/pilot/clients/http-json.ts`, `src/mcp/pilot/tools/cvm-rich.ts`, `src/mcp/pilot/tools/monitoring.ts`, `src/mcp/pilot/tools/agent-actions.ts`, `src/mcp/pilot/tools/agent-dags.ts`
+- Modify: `src/mcp/pilot/server.ts` já aceita `extraTools` (nada a mudar); `src/mcp/pilot/index.ts` passa a montar as tools (ver Step 3)
 - Test: blocos novos em `scripts/mcp-pilot/mcp-pilot-test.ts`
 
 **Interfaces:**
@@ -392,7 +392,7 @@ async function proxyToolsTests(): Promise<void> {
 - [ ] **Step 3: Implementar** — `http-json.ts`:
 
 ```ts
-import { ReadModelError } from '../../application/read-models-v1/errors';
+import { ReadModelError } from '../../../application/read-models-v1/errors';
 
 export interface HttpJson {
   get(path: string): Promise<unknown>;
@@ -433,9 +433,9 @@ export function createHttpJson(baseUrl: string, opts?: { bearer?: string; timeou
 Cada arquivo de tools segue o padrão do `src/mcp/tools/cvm.ts` (usar `parseToolArgs`, `toToolError`, resultado `{ content: [{ type: 'text', text: JSON.stringify(data) }] }`). Exemplo (o mesmo molde vale para todas):
 
 ```ts
-// src/mcp-pilot/tools/cvm-rich.ts
+// src/mcp/pilot/tools/cvm-rich.ts
 import { z } from 'zod';
-import { parseToolArgs, toToolError, type McpToolDefinition } from '../../mcp/tools/registry-types';
+import { parseToolArgs, toToolError, type McpToolDefinition } from '../../tools/registry-types';
 import type { HttpJson } from '../clients/http-json';
 
 export function buildCvmRichTools(next: HttpJson): readonly McpToolDefinition[] {
@@ -486,7 +486,7 @@ export function buildCvmRichTools(next: HttpJson): readonly McpToolDefinition[] 
 ### Task 4: Cliente do bridge MT5 + `GET_ACCOUNT_INFO` + tools de conta/ordens/book/candles
 
 **Files:**
-- Create: `src/mcp-pilot/clients/mt5-bridge.ts`, `src/mcp-pilot/tools/portfolio.ts`
+- Create: `src/mcp/pilot/clients/mt5-bridge.ts`, `src/mcp/pilot/tools/portfolio.ts`
 - Modify: `python/mt5_bridge.py` (novo handler `GET_ACCOUNT_INFO`)
 - Test: bloco novo em `scripts/mcp-pilot/mcp-pilot-test.ts` (bridge fake em `ws` local? — não: usar servidor WS fake com a lib nativa é inviável sem dep; o teste usa um **stub de BridgeClient injetado** nas tools) + `python -m py_compile python/mt5_bridge.py`
 
@@ -551,7 +551,7 @@ async function portfolioToolsTests(): Promise<void> {
 
 **Files:**
 - Modify: `python/spread_api.py` (rota `POST /api/options/scan`), `python/options/scanner_opcoes.py` (extrair função reutilizável se a lógica for só CLI)
-- Create: `src/mcp-pilot/tools/market-live.ts`, `src/mcp-pilot/tools/ml.ts`
+- Create: `src/mcp/pilot/tools/market-live.ts`, `src/mcp/pilot/tools/ml.ts`
 - Test: blocos em `scripts/mcp-pilot/mcp-pilot-test.ts` (stubs HTTP/bridge) + `py_compile` dos dois arquivos Python
 
 **Interfaces:**
@@ -660,8 +660,8 @@ export interface PilotExecutionPort {
 ### Task 7: Guarda DEMO no bridge + broker real + tools `trade.*` no servidor
 
 **Files:**
-- Modify: `python/mt5_bridge.py` (`handle_send_order`: guarda DEMO), `src/mcp-pilot/index.ts` (fiação completa)
-- Create: `python/tests/test_demo_guard.py`, `src/mcp-pilot/execution/mt5-demo-broker.ts`, `src/mcp-pilot/tools/trade.ts`
+- Modify: `python/mt5_bridge.py` (`handle_send_order`: guarda DEMO), `src/mcp/pilot/index.ts` (fiação completa)
+- Create: `python/tests/test_demo_guard.py`, `src/mcp/pilot/execution/mt5-demo-broker.ts`, `src/mcp/pilot/tools/trade.ts`
 - Test: `python -m unittest python/tests/test_demo_guard.py` + bloco TS com service+tools
 
 **Interfaces:**
