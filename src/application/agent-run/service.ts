@@ -266,6 +266,7 @@ async function executeAgentNodeLive(
   input: Record<string, unknown>,
   kind: AgentRunKind,
   llm: AgentLlmPort,
+  llmTimeoutMs: number | undefined,
 ): Promise<NodeExecution> {
   const readContext = (node.reads ?? [])
     .map((ref) => `- ${ref}: ${JSON.stringify(resolveRef(ref, nodeStates) ?? null)}`)
@@ -293,7 +294,7 @@ async function executeAgentNodeLive(
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-      llmPreferences(input)
+      { ...llmPreferences(input), timeoutMs: llmTimeoutMs }
     );
     const provides = node.provides ?? ['thesisDraft'];
     const output: Record<string, unknown> = {};
@@ -319,6 +320,7 @@ async function synthesizeOutputLive(
   decisionTime: string,
   llm: AgentLlmPort,
   roleByNodeId: ReadonlyMap<string, string>,
+  llmTimeoutMs: number | undefined,
 ): Promise<{ contract: AgentRunOutput; meta: NodeLlmMeta; cost: number }> {
   const material = collectAgentMaterial(nodeStates, roleByNodeId);
   const sourceLabel = material.providers.size > 0 ? `llm:${Array.from(material.providers).join(',')}` : 'simulated';
@@ -386,7 +388,7 @@ async function synthesizeOutputLive(
         { role: 'system', content: synthesisSystem },
         { role: 'user', content: synthesisUser },
       ],
-      llmPreferences(input)
+      { ...llmPreferences(input), timeoutMs: llmTimeoutMs }
     );
 
     const parsed = extractJsonObject(completion.content);
@@ -444,6 +446,7 @@ async function executeNode(
   decisionTime: string,
   llm: AgentLlmPort | undefined,
   roleByNodeId: ReadonlyMap<string, string>,
+  llmTimeoutMs: number | undefined,
 ): Promise<NodeExecution> {
   switch (node.type) {
     case 'INPUT': {
@@ -453,7 +456,7 @@ async function executeNode(
       return { output, cost: costForNodeType(node.type) };
     }
     case 'AGENT': {
-      if (llm) return executeAgentNodeLive(node, nodeStates, input, kind, llm);
+      if (llm) return executeAgentNodeLive(node, nodeStates, input, kind, llm, llmTimeoutMs);
       return { output: simulatedAgentOutput(node, 'porta LLM não configurada'), cost: costForNodeType(node.type) };
     }
     case 'EVIDENCE': {
@@ -471,7 +474,7 @@ async function executeNode(
     case 'SYNTHESIS': {
       const provides = node.provides ?? ['finding'];
       if (llm) {
-        const { contract, meta, cost } = await synthesizeOutputLive(node, nodeStates, input, kind, decisionTime, llm, roleByNodeId);
+        const { contract, meta, cost } = await synthesizeOutputLive(node, nodeStates, input, kind, decisionTime, llm, roleByNodeId, llmTimeoutMs);
         const output: Record<string, unknown> = {};
         for (const key of provides) output[key] = contract as unknown as Record<string, unknown>;
         output._llm = meta;
@@ -510,6 +513,14 @@ async function executeNode(
       return { output: {}, cost: costForNodeType(node.type) };
   }
 }
+
+/**
+ * Limiar default do reaper: generoso o bastante para nunca ceifar um run
+ * vivo (cada nó chama recordProgress, e as chamadas LLM têm timeout próprio
+ * de no máximo 600s), e curto o bastante para runs órfãos não poluírem a
+ * listagem por horas.
+ */
+const DEFAULT_REAP_STALE_AFTER_MS = 15 * 60_000;
 
 /**
  * Application service for the async agent-run DAG runtime (Fase 3 / Item
@@ -598,7 +609,14 @@ export class AgentRunService {
     let finalOutput: AgentRunOutput | null = null;
 
     for (const node of sortedNodes) {
-      const execution = await executeNode(node, nodeStates, run.input, run.kind, run.decisionTime, this.ports.agentLlm, roleByNodeId);
+      // Orçamento restante do run como teto da próxima chamada LLM: um
+      // provedor pendurado não pode atravessar budget.timeoutMs (o breach
+      // abaixo só é avaliado ENTRE nós).
+      const llmTimeoutMs =
+        run.budget.timeoutMs !== undefined
+          ? Math.max(1, run.budget.timeoutMs - (Date.now() - startedAt))
+          : undefined;
+      const execution = await executeNode(node, nodeStates, run.input, run.kind, run.decisionTime, this.ports.agentLlm, roleByNodeId, llmTimeoutMs);
       const output = execution.output;
       if (!this.ports.agentLlm) simulateNodeWork(node.type);
 
@@ -649,6 +667,43 @@ export class AgentRunService {
     }
 
     return this.ports.agentRunRepository.transitionTo(runId, 'SUCCEEDED', { output: finalOutput });
+  }
+
+  /**
+   * Marca FAILED (`ORPHANED_RUN`) todo run RUNNING sem progresso há mais de
+   * `staleAfterMs` — órfãos de um processo que morreu no meio do `advance`
+   * (não há worker que os retome). QUEUED nunca é tocado: continua
+   * processável/cancelável pelo usuário. Idempotente por construção
+   * (FAILED é terminal e sai da listagem).
+   */
+  async reapStaleRuns(opts?: { readonly staleAfterMs?: number }): Promise<readonly AgentRun[]> {
+    const staleAfterMs = opts?.staleAfterMs ?? DEFAULT_REAP_STALE_AFTER_MS;
+    if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) {
+      throw new ReadModelError('INVALID_QUERY', 'staleAfterMs deve ser um número positivo');
+    }
+    const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+    const stale = await this.ports.agentRunRepository.listRunningUpdatedBefore(cutoff);
+
+    const reaped: AgentRun[] = [];
+    for (const run of stale) {
+      try {
+        reaped.push(
+          await this.ports.agentRunRepository.transitionTo(run.runId, 'FAILED', {
+            error: {
+              code: 'ORPHANED_RUN',
+              message: `run RUNNING sem progresso há mais de ${staleAfterMs}ms (processo interrompido durante o advance); marcado FAILED pelo reaper`,
+            },
+          }),
+        );
+      } catch (error) {
+        // Corrida benigna: o run terminou/foi cancelado entre a listagem e a
+        // transição — não é um órfão, seguir adiante. Qualquer outra falha sobe.
+        const current = await this.ports.agentRunRepository.findById(run.runId);
+        if (current && current.status !== 'RUNNING') continue;
+        throw error;
+      }
+    }
+    return Object.freeze(reaped);
   }
 
   async cancel(runId: string): Promise<AgentRun> {

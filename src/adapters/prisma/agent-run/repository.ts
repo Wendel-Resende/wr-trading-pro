@@ -60,6 +60,18 @@ export class PrismaAgentRunRepository implements AgentRunRepository {
     return Object.freeze(rows.map(toAgentRun));
   }
 
+  async listRunningUpdatedBefore(updatedBefore: string): Promise<readonly AgentRun[]> {
+    const cutoff = new Date(updatedBefore);
+    if (Number.isNaN(cutoff.getTime())) {
+      throw new TypeError(`updatedBefore inválido: ${updatedBefore}`);
+    }
+    const rows = await this.prisma.agentRun.findMany({
+      where: { status: 'RUNNING', updatedAt: { lt: cutoff } },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+    });
+    return Object.freeze(rows.map(toAgentRun));
+  }
+
   async transitionTo(
     runId: string,
     status: AgentRunStatus,

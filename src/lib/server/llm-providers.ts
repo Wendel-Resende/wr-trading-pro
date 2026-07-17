@@ -6,8 +6,8 @@
  * ou endpoint controlado pelo cliente chega a este módulo.
  */
 
-import { LLMProvider, LLMMessage, LLMConfig, LLMResponse, LLMChatRequest } from '@/types/llm';
-import { getOllamaEndpoint, getOllamaDefaultModel, getServerLlmKeys } from '@/lib/server/llm-config';
+import { LLMProvider, LLMMessage, LLMConfig, LLMResponse, LLMChatRequest, LLMMarketContext } from '../../types/llm';
+import { getOllamaEndpoint, getOllamaDefaultModel, getServerLlmKeys } from './llm-config';
 
 interface ILLMProvider {
   name: LLMProvider;
@@ -15,11 +15,29 @@ interface ILLMProvider {
   isConfigured(): boolean;
 }
 
+// Nenhuma chamada a provedor pode ficar pendurada: um provedor que aceita a
+// conexão e nunca responde deixaria o AgentRun em RUNNING para sempre (o
+// timeoutMs do orçamento só é avaliado entre nós). Todo fetch usa
+// AbortSignal.timeout; o valor vem do chamador (clampado) ou do default.
+const DEFAULT_LLM_TIMEOUT_MS = 120_000;
+const MAX_LLM_TIMEOUT_MS = 600_000;
+
+function resolveTimeoutMs(configured: number | undefined): number {
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_LLM_TIMEOUT_MS;
+  }
+  return Math.min(Math.ceil(configured), MAX_LLM_TIMEOUT_MS);
+}
+
+function isAbortLike(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+
 /**
  * Provedor genérico compatível com a API chat/completions da OpenAI
  * (OpenAI, Deepseek, Qwen, Groq, Manus usam o mesmo formato).
  */
-class OpenAICompatibleProvider implements ILLMProvider {
+export class OpenAICompatibleProvider implements ILLMProvider {
   name: LLMProvider;
   private apiKey: string;
   private endpoint: string;
@@ -52,6 +70,7 @@ class OpenAICompatibleProvider implements ILLMProvider {
     const model = config?.model || this.defaultModel;
     const temperature = config?.temperature ?? this.defaultTemperature;
     const maxTokens = config?.maxTokens ?? 2000;
+    const timeoutMs = resolveTimeoutMs(config?.timeoutMs);
 
     try {
       const response = await fetch(this.endpoint, {
@@ -66,6 +85,7 @@ class OpenAICompatibleProvider implements ILLMProvider {
           temperature,
           max_tokens: maxTokens,
         }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok) {
@@ -85,6 +105,9 @@ class OpenAICompatibleProvider implements ILLMProvider {
         },
       };
     } catch (error) {
+      if (isAbortLike(error)) {
+        throw new Error(`${this.name} provider error: timeout após ${timeoutMs}ms sem resposta do provedor`);
+      }
       throw new Error(`${this.name} provider error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -94,7 +117,7 @@ class OpenAICompatibleProvider implements ILLMProvider {
  * Ollama Provider (local) — endpoint vem exclusivamente da allowlist
  * server-side (getOllamaEndpoint), nunca do cliente.
  */
-class OllamaProvider implements ILLMProvider {
+export class OllamaProvider implements ILLMProvider {
   name: LLMProvider = 'OLLAMA';
   private endpoint: string;
   private defaultModel: string;
@@ -114,6 +137,7 @@ class OllamaProvider implements ILLMProvider {
     }
 
     const model = config?.model || this.defaultModel;
+    const timeoutMs = resolveTimeoutMs(config?.timeoutMs);
 
     try {
       // num_ctx 8192: contexto padrão de modelos recentes (256k) infla o KV
@@ -135,6 +159,7 @@ class OllamaProvider implements ILLMProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ ...basePayload, think: false }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok && (response.status === 400 || response.status === 422)) {
@@ -144,6 +169,7 @@ class OllamaProvider implements ILLMProvider {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(basePayload),
+          signal: AbortSignal.timeout(timeoutMs),
         });
       }
 
@@ -158,32 +184,12 @@ class OllamaProvider implements ILLMProvider {
         model,
       };
     } catch (error) {
+      if (isAbortLike(error)) {
+        throw new Error(`Ollama provider error: timeout após ${timeoutMs}ms sem resposta do provedor`);
+      }
       throw new Error(`Ollama provider error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
-}
-
-/**
- * Contexto de mercado enviado pelo frontend (shape do buildMarketContext).
- */
-interface MarketContextLike {
-  symbol: string;
-  bid: number;
-  ask: number;
-  spread: number;
-  accountBalance: number;
-  accountEquity: number;
-  dailyResult: number;
-  openPositions: Array<{
-    ticket: number;
-    symbol: string;
-    type: string;
-    volume: number;
-    openPrice: number;
-    currentPrice: number;
-    profit: number;
-  }>;
-  timestamp: string;
 }
 
 /**
@@ -285,7 +291,7 @@ class ServerLLMService {
     contextText += 'Answer in the same language the user writes in. ';
 
     if (context?.market) {
-      const m = context.market as MarketContextLike;
+      const m = context.market as LLMMarketContext;
       contextText +=
         `\n\n[LIVE MARKET CONTEXT — ${m.timestamp}]\n` +
         `Symbol: ${m.symbol} | Bid: ${m.bid} | Ask: ${m.ask} | Spread: ${m.spread}\n` +

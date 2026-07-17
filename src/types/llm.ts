@@ -13,6 +13,8 @@ export interface LLMConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Limite da chamada em ms; clampado server-side (default 120s, teto 600s). */
+  timeoutMs?: number;
 }
 
 export interface LLMResponse {
@@ -39,11 +41,32 @@ export interface LLMProviderConfig {
   updatedAt: Date;
 }
 
+/** Contexto de mercado enviado pelo frontend (shape do buildMarketContext). */
+export interface LLMMarketContext {
+  symbol: string;
+  bid: number;
+  ask: number;
+  spread: number;
+  accountBalance: number;
+  accountEquity: number;
+  dailyResult: number;
+  openPositions: Array<{
+    ticket: number;
+    symbol: string;
+    type: string;
+    volume: number;
+    openPrice: number;
+    currentPrice: number;
+    profit: number;
+  }>;
+  timestamp: string;
+}
+
 export interface LLMChatRequest {
   messages: LLMMessage[];
   config?: Partial<LLMConfig>;
   context?: {
-    market?: import('@/services/llmService').MarketContext;
+    market?: LLMMarketContext;
     marketData?: any;
     portfolio?: any;
     indicators?: any;

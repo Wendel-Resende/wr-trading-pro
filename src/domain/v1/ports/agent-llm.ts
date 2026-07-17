@@ -31,6 +31,13 @@ export interface AgentLlmOptions {
   readonly provider?: string;
   /** Modelo preferido no provedor (ex.: 'qwen3.5:4b'). */
   readonly model?: string;
+  /**
+   * Limite de tempo desta chamada em ms — o runtime passa o orçamento
+   * RESTANTE do run (budget.timeoutMs - decorrido); ausente, o adapter
+   * aplica seu default de proteção. Um provedor pendurado nunca pode
+   * segurar o run além disso.
+   */
+  readonly timeoutMs?: number;
 }
 
 export interface AgentLlmPort {

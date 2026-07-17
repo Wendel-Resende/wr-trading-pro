@@ -1,6 +1,58 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-15
+Última atualização: 2026-07-17
+
+## Sessão 2026-07-17 — Hardening do runtime LLM (timeout + reaper de órfãos)
+
+Fecha os 2 achados do E2E do comitê (sessão 2026-07-15). TDD (RED→GREEN) sobre
+`test:agent-run`, que ganhou 3 blocos novos.
+
+### O que foi entregue
+
+1. **Timeout real nas chamadas LLM** (`llm-providers.ts`): todo `fetch` dos
+   provedores (OpenAI-compatible e Ollama, incluindo o retry sem `think`) usa
+   `AbortSignal.timeout` — default 120s, teto 600s, clamp server-side
+   (`LLMConfig.timeoutMs`). Provedor pendurado agora falha com
+   "timeout após Xms sem resposta do provedor".
+2. **Orçamento propagado por chamada**: `AgentLlmOptions.timeoutMs` na porta;
+   o `advance` passa o orçamento RESTANTE (`budget.timeoutMs - decorrido`) a
+   cada nó AGENT/SYNTHESIS; sem orçamento, vale o default do provider.
+3. **Reaper de runs órfãos**: `AgentRunService.reapStaleRuns()` marca `FAILED`
+   (`ORPHANED_RUN`) todo RUNNING sem progresso há mais de 15min (processo morto
+   no meio do advance). QUEUED nunca é tocado; idempotente. Porta nova
+   `listRunningUpdatedBefore` (índice `[status, updatedAt]` já existia). Rota
+   `POST /api/v1/agent-runs/reap` (limiar só server-side) disparada pelo
+   `AgentRunsPanel` no mount, antes da listagem.
+4. **Refactors de suporte**: `llm-providers.ts` com imports relativos e classes
+   exportadas (testabilidade); `MarketContext` do request agora é
+   `LLMMarketContext` em `types/llm.ts` (quebra o ciclo de alias `@/` que
+   impedia a suíte de compilar o módulo).
+5. **Verificação runtime E2E** (não só testes): `next start` isolado com
+   `.env.local` temporário + banco SQLite temp + "provedor" mudo em loopback:
+   `advance` retornou em **8s com `TIMEOUT_EXCEEDED`** (antes do fix: RUNNING
+   eterno); reaper ceifou órfão semeado e segunda chamada retornou 0; probes
+   401 (sem sessão) e 405 (GET) ok. Receita persistida em
+   `.claude/skills/verify/SKILL.md`.
+
+### Notas/pegadinhas descobertas
+
+- O dotenv-expand do `@next/env` corrompe valores com `$` **mesmo vindos do
+  process env** (não só do `.env`) — para subir o app com credenciais de teste,
+  usar `.env.local` com `\$` (e removê-lo ao final).
+- Prisma no Windows: `DATABASE_URL` deve ser `file:C:/...`; path estilo Git
+  Bash (`file:/c/...`) cria/abre um banco em outro lugar (P2021).
+- Cosmético (em aberto): quando todos os fallbacks falham, o `_llm.reason` do
+  nó mostra o erro genérico do orquestrador ("No LLM provider is available")
+  em vez da mensagem de timeout do provedor preferido — a mensagem real fica
+  nos logs do servidor.
+
+### Em aberto (herdado)
+
+- Qualidade analítica fina do qwen3.5:4b (imprecisões numéricas pontuais).
+- Fora da v1 do comitê: analista de preço/MT5, otimista, modo carteira
+  inteira, 2ª rodada de debate.
+- `data/cvm/cvm_fundamentos.db.backup-20260715-1952` untracked na raiz de
+  dados (backup da sessão anterior; decidir se apaga ou ignora).
 
 ## Sessão 2026-07-15 — Comitê de Agentes v1 (branch `feat/comite-agentes`)
 
@@ -36,11 +88,10 @@ subagentes com review por task.
 
 ### Em aberto (achados do E2E, pré-existentes — não desta branch)
 
-- `llm-providers.ts`: `fetch` sem AbortController/timeout — `timeoutMs` do
-  budget só é checado entre nós; provedor pendurado pode deixar run RUNNING
-  indefinidamente.
-- Runs órfãos RUNNING/QUEUED se o processo morre no meio do advance — sem
-  reaper/retomada automática (2 órfãos da validação foram cancelados à mão).
+- ~~`llm-providers.ts`: `fetch` sem AbortController/timeout~~ **Resolvido em
+  2026-07-17** (AbortSignal.timeout + orçamento restante por chamada).
+- ~~Runs órfãos RUNNING se o processo morre no meio do advance~~ **Resolvido
+  em 2026-07-17** (reaper `ORPHANED_RUN` + rota `/api/v1/agent-runs/reap`).
 - Qualidade analítica fina do qwen3.5:4b tem imprecisões numéricas pontuais;
   DeepSeek não exibiu o problema.
 - Fora da v1 (spec): analista de preço/MT5, otimista, modo carteira inteira,

@@ -166,7 +166,14 @@ export default function AgentRunsPanel() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    // Reaper primeiro: runs RUNNING órfãos de um processo morto viram FAILED
+    // (ORPHANED_RUN) antes da listagem — sem isso ficariam "rodando" para
+    // sempre na tela. Falha do reaper não bloqueia a listagem.
+    fetch("/api/v1/agent-runs/reap", { method: "POST" })
+      .catch(() => {})
+      .finally(() => {
+        refresh();
+      });
   }, [refresh]);
 
   // Enquanto houver run QUEUED/RUNNING, atualiza a cada 3s

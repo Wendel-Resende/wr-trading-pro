@@ -31,7 +31,9 @@ export class ServerLlmAgentAdapter implements AgentLlmPort {
     const model = opts?.model && MODEL_NAME_PATTERN.test(opts.model) ? opts.model : undefined;
     const response = await serverLlmService.chat({
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      config: { maxTokens: opts?.maxTokens ?? 1200, temperature: 0.2, provider, model },
+      // timeoutMs: orçamento restante do run quando presente; ausente, o
+      // provider aplica o default de proteção (clamp em llm-providers).
+      config: { maxTokens: opts?.maxTokens ?? 1200, temperature: 0.2, provider, model, timeoutMs: opts?.timeoutMs },
     });
 
     const promptChars = messages.reduce((acc, m) => acc + m.content.length, 0);

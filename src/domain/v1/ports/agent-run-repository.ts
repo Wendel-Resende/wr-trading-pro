@@ -28,4 +28,10 @@ export interface AgentRunRepository {
     runId: string,
     progress: { readonly nodeStates: AgentRunNodeStates; readonly stepsUsed: number; readonly costUsed: number },
   ): Promise<AgentRun>;
+  /**
+   * Runs em `RUNNING` cujo último progresso (updatedAt) é anterior a
+   * `updatedBefore` (instante ISO) — candidatos a órfãos para o reaper.
+   * Somente leitura; a mutação continua exclusiva de `transitionTo`.
+   */
+  listRunningUpdatedBefore(updatedBefore: string): Promise<readonly AgentRun[]>;
 }

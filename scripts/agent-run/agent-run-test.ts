@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { createAgentRunService } from '../../src/application/agent-run';
@@ -10,6 +12,7 @@ import type { AgentRunDag } from '../../src/domain/v1/models/agent-run';
 import { buildRoleContext } from '../../src/lib/agent-data-context';
 import { getCommitteeRole, buildGestorSystemPrompt, GESTOR_ROLE_KEY } from '../../src/application/agent-run/committee';
 import type { AgentLlmCompletion, AgentLlmMessage, AgentLlmOptions, AgentLlmPort } from '../../src/domain/v1/ports/agent-llm';
+import * as llmProviders from '../../src/lib/server/llm-providers';
 
 async function expectRejection<T extends new (...args: never[]) => Error>(
   promise: Promise<unknown>,
@@ -574,6 +577,53 @@ async function committeeLiveStubTests(prisma: PrismaClient): Promise<void> {
   console.log('comitê com stub LLM: OK (prompts por papel; cético rebate; gestor sintetiza; custo em tokens)');
 }
 
+async function llmBudgetTimeoutPropagationTests(prisma: PrismaClient): Promise<void> {
+  // Com budget.timeoutMs, cada chamada LLM deve receber o orçamento RESTANTE
+  // como opts.timeoutMs — sem isso, um provedor pendurado atravessa o
+  // orçamento do run (o breach só é checado entre nós).
+  const stub = new StubCommitteeLlm();
+  const service = createAgentRunService(prisma, { agentLlm: stub });
+  const run = await service.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: { ticker: 'WEGE3' },
+    budget: { timeoutMs: 60_000 },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  const finished = await service.advance(run.runId);
+  assert.equal(finished.status, 'SUCCEEDED');
+  assert.ok(stub.calls.length > 0, 'o run deveria ter feito chamadas LLM');
+  for (const [i, call] of stub.calls.entries()) {
+    assert.ok(
+      typeof call.opts?.timeoutMs === 'number',
+      `chamada LLM ${i} deveria receber opts.timeoutMs derivado do orçamento`,
+    );
+    assert.ok(
+      call.opts!.timeoutMs! > 0 && call.opts!.timeoutMs! <= 60_000,
+      `timeoutMs da chamada ${i} deve ser o orçamento restante (0 < t <= 60000), recebido ${call.opts!.timeoutMs}`,
+    );
+  }
+
+  // Sem budget.timeoutMs: o serviço não inventa timeout de orçamento — o
+  // default de proteção fica no adapter (por chamada), não aqui.
+  const stub2 = new StubCommitteeLlm();
+  const service2 = createAgentRunService(prisma, { agentLlm: stub2 });
+  const run2 = await service2.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: DAG,
+    input: { ticker: 'WEGE3' },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  await service2.advance(run2.runId);
+  for (const call of stub2.calls) {
+    assert.equal(call.opts?.timeoutMs, undefined, 'sem budget.timeoutMs, opts.timeoutMs deve ficar undefined');
+  }
+
+  console.log('timeout de orçamento por chamada LLM: OK (orçamento restante propagado; sem orçamento, adapter usa default)');
+}
+
 async function committeeTickerInjectionTests(prisma: PrismaClient): Promise<void> {
   // input.ticker inválido (não bate o padrão B3) e nenhum campo do input tem
   // um token extraível por regex: deve cair no prompt genérico, nunca embutir
@@ -615,11 +665,117 @@ async function internalErrorSanitizationTests(): Promise<void> {
   console.log('sanitização de erro interno: OK (sem stack/SQL/detalhe de driver no corpo da resposta)');
 }
 
+async function orphanReaperTests(prisma: PrismaClient): Promise<void> {
+  // Se o processo morre no meio do advance, o run fica RUNNING para sempre
+  // (não há worker que o retome). O reaper marca FAILED (ORPHANED_RUN) todo
+  // RUNNING sem progresso além do limiar — e NUNCA toca QUEUED, que continua
+  // processável/cancelável pelo usuário.
+  const service = createAgentRunService(prisma);
+  const repository = new PrismaAgentRunRepository(prisma);
+  const mkRun = () =>
+    repository.create({
+      requestedBy: 'reaper-tester',
+      kind: 'RESEARCH',
+      dag: DAG,
+      input: {},
+      budget: {},
+      decisionTime: '2099-01-01T00:00:00.000Z',
+      knowledgeTime: new Date().toISOString(),
+    });
+
+  const staleRunning = await mkRun();
+  await repository.transitionTo(staleRunning.runId, 'RUNNING');
+  const freshRunning = await mkRun();
+  await repository.transitionTo(freshRunning.runId, 'RUNNING');
+  const oldQueued = await mkRun();
+
+  // Simula processo morto: sem progresso há 1h
+  const staleDate = new Date(Date.now() - 3_600_000);
+  await prisma.agentRun.update({ where: { runId: staleRunning.runId }, data: { updatedAt: staleDate } });
+  await prisma.agentRun.update({ where: { runId: oldQueued.runId }, data: { updatedAt: staleDate } });
+
+  const reap = (
+    service as unknown as { reapStaleRuns?: (opts?: { staleAfterMs?: number }) => Promise<readonly { runId: string }[]> }
+  ).reapStaleRuns?.bind(service);
+  assert.ok(reap, 'AgentRunService deveria expor reapStaleRuns');
+
+  const reaped = await reap!({ staleAfterMs: 600_000 });
+  const reapedIds = reaped.map((r) => r.runId);
+  assert.ok(reapedIds.includes(staleRunning.runId), 'RUNNING sem progresso além do limiar deveria ser ceifado');
+  assert.ok(!reapedIds.includes(freshRunning.runId), 'RUNNING com progresso recente não pode ser ceifado');
+  assert.ok(!reapedIds.includes(oldQueued.runId), 'QUEUED nunca é ceifado — ainda pode ser processado/cancelado');
+
+  const failed = await service.get(staleRunning.runId);
+  assert.equal(failed.status, 'FAILED');
+  assert.equal(failed.error?.code, 'ORPHANED_RUN');
+  assert.ok(failed.finishedAt, 'run ceifado deve ganhar finishedAt');
+  assert.equal((await service.get(freshRunning.runId)).status, 'RUNNING');
+  assert.equal((await service.get(oldQueued.runId)).status, 'QUEUED');
+
+  // Idempotente: segunda passada não encontra o run já FAILED
+  const again = await reap!({ staleAfterMs: 600_000 });
+  assert.ok(!again.map((r) => r.runId).includes(staleRunning.runId), 'reaper deve ser idempotente');
+
+  // Limpeza dos runs auxiliares para não interferir em outros blocos
+  await service.cancel(freshRunning.runId);
+  await service.cancel(oldQueued.runId);
+
+  console.log('reaper de órfãos: OK (RUNNING estagnado -> FAILED ORPHANED_RUN; QUEUED/RUNNING recentes intactos; idempotente)');
+}
+
+interface TimeoutTestProvider {
+  chat(messages: { role: string; content: string }[], config?: Record<string, unknown>): Promise<unknown>;
+}
+
+async function llmProviderFetchTimeoutTests(): Promise<void> {
+  // Um provedor pendurado (aceita a conexão TCP e nunca responde) não pode
+  // segurar a chamada indefinidamente: o fetch deve abortar no timeoutMs.
+  const exported = llmProviders as unknown as Record<string, unknown>;
+  const OpenAICompatible = exported.OpenAICompatibleProvider as
+    | (new (name: string, apiKey: string, endpoint: string, model: string) => TimeoutTestProvider)
+    | undefined;
+  const Ollama = exported.OllamaProvider as (new (endpoint: string, model: string) => TimeoutTestProvider) | undefined;
+  assert.ok(OpenAICompatible, 'OpenAICompatibleProvider deveria ser exportado (testabilidade do timeout)');
+  assert.ok(Ollama, 'OllamaProvider deveria ser exportado (testabilidade do timeout)');
+
+  const server = createServer(() => {
+    // nunca responde — simula provedor pendurado
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  try {
+    const openaiLike = new OpenAICompatible!('OPENAI', 'test-key', `http://127.0.0.1:${port}/v1/chat/completions`, 'model-x');
+    let t0 = Date.now();
+    await assert.rejects(
+      openaiLike.chat([{ role: 'user', content: 'ping' }], { timeoutMs: 300 }),
+      (error: unknown) => error instanceof Error && /timeout|abort/i.test(error.message),
+      'provedor OpenAI-compatible deveria abortar fetch pendurado por timeout',
+    );
+    assert.ok(Date.now() - t0 < 5_000, 'abort do provedor OpenAI-compatible deveria ocorrer perto do timeoutMs');
+
+    const ollama = new Ollama!(`http://127.0.0.1:${port}`, 'model-x');
+    t0 = Date.now();
+    await assert.rejects(
+      ollama.chat([{ role: 'user', content: 'ping' }], { timeoutMs: 300 }),
+      (error: unknown) => error instanceof Error && /timeout|abort/i.test(error.message),
+      'provedor Ollama deveria abortar fetch pendurado por timeout',
+    );
+    assert.ok(Date.now() - t0 < 5_000, 'abort do provedor Ollama deveria ocorrer perto do timeoutMs');
+  } finally {
+    (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+    server.close();
+  }
+
+  console.log('timeout de fetch dos provedores: OK (fetch pendurado aborta no timeoutMs; sem run RUNNING eterno)');
+}
+
 async function main(): Promise<void> {
   migrationAdditivityTests();
   roleContextTests();
   committeeRegistryTests();
   await internalErrorSanitizationTests();
+  await llmProviderFetchTimeoutTests();
 
   const prisma = new PrismaClient();
   try {
@@ -637,6 +793,8 @@ async function main(): Promise<void> {
     await committeeSimulatedTests(prisma);
     await committeeLiveStubTests(prisma);
     await committeeTickerInjectionTests(prisma);
+    await llmBudgetTimeoutPropagationTests(prisma);
+    await orphanReaperTests(prisma);
   } finally {
     await prisma.$disconnect();
   }
