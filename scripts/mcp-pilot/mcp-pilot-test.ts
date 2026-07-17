@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PrismaClient } from '@prisma/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolvePilotConfig, PilotConfigError } from '../../src/mcp/pilot/config';
 import { startPilotServer } from '../../src/mcp/pilot/server';
 import { isValidServiceToken } from '../../src/lib/auth/service-token';
+import { createHttpJson } from '../../src/mcp/pilot/clients/http-json';
+import { buildCvmRichTools } from '../../src/mcp/pilot/tools/cvm-rich';
+import { buildMonitoringTools } from '../../src/mcp/pilot/tools/monitoring';
+import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
 
 const TOKEN = 't'.repeat(48);
 
@@ -66,9 +72,34 @@ async function serverTests(prisma: PrismaClient): Promise<void> {
   }
 }
 
+async function proxyToolsTests(): Promise<void> {
+  const seen: { method?: string; url?: string; auth?: string } = {};
+  const stub = createServer((req, res) => {
+    seen.method = req.method; seen.url = req.url; seen.auth = req.headers.authorization;
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+  const stubUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}`;
+  try {
+    const next = createHttpJson(stubUrl, { bearer: 'svc-token' });
+    const tools = [...buildCvmRichTools(next), ...buildMonitoringTools(next), ...buildAgentActionTools(next)];
+    assert.ok(tools.every((t) => t.privilege === 'free'));
+    const listCompanies = tools.find((t) => t.name === 'cvm.list_companies')!;
+    const result = await listCompanies.handler({});
+    assert.equal(result.isError, undefined);
+    assert.equal(seen.url, '/api/cvm/companies');
+    assert.equal(seen.auth, 'Bearer svc-token');
+    const submit = tools.find((t) => t.name === 'agent_run.submit')!;
+    const bad = await submit.handler({ template: 'COMITE', kind: 'RESEARCH', question: 'x', ticker: 'INVALIDO!' });
+    assert.equal(bad.isError, true, 'comitê sem ticker B3 válido deve falhar antes do HTTP');
+    console.log('tools proxy (CVM/monitoramento/agentes): OK');
+  } finally { stub.close(); }
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
+  await proxyToolsTests();
   const prisma = new PrismaClient();
   try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
