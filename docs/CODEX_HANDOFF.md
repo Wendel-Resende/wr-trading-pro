@@ -2,6 +2,32 @@
 
 Última atualização: 2026-07-17
 
+## Sessão 2026-07-17 — Verificação do banco CVM pós-atualização FRE (Guardião)
+
+Auditoria read-only do `data/cvm/cvm_fundamentos.db` após o Guardião atualizar
+o banco. **Atualização de hoje OK e íntegra:** integrity_check ok, foreign_key_check
+sem violações, contagens estáveis. Comparado com o backup pré-write de hoje
+(`backup-20260717`, feito 5s antes), a única diferença são **4 tabelas FRE
+aditivas** — nada existente foi alterado: `fre_capital_social` (505),
+`fre_distribuicao_capital` (138), `fre_posicao_acionaria` (5.303),
+`fre_transacao_parte_relacionada` (3.145). Total 63.296 linhas, 138 empresas.
+Crescimento 9→12,9 MB foi só checkpoint do WAL mesclando o FRE no arquivo principal.
+
+### Achado repassado ao Guardião (via log do vault)
+
+- Buraco pré-existente em `dre_trimestral` (herdado da regeneração de DRE de
+  15/07 à noite, não da atualização de hoje): faltam 3 linhas —
+  **ITUB4 (019348) 2012 T2 e T3; ABEV3 (023264) 2013 T1**, ambas da carteira 12.
+  É bug e não dado ausente na fonte: esses trimestres existem em
+  bpa/bpp/dfc/dra/dva/indicadores, só a DRE ficou com 0. Pedido de backfill
+  registrado no `log.md` do vault para o Guardião.
+
+### Limpeza
+
+- Removido o backup untracked `cvm_fundamentos.db.backup-20260715-1952` (+ sidecars
+  -shm/-wal deixados por leituras RO). Mantido `backup-20260717` como ponto de
+  rollback mais recente (untracked — é arquivo de dados, fora do Git).
+
 ## Sessão 2026-07-17 — Hardening do runtime LLM (timeout + reaper de órfãos)
 
 Fecha os 2 achados do E2E do comitê (sessão 2026-07-15). TDD (RED→GREEN) sobre
