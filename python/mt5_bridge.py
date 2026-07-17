@@ -198,6 +198,14 @@ class MT5Bridge:
                 await self.handle_get_history(msg_data)
             elif msg_type == 'GET_CHART_DATA':
                 await self.handle_get_chart_data(websocket, msg_data)
+            elif msg_type == 'GET_ACCOUNT_INFO':
+                await self.handle_get_account_info(websocket, msg_data)
+            elif msg_type == 'GET_POSITIONS_SNAPSHOT':
+                await self.handle_get_positions_snapshot(websocket, msg_data)
+            elif msg_type == 'GET_ORDERS_SNAPSHOT':
+                await self.handle_get_orders_snapshot(websocket, msg_data)
+            elif msg_type == 'GET_HISTORY_SNAPSHOT':
+                await self.handle_get_history_snapshot(websocket, msg_data)
             elif msg_type == 'SEND_ORDER':
                 await self.handle_send_order(websocket, msg_data)
             elif msg_type == 'MODIFY_ORDER':
@@ -476,6 +484,101 @@ class MT5Bridge:
                 'data': { 'equities': [], 'error': str(e) },
                 'timestamp': datetime.now().isoformat(),
             })
+
+    async def handle_get_account_info(self, websocket: Any, data: Dict[str, Any]):
+        """Dados da conta: saldo, equity, margem, alavancagem, modo (demo/real)."""
+        if not MT5_AVAILABLE or not self.is_connected:
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
+            return
+        info = mt5.account_info()
+        if info is None:
+            await self._send_error('account_info() indisponível', 'NO_ACCOUNT_INFO', websocket=websocket)
+            return
+        await self.send_to_client(websocket, {
+            'type': 'ACCOUNT_INFO',
+            'data': {
+                'login': info.login, 'server': info.server, 'currency': info.currency,
+                'balance': info.balance, 'equity': info.equity, 'margin': info.margin,
+                'margin_free': info.margin_free, 'leverage': info.leverage,
+                'trade_mode': info.trade_mode,  # 0 = ACCOUNT_TRADE_MODE_DEMO
+                'is_demo': info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO,
+            },
+            'timestamp': datetime.now().isoformat(),
+        })
+
+    async def handle_get_positions_snapshot(self, websocket: Any, data: Dict[str, Any]):
+        """Snapshot agregado e unicast das posições abertas (aditivo — não
+        substitui `handle_get_positions`, que faz broadcast por item para a
+        UI existente). Resposta única sempre enviada: lista vazia quando não
+        há posições, nunca silêncio."""
+        symbol = data.get('symbol')
+        if not MT5_AVAILABLE or not self.is_connected:
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
+            return
+        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if positions is None:
+            error_code = mt5.last_error()
+            if error_code[0] != 0:
+                logger.error(f"Falha ao obter posições (snapshot): {error_code}")
+                await self._send_error('Falha ao obter posições', 'POSITIONS_ERROR', websocket=websocket)
+                return
+            positions = ()
+        await self.send_to_client(websocket, {
+            'type': 'POSITIONS_SNAPSHOT',
+            'data': {'positions': [position._asdict() for position in positions]},
+            'timestamp': datetime.now().isoformat(),
+        })
+
+    async def handle_get_orders_snapshot(self, websocket: Any, data: Dict[str, Any]):
+        """Snapshot agregado e unicast das ordens pendentes (aditivo — ver
+        `handle_get_positions_snapshot`)."""
+        symbol = data.get('symbol')
+        if not MT5_AVAILABLE or not self.is_connected:
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
+            return
+        orders = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()
+        if orders is None:
+            error_code = mt5.last_error()
+            if error_code[0] != 0:
+                logger.error(f"Falha ao obter ordens (snapshot): {error_code}")
+                await self._send_error('Falha ao obter ordens', 'ORDERS_ERROR', websocket=websocket)
+                return
+            orders = ()
+        await self.send_to_client(websocket, {
+            'type': 'ORDERS_SNAPSHOT',
+            'data': {'orders': [order._asdict() for order in orders]},
+            'timestamp': datetime.now().isoformat(),
+        })
+
+    async def handle_get_history_snapshot(self, websocket: Any, data: Dict[str, Any]):
+        """Snapshot agregado e unicast do histórico de negociações (aditivo —
+        ver `handle_get_positions_snapshot`). Aceita os mesmos parâmetros de
+        período que `handle_get_history` (fromDate/toDate/symbol)."""
+        if not MT5_AVAILABLE or not self.is_connected:
+            await self._send_error('MT5 não disponível ou não conectado', 'NOT_CONNECTED', websocket=websocket)
+            return
+        from_date = data.get('fromDate')
+        to_date = data.get('toDate')
+        symbol = data.get('symbol')
+        if not from_date or not to_date:
+            from_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            to_dt = datetime.now()
+        else:
+            from_dt = datetime.fromisoformat(from_date) if from_date else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            to_dt = datetime.fromisoformat(to_date) if to_date else datetime.now()
+        history = mt5.history_deals_get(from_dt, to_dt, symbol=symbol) if symbol else mt5.history_deals_get(from_dt, to_dt)
+        if history is None:
+            error_code = mt5.last_error()
+            if error_code[0] != 0:
+                logger.error(f"Falha ao obter histórico (snapshot): {error_code}")
+                await self._send_error('Falha ao obter histórico', 'HISTORY_ERROR', websocket=websocket)
+                return
+            history = ()
+        await self.send_to_client(websocket, {
+            'type': 'HISTORY_SNAPSHOT',
+            'data': {'trades': [trade._asdict() for trade in history]},
+            'timestamp': datetime.now().isoformat(),
+        })
 
     async def handle_get_positions(self, data: Dict[str, Any]):
         """Obter posições"""

@@ -11,6 +11,8 @@ import { createHttpJson } from '../../src/mcp/pilot/clients/http-json';
 import { buildCvmRichTools } from '../../src/mcp/pilot/tools/cvm-rich';
 import { buildMonitoringTools } from '../../src/mcp/pilot/tools/monitoring';
 import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
+import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
+import { ReadModelError } from '../../src/application/read-models-v1/errors';
 
 const TOKEN = 't'.repeat(48);
 
@@ -96,10 +98,39 @@ async function proxyToolsTests(): Promise<void> {
   } finally { stub.close(); }
 }
 
+async function portfolioToolsTests(): Promise<void> {
+  const calls: { type: string; data?: Record<string, unknown> }[] = [];
+  const stubBridge = {
+    request: async (type: string, data?: Record<string, unknown>) => { calls.push({ type, data }); return { fixture: true }; },
+  };
+  const tools = buildPortfolioTools(stubBridge);
+  assert.ok(tools.every((t) => t.privilege === 'free'));
+  await tools.find((t) => t.name === 'portfolio.get_positions')!.handler({});
+  assert.equal(calls[0].type, 'GET_POSITIONS_SNAPSHOT');
+  await tools.find((t) => t.name === 'portfolio.get_account')!.handler({});
+  assert.equal(calls[1].type, 'GET_ACCOUNT_INFO');
+  await tools.find((t) => t.name === 'orders.list_open')!.handler({});
+  assert.equal(calls[2].type, 'GET_ORDERS_SNAPSHOT');
+  await tools.find((t) => t.name === 'orders.history')!.handler({});
+  assert.equal(calls[3].type, 'GET_HISTORY_SNAPSHOT');
+  await tools.find((t) => t.name === 'market.get_live_candles')!.handler({ symbol: 'PETR4', timeframe: 'H1', count: 100 });
+  assert.equal(calls[4].type, 'GET_CHART_DATA');
+  assert.deepEqual(calls[4].data, { symbol: 'PETR4', timeframe: 'H1', count: 100 });
+  await tools.find((t) => t.name === 'market.get_order_book')!.handler({ symbol: 'PETR4' });
+  assert.equal(calls[5].type, 'GET_ORDER_BOOK');
+
+  const down = { request: async () => { throw new ReadModelError('MT5_DISCONNECTED', 'MT5 não conectado'); } };
+  const result = await buildPortfolioTools(down).find((t) => t.name === 'portfolio.get_account')!.handler({});
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /MT5_DISCONNECTED/);
+  console.log('tools de conta/ordens/candles/book: OK (stub bridge; erro claro sem MT5)');
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
   await proxyToolsTests();
+  await portfolioToolsTests();
   const prisma = new PrismaClient();
   try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
