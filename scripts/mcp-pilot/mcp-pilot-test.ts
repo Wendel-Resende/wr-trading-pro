@@ -4,6 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolvePilotConfig, PilotConfigError } from '../../src/mcp/pilot/config';
 import { startPilotServer } from '../../src/mcp/pilot/server';
+import { isValidServiceToken } from '../../src/lib/auth/service-token';
 
 const TOKEN = 't'.repeat(48);
 
@@ -17,6 +18,17 @@ const TOKEN = 't'.repeat(48);
 // tsconfigs, mesmo padrão já usado em `scripts/mcp/mcp-test.ts`.
 function fakeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...process.env, WR_MCP_HTTP_TOKEN: undefined, WR_SERVICE_TOKEN: undefined, WR_MCP_HTTP_PORT: undefined, ...overrides };
+}
+
+function serviceTokenTests(): void {
+  const env = fakeEnv({ WR_SERVICE_TOKEN: 's'.repeat(40) });
+  assert.equal(isValidServiceToken(`Bearer ${'s'.repeat(40)}`, env), true);
+  assert.equal(isValidServiceToken('Bearer errado', env), false);
+  assert.equal(isValidServiceToken(undefined, env), false);
+  // fail-closed: sem env ou token curto, nada passa
+  assert.equal(isValidServiceToken(`Bearer ${'s'.repeat(40)}`, fakeEnv({})), false);
+  assert.equal(isValidServiceToken('Bearer abc', fakeEnv({ WR_SERVICE_TOKEN: 'abc' })), false);
+  console.log('service token: OK (Bearer válido aceito; fail-closed sem env/curto)');
 }
 
 function configTests(): void {
@@ -55,9 +67,10 @@ async function serverTests(prisma: PrismaClient): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  serviceTokenTests();
   configTests();
   const prisma = new PrismaClient();
   try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
-  console.log('MCP Piloto — Task 1: TODOS OS TESTES PASSARAM');
+  console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
 }
 void main().catch((e) => { console.error(e); process.exitCode = 1; });

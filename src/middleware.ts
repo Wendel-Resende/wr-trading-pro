@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { classifyPath } from '@/lib/auth/routes';
 import { getAuthConfig, SESSION_COOKIE_NAME } from '@/lib/auth/config';
 import { verifySessionToken } from '@/lib/auth/session';
+import { isValidServiceToken } from '@/lib/auth/service-token';
 
 async function isAuthenticated(request: NextRequest): Promise<boolean> {
   // Exige a configuração completa, não apenas o secret. Assim, remover usuário
@@ -42,6 +43,11 @@ export async function middleware(request: NextRequest) {
     if (pathname === '/login' && (await isAuthenticated(request))) {
       return NextResponse.redirect(new URL('/', request.url));
     }
+    return NextResponse.next();
+  }
+
+  // Token de serviço (MCP Piloto): SOMENTE para rotas de API — páginas continuam por sessão.
+  if (routeClass === 'protected-api' && isValidServiceToken(request.headers.get('authorization'))) {
     return NextResponse.next();
   }
 
