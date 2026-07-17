@@ -35,6 +35,7 @@ export function buildMarketTools(services: McpReadServices): readonly McpToolDef
       name: 'market.get_bars',
       description: 'Candles versionados (read-model), sem lookahead (time <= knowledgeTime). Somente leitura.',
       inputSchema: getBarsShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(getBarsShape, args);

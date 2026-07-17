@@ -37,6 +37,7 @@ export function buildCvmTools(services: McpReadServices): readonly McpToolDefini
       name: 'cvm.get_facts',
       description: 'Fatos contábeis CVM point-in-time (as-of), com proveniência. Somente leitura.',
       inputSchema: getFactsShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(getFactsShape, args);
@@ -51,6 +52,7 @@ export function buildCvmTools(services: McpReadServices): readonly McpToolDefini
       name: 'b3.get_instrument',
       description: 'Versão de instrumento (catálogo B3), visível em `asOf`/`knowledgeTime`. Somente leitura.',
       inputSchema: getInstrumentShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(getInstrumentShape, args);

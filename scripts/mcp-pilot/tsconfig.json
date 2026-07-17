@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "mcp-pilot-test.ts",
+    "../../src/mcp/**/*.ts",
+    "../../src/application/**/*.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/domain/v1/**/*.ts",
+    "../../src/app/api/v1/_shared/http.ts"
+  ]
+}

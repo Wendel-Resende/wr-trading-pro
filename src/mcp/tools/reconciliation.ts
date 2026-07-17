@@ -34,6 +34,7 @@ export function buildReconciliationTools(services: McpReadServices): readonly Mc
       name: 'reconciliation.report',
       description: 'Relatório de reconciliação point-in-time (paridade/sem-paridade). Somente leitura.',
       inputSchema: reportShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(reportShape, args);
@@ -48,6 +49,7 @@ export function buildReconciliationTools(services: McpReadServices): readonly Mc
       name: 'dataset.feature_values',
       description: 'Valores de feature point-in-time, com proveniência. Somente leitura.',
       inputSchema: featureValuesShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(featureValuesShape, args);

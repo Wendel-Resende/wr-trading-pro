@@ -21,6 +21,8 @@ export interface McpToolDefinition {
   readonly description: string;
   readonly inputSchema: ZodRawShape;
   readonly handler: (args: Record<string, unknown>) => Promise<McpToolResult>;
+  /** Classificação consciente de privilégio: 'free' = agente chama à vontade; 'gated' = exige fluxo de aprovação humana. */
+  readonly privilege: 'free' | 'gated';
 }
 
 /** Parses/validates raw tool args against a zod raw shape; throws sanitized `ReadModelError('INVALID_QUERY', ...)` on failure. */

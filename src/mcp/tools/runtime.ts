@@ -40,6 +40,7 @@ export function buildRuntimeTools(services: McpReadServices): readonly McpToolDe
       name: 'agent_run.get',
       description: 'AgentRun por runId, ou lista filtrada por status/limit/offset. Somente leitura.',
       inputSchema: agentRunGetShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(agentRunGetShape, args);
@@ -62,6 +63,7 @@ export function buildRuntimeTools(services: McpReadServices): readonly McpToolDe
       name: 'risk_decision.get',
       description: 'RiskDecision por decisionId, ou lista por runId. Somente leitura.',
       inputSchema: riskDecisionGetShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(riskDecisionGetShape, args);
@@ -85,6 +87,7 @@ export function buildRuntimeTools(services: McpReadServices): readonly McpToolDe
       name: 'order_intent.get',
       description: 'OrderIntent por intentId, ou lista por decisionId. Somente leitura — não cria/cancela intenção.',
       inputSchema: orderIntentGetShape,
+      privilege: 'free',
       handler: async (args) => {
         try {
           const query = parseToolArgs(orderIntentGetShape, args);
