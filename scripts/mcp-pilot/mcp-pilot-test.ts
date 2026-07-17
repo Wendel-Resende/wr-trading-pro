@@ -12,6 +12,7 @@ import { buildCvmRichTools } from '../../src/mcp/pilot/tools/cvm-rich';
 import { buildMonitoringTools } from '../../src/mcp/pilot/tools/monitoring';
 import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
 import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
+import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 
 const TOKEN = 't'.repeat(48);
@@ -126,11 +127,97 @@ async function portfolioToolsTests(): Promise<void> {
   console.log('tools de conta/ordens/candles/book: OK (stub bridge; erro claro sem MT5)');
 }
 
+/**
+ * Socket fake para testar `createBridgeClient` sem servidor WS real —
+ * implementa só o subconjunto de `WebSocketLike` usado pelo cliente,
+ * disparando os handlers registrados via `addEventListener` manualmente.
+ */
+class FakeSocket implements WebSocketLike {
+  readyState = 0; // CONNECTING
+  readonly sent: string[] = [];
+  readonly listeners: Record<'open' | 'message' | 'close' | 'error', Array<(event: any) => void>> = {
+    open: [], message: [], close: [], error: [],
+  };
+  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void {
+    this.listeners[type].push(listener);
+  }
+  removeEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void {
+    this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
+  }
+  send(data: string): void { this.sent.push(data); }
+  close(): void { this.readyState = 3; }
+  private emit(type: 'open' | 'message' | 'close' | 'error', event: any): void {
+    for (const listener of [...this.listeners[type]]) listener(event);
+  }
+  open(): void { this.readyState = 1; this.emit('open', {}); }
+  message(payload: unknown): void { this.emit('message', { data: JSON.stringify(payload) }); }
+}
+
+async function flush(times = 1): Promise<void> {
+  for (let i = 0; i < times; i++) await new Promise<void>((r) => setImmediate(r));
+}
+
+async function bridgeSerializationTests(): Promise<void> {
+  const prevSecret = process.env.WR_WS_TOKEN_SECRET;
+  process.env.WR_WS_TOKEN_SECRET = 'x'.repeat(40);
+  try {
+    const sockets: FakeSocket[] = [];
+    const bridge = createBridgeClient('ws://fake-bridge', {
+      socketFactory: () => { const s = new FakeSocket(); sockets.push(s); return s; },
+    });
+
+    // Dois requests de tipos DISTINTOS disparados em paralelo — o bug
+    // corrigido era: um ERROR chegando durante o 1º rejeitava a Promise
+    // errada se ambos estivessem "em voo" ao mesmo tempo.
+    const p1 = bridge.request('GET_ACCOUNT_INFO');
+    const p2 = bridge.request('GET_ORDER_BOOK', { symbol: 'PETR4' });
+
+    for (let i = 0; i < 20 && sockets.length === 0; i++) await flush();
+    assert.equal(sockets.length, 1, 'as duas requisições devem reusar um único socket');
+    const sock = sockets[0];
+    for (let i = 0; i < 20 && sock.listeners.open.length === 0; i++) await flush();
+    sock.open();
+    for (let i = 0; i < 20 && sock.sent.length === 0; i++) await flush();
+    assert.equal(JSON.parse(sock.sent[0]).type, 'AUTH');
+    sock.message({ type: 'AUTH_OK', data: { sub: 'mcp-pilot' } });
+
+    for (let i = 0; i < 20 && sock.sent.length < 2; i++) await flush();
+    assert.equal(sock.sent.length, 2, 'após o handshake, só o 1º request deve estar em voo (serialização)');
+    assert.equal(JSON.parse(sock.sent[1]).type, 'GET_ACCOUNT_INFO');
+
+    // Prova de serialização: o 2º request NÃO foi enviado ainda.
+    await flush(5);
+    assert.equal(sock.sent.length, 2, 'o 2º request não pode ser enviado antes da resposta do 1º');
+
+    // ERROR chega enquanto só GET_ACCOUNT_INFO está ativo — deve rejeitar
+    // exatamente essa Promise, com o código certo.
+    sock.message({ type: 'ERROR', data: { message: 'MT5 não conectado', code: 'NOT_CONNECTED' } });
+    let firstError: unknown;
+    try { await p1; } catch (e) { firstError = e; }
+    assert.ok(firstError instanceof ReadModelError, 'p1 deve rejeitar com ReadModelError');
+    assert.equal((firstError as ReadModelError).code, 'MT5_DISCONNECTED');
+
+    // Com o 1º liberado, o 2º request (tipo diferente) é enviado e conclui normalmente.
+    for (let i = 0; i < 20 && sock.sent.length < 3; i++) await flush();
+    assert.equal(sock.sent.length, 3);
+    assert.equal(JSON.parse(sock.sent[2]).type, 'GET_ORDER_BOOK');
+    sock.message({ type: 'ORDERBOOK', data: { symbol: 'PETR4', bids: [], asks: [] } });
+    const result2 = await p2;
+    assert.deepEqual(result2, { symbol: 'PETR4', bids: [], asks: [] });
+
+    console.log('bridge MT5: serialização de requests + ERROR correlacionado à Promise ativa certa: OK');
+  } finally {
+    if (prevSecret === undefined) delete process.env.WR_WS_TOKEN_SECRET;
+    else process.env.WR_WS_TOKEN_SECRET = prevSecret;
+  }
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
   await proxyToolsTests();
   await portfolioToolsTests();
+  await bridgeSerializationTests();
   const prisma = new PrismaClient();
   try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
