@@ -92,3 +92,4 @@ python/options/options_data.db
 
 # artefatos de build dos runners de teste/servico MCP
 scripts/*/.dist/
+scripts/*/dist/
