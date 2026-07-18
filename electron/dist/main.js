@@ -37,6 +37,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
+const env_1 = require("@next/env");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const crypto_1 = __importDefault(require("crypto"));
@@ -56,6 +57,8 @@ const MAX_HISTORY_LIMIT = 100;
 const MIN_OPTIONS_SAVE_INTERVAL_MS = 500;
 let mainWindow = null;
 let nextServer = null;
+let mcpPilotProcess = null;
+let mcpPilotError = null;
 let pythonProcesses = [];
 let lastOptionsSaveAt = 0;
 function isTrustedRendererUrl(rawUrl) {
@@ -84,6 +87,10 @@ function handleTrusted(channel, handler) {
         }
     });
 }
+const PROJECT_ROOT = getProjectRoot();
+// O Electron não carrega .env automaticamente. Carregue-o antes de criar
+// qualquer filho para que Next, bridge e MCP compartilhem a mesma configuração.
+(0, env_1.loadEnvConfig)(PROJECT_ROOT);
 /**
  * Secret compartilhado do token WS do MT5 Bridge (Fase 0, Item 10).
  * Se não vier do ambiente (>= 32 chars), gera um valor criptográfico efêmero
@@ -148,7 +155,6 @@ function getProjectRoot() {
     }
     return path_1.default.resolve(__dirname, '../..');
 }
-const PROJECT_ROOT = getProjectRoot();
 const APP_DATA_DIR = path_1.default.join(PROJECT_ROOT, 'data');
 const OPTIONS_DATA_DIR = path_1.default.join(APP_DATA_DIR, 'options');
 const CRITICAL_SERVICES = [
@@ -321,9 +327,9 @@ async function restartPythonService(cfg, maxRetries = 3) {
  * fluxo dev de terminais). Conexão TCP simples — agnóstica de protocolo,
  * funciona para o WebSocket do bridge e para as APIs Flask.
  */
-function isPortInUse(port, timeoutMs = 1000) {
+function isPortInUse(port, timeoutMs = 1000, host = '127.0.0.1') {
     return new Promise((resolve) => {
-        const socket = net_1.default.connect({ host: '127.0.0.1', port });
+        const socket = net_1.default.connect({ host, port });
         const done = (inUse) => {
             socket.removeAllListeners();
             socket.destroy();
@@ -334,6 +340,100 @@ function isPortInUse(port, timeoutMs = 1000) {
         socket.once('timeout', () => done(false));
         socket.once('error', () => done(false));
     });
+}
+function getMcpPilotEndpoint() {
+    const host = process.env.WR_MCP_HTTP_HOST?.trim() || '127.0.0.1';
+    const port = process.env.WR_MCP_HTTP_PORT?.trim() || '8790';
+    return `http://${host}:${port}/mcp`;
+}
+function getMcpPilotEntry() {
+    const appRoot = electron_1.app.isPackaged && process.resourcesPath
+        ? path_1.default.join(process.resourcesPath, 'app')
+        : PROJECT_ROOT;
+    return {
+        entry: path_1.default.join(appRoot, 'scripts', 'mcp-pilot', '.dist', 'src', 'mcp', 'pilot', 'index.js'),
+        cwd: appRoot,
+    };
+}
+async function getMcpPilotStatus() {
+    const endpoint = getMcpPilotEndpoint();
+    const host = process.env.WR_MCP_HTTP_HOST?.trim() || '127.0.0.1';
+    const port = Number(process.env.WR_MCP_HTTP_PORT?.trim() || '8790');
+    const managedAlive = mcpPilotProcess !== null && mcpPilotProcess.exitCode === null;
+    const portOpen = Number.isInteger(port) && port > 0 && port <= 65535
+        ? await isPortInUse(port, 1000, host)
+        : false;
+    if (managedAlive && portOpen) {
+        return { state: 'online', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+    }
+    if (managedAlive) {
+        return { state: 'starting', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+    }
+    if (portOpen) {
+        return { state: 'online', endpoint, managedByElectron: false, pid: null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+    }
+    return { state: mcpPilotError ? 'error' : 'offline', endpoint, managedByElectron: false, pid: null, error: mcpPilotError, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+}
+async function startMcpPilot() {
+    const existing = await getMcpPilotStatus();
+    if (existing.state === 'online' || existing.state === 'starting')
+        return existing;
+    const httpToken = process.env.WR_MCP_HTTP_TOKEN?.trim() ?? '';
+    const serviceToken = process.env.WR_SERVICE_TOKEN?.trim() ?? '';
+    if (httpToken.length < 32 || serviceToken.length < 32) {
+        mcpPilotError = 'Configuração MCP incompleta: tokens de serviço ausentes.';
+        return getMcpPilotStatus();
+    }
+    const { entry, cwd } = getMcpPilotEntry();
+    if (!fs_1.default.existsSync(entry)) {
+        mcpPilotError = 'MCP Pilot não foi incluído na instalação. Reinstale ou atualize a aplicação.';
+        return getMcpPilotStatus();
+    }
+    mcpPilotError = null;
+    const child = (0, child_process_1.spawn)('node', [entry], {
+        cwd,
+        env: childEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+        windowsHide: true,
+    });
+    mcpPilotProcess = child;
+    const rememberOutput = (data) => {
+        const text = data.toString();
+        console.log(`[mcp-pilot] ${text.trim()}`);
+    };
+    child.stdout?.on('data', rememberOutput);
+    child.stderr?.on('data', rememberOutput);
+    child.on('error', () => {
+        mcpPilotError = 'Falha ao iniciar MCP Pilot.';
+        mcpPilotProcess = null;
+    });
+    child.on('exit', (code) => {
+        if (mcpPilotProcess === child) {
+            mcpPilotProcess = null;
+            if (code !== 0 && code !== null)
+                mcpPilotError = `MCP Pilot encerrou com código ${code}.`;
+        }
+    });
+    return getMcpPilotStatus();
+}
+function stopMcpPilot() {
+    const child = mcpPilotProcess;
+    mcpPilotProcess = null;
+    mcpPilotError = null;
+    if (!child || child.exitCode !== null)
+        return;
+    try {
+        if (process.platform === 'win32' && child.pid) {
+            (0, child_process_1.spawn)('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', shell: false, windowsHide: true });
+        }
+        else {
+            child.kill('SIGTERM');
+        }
+    }
+    catch {
+        // Processo pode ter encerrado entre a consulta e o stop.
+    }
 }
 async function startPythonServices() {
     console.log('[Electron] Starting Python backend services...');
@@ -493,6 +593,7 @@ electron_1.app.whenReady().then(() => {
     });
 });
 electron_1.app.on('window-all-closed', () => {
+    stopMcpPilot();
     stopPythonServices();
     if (nextServer) {
         try {
@@ -507,6 +608,7 @@ electron_1.app.on('window-all-closed', () => {
     }
 });
 electron_1.app.on('before-quit', () => {
+    stopMcpPilot();
     stopPythonServices();
 });
 handleTrusted('open-external', async (_event, value) => {
@@ -519,6 +621,12 @@ handleTrusted('open-external', async (_event, value) => {
 });
 handleTrusted('get-app-version', () => {
     return electron_1.app.getVersion();
+});
+handleTrusted('mcp-status', async () => getMcpPilotStatus());
+handleTrusted('mcp-start', async () => startMcpPilot());
+handleTrusted('mcp-stop', async () => {
+    stopMcpPilot();
+    return getMcpPilotStatus();
 });
 // ─── SQLite for Options (v4) ─────────────────────────────────────────────────
 const DB_PATH = path_1.default.join(OPTIONS_DATA_DIR, 'options_data.db');

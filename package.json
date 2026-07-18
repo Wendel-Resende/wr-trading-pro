@@ -26,7 +26,7 @@
     "electron:build:mac": "electron-builder --mac",
     "electron:build:linux": "electron-builder --linux",
     "electron:compile": "tsc -p electron/tsconfig.json",
-    "electron:package": "npm run build && npm run electron:compile && electron-builder",
+    "electron:package": "npm run build && npm run electron:compile && npm run mcp:pilot:compile && electron-builder",
     "test:mt5-adapters": "node scripts/mt5/run-mt5-tests.cjs",
     "test:reference-data": "node scripts/reference-data/run-reference-data-tests.cjs",
     "test:cvm-facts": "node scripts/cvm-facts/run-cvm-facts-tests.cjs",
@@ -44,7 +44,8 @@
     "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
     "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
     "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js",
-    "mcp:pilot": "tsc -p scripts/mcp-pilot/tsconfig.json && node scripts/mcp-pilot/.dist/src/mcp/pilot/index.js",
+    "mcp:pilot:compile": "tsc -p scripts/mcp-pilot/tsconfig.json",
+    "mcp:pilot": "npm run mcp:pilot:compile && node scripts/mcp-pilot/.dist/src/mcp/pilot/index.js",
     "test:mcp-pilot": "node scripts/mcp-pilot/run-mcp-pilot-tests.cjs"
   },
   "build": {
@@ -58,6 +59,7 @@
       ".next/**/*",
       "agents/**/*",
       "python/**/*",
+      "scripts/mcp-pilot/.dist/**/*",
       "package.json",
       "node_modules/better-sqlite3/**/*",
       "node_modules/bindings/**/*",

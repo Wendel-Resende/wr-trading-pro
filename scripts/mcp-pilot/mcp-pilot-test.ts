@@ -35,7 +35,18 @@ const TOKEN = 't'.repeat(48);
 // `process.env` — que sempre tem `NODE_ENV` — para satisfazer ambos os
 // tsconfigs, mesmo padrão já usado em `scripts/mcp/mcp-test.ts`.
 function fakeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
-  return { ...process.env, WR_MCP_HTTP_TOKEN: undefined, WR_SERVICE_TOKEN: undefined, WR_MCP_HTTP_PORT: undefined, ...overrides };
+  return {
+    ...process.env,
+    WR_MCP_HTTP_TOKEN: undefined,
+    WR_SERVICE_TOKEN: undefined,
+    WR_MCP_HTTP_HOST: undefined,
+    WR_MCP_HTTP_PORT: undefined,
+    WR_MCP_NEXT_BASE_URL: undefined,
+    WR_MCP_SPREAD_API_URL: undefined,
+    WR_MCP_VOLATILITY_API_URL: undefined,
+    WR_MCP_BRIDGE_URL: undefined,
+    ...overrides,
+  };
 }
 
 function serviceTokenTests(): void {
