@@ -1,14 +1,13 @@
 """Treino walk-forward + baselines + artefatos. Hiperparâmetros FIXOS (spec)."""
 import hashlib, json, os
 import lightgbm as lgb
-import numpy as np
 import pandas as pd
 
 from .dataset import ALL_FEATURES
 from .features import FEATURE_COLUMNS
 from .walkforward import walkforward_splits
 
-HYPERPARAMETERS = {'max_depth': 6, 'num_leaves': 63, 'learning_rate': 0.05, 'n_estimators': 400}
+HYPERPARAMETERS = {'max_depth': 6, 'num_leaves': 63, 'learning_rate': 0.05, 'n_estimators': 400, 'random_state': 42}
 _Z_COLS = ['roe', 'margem_liquida', 'divida_bruta_pl', 'crescimento_lucro_yoy']
 
 def _fit(train: pd.DataFrame, cols) -> lgb.LGBMClassifier:
@@ -86,8 +85,8 @@ def _decile_backtest(wf: pd.DataFrame, cost_bps: float = 25.0) -> dict:
         top = g[g['pModel'] >= g['pModel'].quantile(0.9)]
         if not len(top):
             continue
-        # retorno médio realizado a 10 pregões do decil, líquido de custos
-        gross = (top['yTrue'] * 2 - 1).mean() * 0.02  # proxy: ±2% por acerto/erro médio
+        # proxy direcional: ±2% fixo por acerto/erro do decil; retorno real por posição fica na v1.1
+        gross = (top['yTrue'] * 2 - 1).mean() * 0.02
         equity *= 1 + gross - cost_bps / 10000
         n_reb += 1
         peak = max(peak, equity)
