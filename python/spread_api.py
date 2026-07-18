@@ -647,11 +647,21 @@ def find_best_pairs():
         data_inicial = datetime.fromisoformat(data['data_inicial'])
         data_final = datetime.fromisoformat(data['data_final'])
         ganho_minimo = data.get('ganho_minimo', 0.10)
-        
-        logger.info(f"Requisição de busca de melhores pares (ganho_minimo: {ganho_minimo})")
-        
-        resultados = calculator.encontrar_melhores_pares(data_inicial, data_final, ganho_minimo)
-        
+        min_correlacao = data.get('min_correlacao')
+
+        logger.info(
+            f"Requisição de busca de melhores pares (ganho_minimo: {ganho_minimo}, "
+            f"min_correlacao: {min_correlacao})"
+        )
+
+        min_correlacao_anterior = calculator.min_correlacao_filtro
+        if min_correlacao is not None:
+            calculator.min_correlacao_filtro = float(min_correlacao)
+        try:
+            resultados = calculator.encontrar_melhores_pares(data_inicial, data_final, ganho_minimo)
+        finally:
+            calculator.min_correlacao_filtro = min_correlacao_anterior
+
         return jsonify({
             'success': True,
             'data': resultados
