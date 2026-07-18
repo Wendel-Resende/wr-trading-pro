@@ -896,3 +896,33 @@ model SpreadOrderAudit {
   @@index([orderId])
   @@index([action, createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// MCP Piloto — Task 6: trilho de trade governado (propose -> risk -> code ->
+// approve -> intent). Ledger append-only exceto pelas transições de status
+// controladas pelo McpTradeService (RISK_REJECTED | PENDING_HUMAN | APPROVED
+// | REJECTED | EXPIRED | EXECUTED | EXECUTION_FAILED).
+// ---------------------------------------------------------------------------
+model McpTradeProposal {
+  id                   String   @id @default(cuid())
+  proposalId           String   @unique
+  requestedBy          String
+  symbol               String
+  direction            String // BUY | SELL
+  volume               Float
+  stopLoss             Float?
+  takeProfit           Float?
+  rationale            String
+  decisionId           String? // RiskDecision vinculada (null se risco indisponível)
+  status               String // RISK_REJECTED | PENDING_HUMAN | APPROVED | REJECTED | EXPIRED | EXECUTED | EXECUTION_FAILED
+  executionState       String? // BLOCKED_KILL_SWITCH | SENT | null
+  confirmationCodeHash String
+  codeAttempts         Int      @default(0)
+  expiresAt            DateTime
+  executionJson        String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([requestedBy, createdAt])
+}

@@ -16,6 +16,10 @@ import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clie
 import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
 import { buildMlTools } from '../../src/mcp/pilot/tools/ml';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
+import { createRiskPolicyService } from '../../src/application/risk-policy';
+import { createOrderIntentService } from '../../src/application/order-intent';
+import { McpTradeService, type MarketSnapshotPort } from '../../src/application/mcp-trade/service';
+import type { PilotExecutionPort, PilotOrderRequest, PilotOrderResult } from '../../src/domain/v1/ports/pilot-execution';
 
 const TOKEN = 't'.repeat(48);
 
@@ -339,6 +343,272 @@ async function mlToolsTests(): Promise<void> {
   console.log('ml.run_prediction com 5 candles: OK (INSUFFICIENT_DATA com contagens obtidas/necessárias)');
 }
 
+/** Broker fake — grava toda chamada; nunca deve ser acionado em caminho de falha do gate. */
+class FakeExecutionPort implements PilotExecutionPort {
+  readonly calls: PilotOrderRequest[] = [];
+  constructor(private readonly result: PilotOrderResult = { ok: true, ticket: 42, price: 30.5 }) {}
+  async send(request: PilotOrderRequest): Promise<PilotOrderResult> {
+    this.calls.push(request);
+    return this.result;
+  }
+}
+
+const FAKE_SNAPSHOT: MarketSnapshotPort = {
+  get: async () => ({ referencePrice: 30, currentPositionQty: 0, portfolioNav: 1_000_000 }),
+};
+
+function mkClock(startMs: number): { now: () => Date; advanceMinutes: (m: number) => void } {
+  let current = startMs;
+  return {
+    now: () => new Date(current),
+    advanceMinutes: (m: number) => { current += m * 60 * 1000; },
+  };
+}
+
+function buildMcpTradeService(
+  prisma: PrismaClient,
+  execution: PilotExecutionPort,
+  clock: () => Date,
+  env: Record<string, string | undefined> = {},
+): McpTradeService {
+  return new McpTradeService({
+    prisma,
+    riskPolicy: createRiskPolicyService(prisma),
+    orderIntent: createOrderIntentService(prisma),
+    execution,
+    snapshot: FAKE_SNAPSHOT,
+    clock,
+    env: { ...process.env, WR_TRADING_ENABLED: undefined, ...env },
+  });
+}
+
+async function mcpTradeMigrationTests(): Promise<void> {
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const sql = readFileSync(
+    join(process.cwd(), 'prisma', 'migrations', '20260718001053_add_mcp_trade_proposal', 'migration.sql'),
+    'utf8',
+  );
+  assert.doesNotMatch(sql, /\bALTER\s+TABLE\b/i, 'migração aditiva do Item 6 não pode conter ALTER TABLE');
+  assert.doesNotMatch(sql, /\bDROP\s+TABLE\b/i, 'migração aditiva não pode conter DROP TABLE');
+  assert.doesNotMatch(sql, /\bDROP\s+COLUMN\b/i, 'migração aditiva não pode conter DROP COLUMN');
+  assert.doesNotMatch(sql, /\bDROP\s+INDEX\b/i, 'migração aditiva não pode conter DROP INDEX');
+  assert.match(sql, /CREATE TABLE "McpTradeProposal"/);
+  assert.match(sql, /CREATE UNIQUE INDEX "McpTradeProposal_proposalId_key"/);
+  console.log('migration additivity (mcp-trade): OK (somente CREATE TABLE/INDEX, sem ALTER/DROP)');
+}
+
+async function mcpTradeAllowlistRejectionTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 1));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now);
+  const result = await service.propose({
+    requestedBy: 'tester-allow',
+    symbol: 'FORA-DA-LISTA',
+    direction: 'BUY',
+    volume: 100,
+    rationale: 'teste allowlist',
+  });
+  assert.equal(result.status, 'RISK_REJECTED');
+  assert.deepEqual(result.riskReasons, ['INSTRUMENT_NOT_ALLOWED']);
+  assert.equal(result.confirmationCode, undefined);
+  assert.equal(execution.calls.length, 0);
+  console.log('propose fora da allowlist: OK (RISK_REJECTED, sem code, broker não chamado)');
+}
+
+async function mcpTradeProposeValidTests(prisma: PrismaClient): Promise<string> {
+  const clock = mkClock(Date.UTC(2099, 0, 2));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now);
+  const result = await service.propose({
+    requestedBy: 'tester-valid',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 100,
+    rationale: 'teste proposta válida',
+  });
+  assert.equal(result.status, 'PENDING_HUMAN');
+  assert.equal(result.riskOutcome, 'APPROVED');
+  assert.ok(result.confirmationCode && /^\d{6}$/.test(result.confirmationCode), 'code deve ter 6 dígitos');
+  assert.ok(result.expiresAt);
+  const expiresAt = new Date(result.expiresAt!).getTime();
+  assert.equal(expiresAt - clock.now().getTime(), 30 * 60 * 1000);
+  assert.equal(execution.calls.length, 0);
+  console.log('propose válido: OK (PENDING_HUMAN + code de 6 dígitos + expiresAt +30min)');
+  return result.proposalId;
+}
+
+async function mcpTradeWrongCodeExpiresTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 3));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now);
+  const proposed = await service.propose({
+    requestedBy: 'tester-wrongcode',
+    symbol: 'VALE3',
+    direction: 'BUY',
+    volume: 50,
+    rationale: 'teste code errado',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  for (let i = 0; i < 2; i++) {
+    await expectReadModelErrorLocal(
+      service.approve({ proposalId: proposed.proposalId, confirmationCode: '000000' }),
+      'INVALID_CODE',
+      `tentativa ${i + 1} de código errado`,
+    );
+  }
+  // 3ª tentativa errada -> EXPIRED
+  await expectReadModelErrorLocal(
+    service.approve({ proposalId: proposed.proposalId, confirmationCode: '000000' }),
+    'INVALID_CODE',
+    'tentativa 3 de código errado',
+  );
+  const status = await service.status(proposed.proposalId);
+  assert.equal(status.proposal.status, 'EXPIRED');
+  assert.equal(execution.calls.length, 0, 'broker nunca deve ser chamado com código errado');
+  console.log('approve com code errado 3x: OK (EXPIRED, broker nunca chamado)');
+}
+
+async function mcpTradeKillSwitchBlockedTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 4));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now); // WR_TRADING_ENABLED ausente
+  const proposed = await service.propose({
+    requestedBy: 'tester-killswitch',
+    symbol: 'ITUB4',
+    direction: 'BUY',
+    volume: 50,
+    rationale: 'teste kill switch',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  const approved = await service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! });
+  assert.equal(approved.status, 'APPROVED');
+  assert.equal(approved.executionState, 'BLOCKED_KILL_SWITCH');
+  assert.equal(execution.calls.length, 0, 'broker nunca deve ser chamado com kill switch desligado');
+  console.log('approve com kill switch ausente: OK (APPROVED + BLOCKED_KILL_SWITCH, broker não chamado)');
+}
+
+async function mcpTradeExecutedTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 5));
+  const execution = new FakeExecutionPort({ ok: true, ticket: 777, price: 31.2 });
+  const service = buildMcpTradeService(prisma, execution, clock.now, { WR_TRADING_ENABLED: 'true' });
+  const proposed = await service.propose({
+    requestedBy: 'tester-executed',
+    symbol: 'BBDC4',
+    direction: 'SELL',
+    volume: 20,
+    rationale: 'teste execução',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  const approved = await service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! });
+  assert.equal(approved.status, 'EXECUTED');
+  assert.equal(execution.calls.length, 1);
+  assert.equal(execution.calls[0].comment, `mcp:${proposed.proposalId}`);
+  assert.equal(execution.calls[0].symbol, 'BBDC4');
+  assert.equal(execution.calls[0].direction, 'SELL');
+
+  const status = await service.status(proposed.proposalId);
+  assert.equal(status.proposal.status, 'EXECUTED');
+  assert.ok(status.proposal.executionJson);
+
+  // 2ª chamada de approve -> INVALID_STATE (não reexecuta)
+  await expectReadModelErrorLocal(
+    service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! }),
+    'INVALID_STATE',
+    'segunda chamada de approve não deve reexecutar',
+  );
+  assert.equal(execution.calls.length, 1, 'broker não pode ser chamado de novo na segunda approve');
+  console.log('approve com kill switch ligado: OK (broker chamado com comment mcp:<id>, EXECUTED, executionJson persistido; 2ª approve -> INVALID_STATE sem reexecutar)');
+}
+
+async function mcpTradeExpiredByClockTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 6));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now, { WR_TRADING_ENABLED: 'true' });
+  const proposed = await service.propose({
+    requestedBy: 'tester-clockexpire',
+    symbol: 'ABEV3',
+    direction: 'BUY',
+    volume: 10,
+    rationale: 'teste expiração por clock',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  clock.advanceMinutes(31);
+  await expectReadModelErrorLocal(
+    service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! }),
+    'PROPOSAL_EXPIRED',
+    'clock avançado 31min',
+  );
+  assert.equal(execution.calls.length, 0, 'broker nunca deve ser chamado em proposta expirada');
+  const status = await service.status(proposed.proposalId);
+  assert.equal(status.proposal.status, 'EXPIRED');
+  console.log('clock avançado 31min: OK (PROPOSAL_EXPIRED, broker nunca chamado)');
+}
+
+async function mcpTradeRateLimitTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 7));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now, { WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR: '10' });
+  const requestedBy = 'tester-ratelimit';
+  for (let i = 0; i < 10; i++) {
+    const result = await service.propose({ requestedBy, symbol: 'WEGE3', direction: 'BUY', volume: 1, rationale: `proposta ${i}` });
+    assert.notEqual(result.status, undefined);
+  }
+  await expectReadModelErrorLocal(
+    service.propose({ requestedBy, symbol: 'WEGE3', direction: 'BUY', volume: 1, rationale: 'proposta 11' }),
+    'RATE_LIMITED',
+    '11ª proposta na última hora',
+  );
+  console.log('rate limit: OK (10 propostas na última hora ok, 11ª -> RATE_LIMITED)');
+}
+
+async function mcpTradeRejectTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 8));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now);
+  const proposed = await service.propose({
+    requestedBy: 'tester-reject',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 5,
+    rationale: 'teste reject',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+  const rejected = await service.reject(proposed.proposalId);
+  assert.equal(rejected.status, 'REJECTED');
+  const status = await service.status(proposed.proposalId);
+  assert.equal(status.proposal.status, 'REJECTED');
+  assert.equal(execution.calls.length, 0);
+  console.log('reject em PENDING_HUMAN: OK (REJECTED)');
+}
+
+async function expectReadModelErrorLocal(promise: Promise<unknown>, code: string, label: string): Promise<void> {
+  try {
+    await promise;
+    assert.fail(`esperava ReadModelError(${code}) em ${label}`);
+  } catch (error) {
+    if (error instanceof assert.AssertionError) throw error;
+    assert.ok(error instanceof ReadModelError, `${label}: esperava ReadModelError, recebeu ${(error as Error)?.constructor?.name}`);
+    assert.equal((error as ReadModelError).code, code, `${label}: código esperado ${code}, recebido ${(error as ReadModelError).code}`);
+  }
+}
+
+async function mcpTradeServiceTests(prisma: PrismaClient): Promise<void> {
+  await mcpTradeMigrationTests();
+  await mcpTradeAllowlistRejectionTests(prisma);
+  await mcpTradeProposeValidTests(prisma);
+  await mcpTradeWrongCodeExpiresTests(prisma);
+  await mcpTradeKillSwitchBlockedTests(prisma);
+  await mcpTradeExecutedTests(prisma);
+  await mcpTradeExpiredByClockTests(prisma);
+  await mcpTradeRateLimitTests(prisma);
+  await mcpTradeRejectTests(prisma);
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
@@ -350,7 +620,10 @@ async function main(): Promise<void> {
   await marketLiveMt5DisconnectedTests();
   await mlToolsTests();
   const prisma = new PrismaClient();
-  try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
+  try {
+    await serverTests(prisma);
+    await mcpTradeServiceTests(prisma);
+  } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
 }
 void main().catch((e) => { console.error(e); process.exitCode = 1; });
