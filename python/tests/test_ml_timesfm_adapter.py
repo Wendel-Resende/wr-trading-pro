@@ -21,8 +21,10 @@ def test_features_and_cache():
     f = p.features_for('WEGE3', closes)
     assert abs(f['tfm_ret_10'] - (1.001 ** 1 * (1 + 0.001 * 10) - 1)) < 0.01  # ~+1%
     assert f['tfm_iq'] > 0
+    assert type(f['tfm_ret_10']) is float and type(f['tfm_iq']) is float  # miss: float nativo
     f2 = p.features_for('WEGE3', closes)  # mesma série → cache, sem nova chamada
     assert stub.calls == 1 and f2 == f
+    assert type(f2['tfm_ret_10']) is float and type(f2['tfm_iq']) is float  # hit: float nativo
     # Persistência: um SEGUNDO provider apontando pro mesmo cache_dir também
     # dá hit no parquet gravado (leitura única, sem re-chamar o stub).
     stub2 = StubForecaster()

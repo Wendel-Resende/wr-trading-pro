@@ -70,8 +70,8 @@ class TimesFmFeatureProvider:
             return dict(entries[key])
         fc = self._get_forecaster().forecast(context, horizon=10)
         last = context[-1]
-        feats = {'tfm_ret_10': fc['median'][-1] / last - 1,
-                 'tfm_iq': (fc['q90'][-1] - fc['q10'][-1]) / last}
+        feats = {'tfm_ret_10': float(fc['median'][-1] / last - 1),
+                 'tfm_iq': float((fc['q90'][-1] - fc['q10'][-1]) / last)}
         entries[key] = feats
         pd.DataFrame([{'key': k, **v} for k, v in entries.items()]).to_parquet(
             self._cache_path(symbol), index=False)
