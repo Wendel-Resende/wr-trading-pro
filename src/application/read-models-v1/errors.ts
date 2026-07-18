@@ -33,6 +33,8 @@ export type ReadModelErrorCode =
   | 'INVALID_CODE'
   | 'PROPOSAL_EXPIRED'
   | 'INVALID_STATE'
+  | 'NO_PRICE'
+  | 'DEMO_ONLY'
   | 'INTERNAL_ERROR';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
@@ -70,6 +72,8 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   INVALID_CODE: 403,
   PROPOSAL_EXPIRED: 410,
   INVALID_STATE: 409,
+  NO_PRICE: 422,
+  DEMO_ONLY: 403,
   INTERNAL_ERROR: 500,
 };
 

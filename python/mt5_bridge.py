@@ -63,6 +63,26 @@ def redacted_str(obj: Any) -> str:
     except (TypeError, ValueError):
         return '***'
 
+
+def is_order_allowed_by_account(demo_only: bool, account: Any, demo_mode_value: int = 0) -> bool:
+    """Guarda DEMO (MCP Piloto): decide se uma ordem pode ser enviada dada a conta MT5 atual.
+
+    Função pura, testável sem o módulo MetaTrader5 (`test_demo_guard.py`
+    passa objetos fake com atributo `trade_mode`). `demo_mode_value` é o
+    valor da constante `mt5.ACCOUNT_TRADE_MODE_DEMO` — o chamador real
+    (`handle_send_order`) passa a constante de verdade; o default `0`
+    reflete o valor conhecido dela na lib MetaTrader5, permitindo testar
+    esta função sem importar `MetaTrader5`.
+
+    - `demo_only=False`: sempre permite (sem restrição de conta).
+    - `demo_only=True`: só permite se `account` existir e seu
+      `trade_mode` for igual a `demo_mode_value`.
+    """
+    if not demo_only:
+        return True
+    return account is not None and getattr(account, 'trade_mode', None) == demo_mode_value
+
+
 # Tentar importar MetaTrader5
 try:
     import MetaTrader5 as mt5
@@ -1254,7 +1274,23 @@ class MT5Bridge:
                 'timestamp': datetime.now().isoformat(),
             })
             return
-        
+
+        # Guarda DEMO (MCP Piloto): por padrão só conta demo pode operar.
+        # Independente do chamador — vale para UI e para o wr-mcp-pilot.
+        demo_only = os.environ.get('WR_TRADING_DEMO_ONLY', 'true').lower() in ('true', '1', 'yes')
+        acct = mt5.account_info() if demo_only else None
+        if not is_order_allowed_by_account(demo_only, acct, mt5.ACCOUNT_TRADE_MODE_DEMO):
+            logger.warning("Ordem BLOQUEADA: WR_TRADING_DEMO_ONLY=true e a conta não é DEMO")
+            await self.send_to_client(websocket, {
+                'type': 'ERROR',
+                'data': {
+                    'message': 'Execução restrita a conta DEMO (WR_TRADING_DEMO_ONLY=true).',
+                    'code': 'DEMO_ONLY',
+                },
+                'timestamp': datetime.now().isoformat(),
+            })
+            return
+
         # Validações básicas
         if not symbol:
             logger.error("Símbolo não fornecido")

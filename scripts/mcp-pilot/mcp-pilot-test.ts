@@ -15,6 +15,9 @@ import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
 import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
 import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
 import { buildMlTools } from '../../src/mcp/pilot/tools/ml';
+import { buildTradeTools } from '../../src/mcp/pilot/tools/trade';
+import { Mt5DemoBroker } from '../../src/mcp/pilot/execution/mt5-demo-broker';
+import { createBridgeSnapshot } from '../../src/mcp/pilot/execution/bridge-snapshot';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 import { createRiskPolicyService } from '../../src/application/risk-policy';
 import { createOrderIntentService } from '../../src/application/order-intent';
@@ -715,6 +718,178 @@ async function mcpTradeServiceTests(prisma: PrismaClient): Promise<void> {
   await mcpTradeInvalidVolumeTests(prisma);
 }
 
+/** Service fake — grava toda chamada e devolve fixtures; nunca toca Prisma/broker real. */
+class FakeMcpTradeService {
+  readonly proposeCalls: Array<Record<string, unknown>> = [];
+  readonly approveCalls: Array<Record<string, unknown>> = [];
+  readonly rejectCalls: string[] = [];
+  readonly statusCalls: string[] = [];
+  async propose(input: Record<string, unknown>) {
+    this.proposeCalls.push(input);
+    return { proposalId: 'fixture-proposal', status: 'PENDING_HUMAN', riskOutcome: 'APPROVED', riskReasons: [], confirmationCode: '123456', expiresAt: new Date().toISOString() };
+  }
+  async approve(input: Record<string, unknown>) {
+    this.approveCalls.push(input);
+    return { status: 'EXECUTED', executionState: 'SENT', execution: { ok: true, ticket: 1, price: 10 } };
+  }
+  async reject(proposalId: string) {
+    this.rejectCalls.push(proposalId);
+    return { status: 'REJECTED' };
+  }
+  async status(proposalId: string) {
+    this.statusCalls.push(proposalId);
+    return { proposal: {}, riskDecision: null, intents: [] };
+  }
+}
+
+const VALID_UUID = '123e4567-e89b-12d3-a456-426614174000';
+
+async function tradeToolsTests(): Promise<void> {
+  const fake = new FakeMcpTradeService();
+  const tools = buildTradeTools(fake as unknown as McpTradeService);
+  assert.equal(tools.length, 4);
+  assert.ok(tools.every((t) => t.privilege === 'gated'), 'todas as 4 tools trade.* devem ser gated');
+  const names = tools.map((t) => t.name).sort();
+  assert.deepEqual(names, ['trade.approve', 'trade.propose', 'trade.reject', 'trade.status']);
+
+  // SEGURANÇA: `requestedBy` fixado no servidor, nunca vindo de `args` —
+  // mesmo que o chamador tente injetar um valor diferente, é ignorado.
+  const propose = tools.find((t) => t.name === 'trade.propose')!;
+  const proposeResult = await propose.handler({
+    symbol: 'petr4', direction: 'BUY', volume: 100, rationale: 'rationale de teste com 10+ chars',
+    requestedBy: 'attacker-controlled',
+  });
+  assert.equal(proposeResult.isError, undefined);
+  assert.equal(fake.proposeCalls.length, 1);
+  assert.equal(fake.proposeCalls[0].requestedBy, 'mcp:hermes', 'requestedBy deve ser fixo, não vindo de args');
+  assert.equal(fake.proposeCalls[0].symbol, 'PETR4', 'símbolo deve ser normalizado para maiúsculo');
+
+  // zod: símbolo inválido rejeitado antes de chamar o service.
+  const badSymbol = await propose.handler({ symbol: 'XX', direction: 'BUY', volume: 10, rationale: 'rationale de teste com 10+ chars' });
+  assert.equal(badSymbol.isError, true);
+  assert.equal(fake.proposeCalls.length, 1, 'service não deve ser chamado com símbolo inválido');
+
+  // zod: código de confirmação com 5 dígitos rejeitado.
+  const approve = tools.find((t) => t.name === 'trade.approve')!;
+  const badCode = await approve.handler({ proposalId: VALID_UUID, confirmationCode: '12345' });
+  assert.equal(badCode.isError, true);
+  assert.equal(fake.approveCalls.length, 0, 'service não deve ser chamado com código de 5 dígitos');
+
+  const goodApprove = await approve.handler({ proposalId: VALID_UUID, confirmationCode: '123456' });
+  assert.equal(goodApprove.isError, undefined);
+  assert.equal(fake.approveCalls.length, 1);
+  assert.equal(fake.approveCalls[0].proposalId, VALID_UUID);
+  assert.equal(fake.approveCalls[0].confirmationCode, '123456');
+
+  const reject = tools.find((t) => t.name === 'trade.reject')!;
+  await reject.handler({ proposalId: VALID_UUID });
+  assert.deepEqual(fake.rejectCalls, [VALID_UUID]);
+
+  const status = tools.find((t) => t.name === 'trade.status')!;
+  await status.handler({ proposalId: VALID_UUID });
+  assert.deepEqual(fake.statusCalls, [VALID_UUID]);
+
+  // proposalId não-UUID rejeitado por zod antes de chegar ao service.
+  const badId = await status.handler({ proposalId: 'not-a-uuid' });
+  assert.equal(badId.isError, true);
+  assert.equal(fake.statusCalls.length, 1, 'service não deve ser chamado com proposalId inválido');
+
+  console.log('tools trade.* (propose/approve/reject/status): OK (4 gated, requestedBy fixo, zod rejeita entradas inválidas)');
+}
+
+async function mt5DemoBrokerTests(): Promise<void> {
+  const calls: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const successBridge = {
+    request: async (type: string, data?: Record<string, unknown>) => {
+      calls.push({ type, data });
+      return { order: 555, deal: 999, volume: 100, price: 31.4, retcode: 10009 };
+    },
+  };
+  const broker = new Mt5DemoBroker(successBridge);
+  const result = await broker.send({ symbol: 'PETR4', direction: 'BUY', volume: 100, stopLoss: 29, takeProfit: 33, comment: 'mcp:test-1' });
+  assert.deepEqual(result, { ok: true, ticket: 555, price: 31.4 });
+  assert.equal(calls[0].type, 'SEND_ORDER');
+  assert.deepEqual(calls[0].data, { symbol: 'PETR4', type: 'ORDER_TYPE_BUY', volume: 100, comment: 'mcp:test-1', sl: 29, tp: 33 });
+
+  const sellCalls: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const sellBridge = { request: async (type: string, data?: Record<string, unknown>) => { sellCalls.push({ type, data }); return { order: 1, price: 1 }; } };
+  await new Mt5DemoBroker(sellBridge).send({ symbol: 'VALE3', direction: 'SELL', volume: 50, comment: 'mcp:test-2' });
+  assert.equal(sellCalls[0].data?.type, 'ORDER_TYPE_SELL');
+  assert.equal(sellCalls[0].data?.sl, undefined, 'sl omitido quando não fornecido');
+  assert.equal(sellCalls[0].data?.tp, undefined, 'tp omitido quando não fornecido');
+
+  // Broker NUNCA relança — erro do bridge (ReadModelError) vira {ok:false, error}.
+  const failingBridge = { request: async () => { throw new ReadModelError('DEMO_ONLY', 'Execução restrita a conta DEMO (WR_TRADING_DEMO_ONLY=true).'); } };
+  const failResult = await new Mt5DemoBroker(failingBridge).send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:test-3' });
+  assert.equal(failResult.ok, false);
+  assert.match(failResult.error ?? '', /DEMO/);
+
+  // Erro genérico (não ReadModelError) também nunca relança.
+  const throwingBridge = { request: async () => { throw new Error('erro cru inesperado'); } };
+  const genericFail = await new Mt5DemoBroker(throwingBridge).send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:test-4' });
+  assert.equal(genericFail.ok, false);
+  assert.equal(genericFail.error, 'erro cru inesperado');
+
+  console.log('Mt5DemoBroker: OK (mapeamento BUY/SELL, sl/tp omitidos quando ausentes, nunca relança)');
+}
+
+async function bridgeSnapshotTests(): Promise<void> {
+  const calls: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  const bridge = {
+    request: async (type: string, data?: Record<string, unknown>) => {
+      calls.push({ type, data });
+      if (type === 'GET_ACCOUNT_INFO') return { equity: 123_456 };
+      if (type === 'GET_POSITIONS_SNAPSHOT') return { positions: [{ symbol: 'PETR4', volume: 200 }, { symbol: 'VALE3', volume: 50 }] };
+      if (type === 'GET_CHART_DATA') return { candles: [{ close: 10 }, { close: 30.5 }] };
+      throw new Error('tipo inesperado');
+    },
+  };
+  const snapshot = createBridgeSnapshot(bridge);
+  const result = await snapshot.get('PETR4');
+  assert.deepEqual(result, { referencePrice: 30.5, currentPositionQty: 200, portfolioNav: 123_456 });
+  assert.ok(calls.some((c) => c.type === 'GET_CHART_DATA' && c.data?.timeframe === 'M1' && c.data?.count === 1));
+  console.log('createBridgeSnapshot: OK (equity->portfolioNav, soma volume por símbolo, close do último candle)');
+}
+
+async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
+  const cfg = resolvePilotConfig(fakeEnv({ WR_MCP_HTTP_TOKEN: TOKEN, WR_SERVICE_TOKEN: TOKEN, WR_MCP_HTTP_PORT: '0' }));
+  const stubBridge = { request: async () => ({}) };
+  const stubExecution: PilotExecutionPort = { send: async () => ({ ok: true }) };
+  const stubSnapshot: MarketSnapshotPort = { get: async () => ({ referencePrice: 1, currentPositionQty: 0, portfolioNav: 1 }) };
+  const tradeService = new McpTradeService({
+    prisma, riskPolicy: createRiskPolicyService(prisma), orderIntent: createOrderIntentService(prisma),
+    execution: stubExecution, snapshot: stubSnapshot,
+  });
+  const extraTools = [
+    ...buildCvmRichTools(createHttpJson('http://127.0.0.1:1')),
+    ...buildMonitoringTools(createHttpJson('http://127.0.0.1:1')),
+    ...buildAgentActionTools(createHttpJson('http://127.0.0.1:1')),
+    ...buildPortfolioTools(stubBridge),
+    ...buildMarketLiveTools(createHttpJson('http://127.0.0.1:1'), createHttpJson('http://127.0.0.1:1')),
+    ...buildMlTools(stubBridge),
+    ...buildTradeTools(tradeService),
+  ];
+  const handle = await startPilotServer(prisma, cfg, extraTools);
+  try {
+    const transport = new StreamableHTTPClientTransport(new URL(`${handle.url}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } },
+    });
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const gated = tools.tools.filter((t) => (extraTools.find((e) => e.name === t.name)?.privilege ?? 'free') === 'gated');
+    assert.ok(tools.tools.length >= 25, `catálogo completo deveria ter bastante tools, achou ${tools.tools.length}`);
+    assert.equal(gated.length, 4, `deve haver exatamente 4 tools gated, achou ${gated.length}`);
+    for (const name of ['trade.propose', 'trade.approve', 'trade.reject', 'trade.status']) {
+      assert.ok(tools.tools.some((t) => t.name === name), `tool ${name} deveria estar no catálogo`);
+    }
+    await client.close();
+    console.log(`catálogo completo do servidor: OK (${tools.tools.length} tools, exatamente 4 gated: trade.*)`);
+  } finally {
+    await handle.close();
+  }
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
@@ -725,10 +900,14 @@ async function main(): Promise<void> {
   await marketFindSpreadPairsTests();
   await marketLiveMt5DisconnectedTests();
   await mlToolsTests();
+  await tradeToolsTests();
+  await mt5DemoBrokerTests();
+  await bridgeSnapshotTests();
   const prisma = new PrismaClient();
   try {
     await serverTests(prisma);
     await mcpTradeServiceTests(prisma);
+    await fullCatalogTests(prisma);
   } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
 }
