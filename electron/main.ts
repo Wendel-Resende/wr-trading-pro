@@ -400,7 +400,9 @@ async function startMcpPilotInternal(): Promise<McpPilotStatus> {
 
   const { entry, cwd } = getMcpPilotEntry();
   if (!fs.existsSync(entry)) {
-    mcpPilotError = 'MCP Pilot não foi incluído na instalação. Reinstale ou atualize a aplicação.';
+    mcpPilotError = app.isPackaged
+      ? 'MCP Pilot não foi incluído na instalação. Reinstale ou atualize a aplicação.'
+      : 'Build do MCP Pilot ausente. Execute "npm run mcp:pilot:compile" no projeto.';
     return getMcpPilotStatus();
   }
 

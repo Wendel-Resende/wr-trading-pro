@@ -411,7 +411,9 @@ async function startMcpPilotInternal() {
     }
     const { entry, cwd } = getMcpPilotEntry();
     if (!fs_1.default.existsSync(entry)) {
-        mcpPilotError = 'MCP Pilot não foi incluído na instalação. Reinstale ou atualize a aplicação.';
+        mcpPilotError = electron_1.app.isPackaged
+            ? 'MCP Pilot não foi incluído na instalação. Reinstale ou atualize a aplicação.'
+            : 'Build do MCP Pilot ausente. Execute "npm run mcp:pilot:compile" no projeto.';
         return getMcpPilotStatus();
     }
     mcpPilotError = null;

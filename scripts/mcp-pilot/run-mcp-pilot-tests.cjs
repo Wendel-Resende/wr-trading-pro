@@ -4,7 +4,6 @@ const { join } = require('node:path');
 const os = require('node:os');
 
 const root = join(__dirname, '..', '..');
-const dist = join(__dirname, 'dist');
 
 const run = (command, args, env) => {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: false, env: env ?? process.env });
@@ -12,24 +11,29 @@ const run = (command, args, env) => {
   if (result.status !== 0) throw new Error(`${command} exited with ${result.status ?? 'unknown status'}`);
 };
 
+// Compila em `.dist` (gitignored, fora do pacote Electron): `dist` é o
+// artefato que o Electron sobe pelo botão da aba Admin — os testes não
+// podem apagá-lo nem sobrescrevê-lo. Precisa ficar dentro do repo para o
+// Node resolver os node_modules do projeto.
+const testDist = join(__dirname, '.dist');
 let tempDir = null;
 try {
-  rmSync(dist, { recursive: true, force: true });
-  run(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'scripts/mcp-pilot/tsconfig.json']);
+  rmSync(testDist, { recursive: true, force: true });
+  run(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'scripts/mcp-pilot/tsconfig.json', '--outDir', testDist]);
+  tempDir = mkdtempSync(join(os.tmpdir(), 'wr-mcp-pilot-test-'));
 
   // Deterministic, disposable SQLite database outside the repository;
   // never touches prisma/dev.db. Removed in `finally` even if a step
   // below throws.
-  tempDir = mkdtempSync(join(os.tmpdir(), 'wr-mcp-pilot-test-'));
   const databaseUrl = `file:${join(tempDir, 'test.db').replace(/\\/g, '/')}`;
   const testEnv = { ...process.env, DATABASE_URL: databaseUrl };
 
   run(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], testEnv);
-  run(process.execPath, ['scripts/mcp-pilot/dist/scripts/mcp-pilot/mcp-pilot-test.js'], testEnv);
+  run(process.execPath, [join(testDist, 'scripts', 'mcp-pilot', 'mcp-pilot-test.js')], testEnv);
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 } finally {
-  rmSync(dist, { recursive: true, force: true });
+  rmSync(testDist, { recursive: true, force: true });
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 }
