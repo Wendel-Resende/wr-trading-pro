@@ -357,6 +357,15 @@ const FAKE_SNAPSHOT: MarketSnapshotPort = {
   get: async () => ({ referencePrice: 30, currentPositionQty: 0, portfolioNav: 1_000_000 }),
 };
 
+/** Broker fake que sempre lança (simula timeout/erro de conexão) — grava chamadas mesmo assim. */
+class ThrowingExecutionPort implements PilotExecutionPort {
+  readonly calls: PilotOrderRequest[] = [];
+  async send(request: PilotOrderRequest): Promise<PilotOrderResult> {
+    this.calls.push(request);
+    throw new Error('timeout ao enviar ordem ao broker');
+  }
+}
+
 function mkClock(startMs: number): { now: () => Date; advanceMinutes: (m: number) => void } {
   let current = startMs;
   return {
@@ -586,6 +595,100 @@ async function mcpTradeRejectTests(prisma: PrismaClient): Promise<void> {
   console.log('reject em PENDING_HUMAN: OK (REJECTED)');
 }
 
+async function mcpTradeBrokerThrowsTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 9));
+  const execution = new ThrowingExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now, { WR_TRADING_ENABLED: 'true' });
+  const proposed = await service.propose({
+    requestedBy: 'tester-brokerthrows',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 15,
+    rationale: 'teste broker lança exceção',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  const approved = await service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! });
+  assert.equal(approved.status, 'EXECUTION_FAILED');
+  assert.equal(approved.execution?.ok, false);
+  assert.match(approved.execution?.error ?? '', /timeout/);
+  assert.equal(execution.calls.length, 1);
+
+  // Retry: proposta não está mais PENDING_HUMAN -> INVALID_STATE, broker NÃO chamado de novo.
+  await expectReadModelErrorLocal(
+    service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! }),
+    'INVALID_STATE',
+    'retry de approve após EXECUTION_FAILED',
+  );
+  assert.equal(execution.calls.length, 1, 'broker não pode ser chamado de novo no retry');
+
+  const status = await service.status(proposed.proposalId);
+  assert.equal(status.proposal.status, 'EXECUTION_FAILED');
+  assert.ok(status.proposal.executionJson?.includes('timeout'));
+  console.log('broker lança exceção: OK (EXECUTION_FAILED sem estado preso; retry -> INVALID_STATE, broker chamado só 1x)');
+}
+
+async function mcpTradeReplaySuppressedTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 10));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now, { WR_TRADING_ENABLED: 'true' });
+  const proposed = await service.propose({
+    requestedBy: 'tester-replay',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 10,
+    rationale: 'teste replay de idempotencyKey pré-existente',
+  });
+  assert.equal(proposed.status, 'PENDING_HUMAN');
+
+  // Simula uma intent já criada com a MESMA idempotencyKey (proposalId) —
+  // cenário do bug original: um approve anterior chegou a criar a intent
+  // mas caiu antes de chamar o broker (ex.: processo reiniciado). A
+  // `decisionId` vinculada está persistida no registro da proposta.
+  const row = await prisma.mcpTradeProposal.findUnique({ where: { proposalId: proposed.proposalId } });
+  assert.ok(row?.decisionId);
+  const orderIntent = createOrderIntentService(prisma);
+  await orderIntent.create(
+    {
+      decisionId: row!.decisionId!,
+      idempotencyKey: proposed.proposalId,
+      quantity: 10,
+      decisionTime: new Date(clock.now().getTime() + 60_000).toISOString(),
+      requestedBy: 'tester-replay',
+      approvedBy: 'pre-existing',
+    },
+    { tradingEnabled: true, policyVersion: 'order-intent/v1' },
+  );
+
+  const approved = await service.approve({ proposalId: proposed.proposalId, confirmationCode: proposed.confirmationCode! });
+  assert.equal(execution.calls.length, 0, 'replay de idempotencyKey não pode reemitir ordem ao broker');
+  assert.notEqual(approved.status, 'EXECUTED', 'replay não deve marcar EXECUTED via reenvio ao broker');
+  console.log('replay de idempotencyKey pré-existente: OK (broker NÃO chamado, ordem não duplicada)');
+}
+
+async function mcpTradeInvalidVolumeTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 11));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now);
+  await expectReadModelErrorLocal(
+    service.propose({ requestedBy: 'tester-vol0', symbol: 'PETR4', direction: 'BUY', volume: 0, rationale: 'volume zero' }),
+    'INVALID_QUERY',
+    'volume 0',
+  );
+  await expectReadModelErrorLocal(
+    service.propose({ requestedBy: 'tester-volneg', symbol: 'PETR4', direction: 'BUY', volume: -5, rationale: 'volume negativo' }),
+    'INVALID_QUERY',
+    'volume negativo',
+  );
+  await expectReadModelErrorLocal(
+    service.propose({ requestedBy: 'tester-volnan', symbol: 'PETR4', direction: 'BUY', volume: Number.NaN, rationale: 'volume NaN' }),
+    'INVALID_QUERY',
+    'volume NaN',
+  );
+  assert.equal(execution.calls.length, 0);
+  console.log('volume inválido (0/negativo/NaN): OK (INVALID_QUERY antes de qualquer persistência)');
+}
+
 async function expectReadModelErrorLocal(promise: Promise<unknown>, code: string, label: string): Promise<void> {
   try {
     await promise;
@@ -607,6 +710,9 @@ async function mcpTradeServiceTests(prisma: PrismaClient): Promise<void> {
   await mcpTradeExpiredByClockTests(prisma);
   await mcpTradeRateLimitTests(prisma);
   await mcpTradeRejectTests(prisma);
+  await mcpTradeBrokerThrowsTests(prisma);
+  await mcpTradeReplaySuppressedTests(prisma);
+  await mcpTradeInvalidVolumeTests(prisma);
 }
 
 async function main(): Promise<void> {

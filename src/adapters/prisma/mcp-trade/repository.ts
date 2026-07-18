@@ -120,4 +120,18 @@ export class PrismaMcpTradeRepository {
       where: { requestedBy, createdAt: { gt: since } },
     });
   }
+
+  /**
+   * Transição atômica `PENDING_HUMAN -> toStatus`, condicionada por
+   * `updateMany` (sem leitura-antes-de-escrever). Fecha a corrida de dois
+   * `approve` concorrentes: só uma chamada consegue `count === 1`; a
+   * perdedora recebe `count === 0` (sem erro Prisma cru, sem 2ª execução).
+   */
+  async transitionFromPendingHuman(proposalId: string, toStatus: string): Promise<boolean> {
+    const result = await this.prisma.mcpTradeProposal.updateMany({
+      where: { proposalId, status: 'PENDING_HUMAN' },
+      data: { status: toStatus },
+    });
+    return result.count === 1;
+  }
 }

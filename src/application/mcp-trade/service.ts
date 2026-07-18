@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { RiskPolicyService } from '../risk-policy/service';
 import type { OrderIntentService } from '../order-intent/service';
@@ -78,6 +78,14 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Comparação de hash em tempo constante (`sha256` sempre produz 64 hex chars / 32 bytes dos dois lados). */
+function hashesMatch(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'hex');
+  const bufB = Buffer.from(b, 'hex');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 function parseAllowlist(env: NodeJS.ProcessEnv): readonly string[] {
   const raw = env.WR_MCP_TRADE_ALLOWLIST ?? 'PETR4,VALE3,ITUB4,BBDC4,ABEV3,WEGE3';
   return raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
@@ -107,6 +115,10 @@ export class McpTradeService {
   }
 
   async propose(input: ProposeTradeInputV1): Promise<ProposeTradeResultV1> {
+    if (!Number.isFinite(input.volume) || input.volume <= 0) {
+      throw new ReadModelError('INVALID_QUERY', 'volume deve ser um número finito maior que zero');
+    }
+
     const now = this.clock();
     const maxPerHour = parseNumberEnv(this.env, 'WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR', 10);
     const recentCount = await this.repo.countRecentByRequester(input.requestedBy, new Date(now.getTime() - RATE_LIMIT_WINDOW_MS));
@@ -217,7 +229,7 @@ export class McpTradeService {
       throw new ReadModelError('PROPOSAL_EXPIRED', 'proposta expirada');
     }
 
-    if (sha256(input.confirmationCode) !== record.confirmationCodeHash) {
+    if (!hashesMatch(sha256(input.confirmationCode), record.confirmationCodeHash)) {
       const attempts = record.codeAttempts + 1;
       if (attempts >= MAX_CODE_ATTEMPTS) {
         await this.repo.update(input.proposalId, { status: 'EXPIRED', codeAttempts: attempts });
@@ -227,12 +239,28 @@ export class McpTradeService {
       throw new ReadModelError('INVALID_CODE', 'código de confirmação inválido');
     }
 
+    // Transição atômica PENDING_HUMAN -> APPROVED via `updateMany` (sem
+    // leitura-antes-de-escrever): fecha a corrida de dois `approve`
+    // concorrentes que passaram pelos mesmos gates acima. A chamada
+    // perdedora recebe `count === 0` -> INVALID_STATE limpo, nunca um erro
+    // Prisma cru vazando pro chamador.
+    const claimed = await this.repo.transitionFromPendingHuman(input.proposalId, 'APPROVED');
+    if (!claimed) {
+      throw new ReadModelError('INVALID_STATE', 'proposta não está aguardando aprovação humana');
+    }
+
     // decisionId sempre presente aqui: só chega em PENDING_HUMAN quando o risco aprovou (com decisionId).
     const decisionId = record.decisionId as string;
+    // `decisionTime` é exigido pelo tipo `CreateOrderIntentInputV1`, mas
+    // `OrderIntentService.create` nunca o lê: o `decisionTime` do
+    // `OrderIntent` final é sempre herdado do `RiskDecision` (ver
+    // `createOrderIntent` em domain/v1/models/order-intent). Mantido aqui
+    // só para satisfazer o contrato de tipo do serviço reusado.
     const decisionTime = new Date(now.getTime() + DECISION_TIME_OFFSET_MS).toISOString();
 
+    let intentResult: Awaited<ReturnType<OrderIntentService['create']>>;
     try {
-      await this.deps.orderIntent.create(
+      intentResult = await this.deps.orderIntent.create(
         {
           decisionId,
           idempotencyKey: input.proposalId,
@@ -248,17 +276,47 @@ export class McpTradeService {
         const updated = await this.repo.update(input.proposalId, { status: 'APPROVED', executionState: 'BLOCKED_KILL_SWITCH' });
         return { status: updated.status, executionState: updated.executionState };
       }
+      // Estado intermediário 'APPROVED' fica persistido — nunca volta pra
+      // PENDING_HUMAN (o código já foi gasto) — mas também não dispara o
+      // broker. Erros aqui não deveriam ocorrer em operação normal
+      // (decisionId sempre existe e sempre é APPROVED/acionável quando a
+      // proposta chegou em PENDING_HUMAN); propagados como estão.
       throw error;
     }
 
-    const result = await this.deps.execution.send({
-      symbol: record.symbol,
-      direction: record.direction as 'BUY' | 'SELL',
-      volume: record.volume,
-      stopLoss: record.stopLoss ?? undefined,
-      takeProfit: record.takeProfit ?? undefined,
-      comment: `mcp:${input.proposalId}`,
-    });
+    // R5 do OrderIntentService: reenvio com a mesma idempotencyKey retorna
+    // a intent já existente sem recriar. Se a intent já existia (ex.: um
+    // approve anterior chegou a criar a intent mas caiu antes de enviar ao
+    // broker), NUNCA reemitir a ordem — apenas refletir o estado já
+    // persistido.
+    if (intentResult.replayed) {
+      const current = (await this.repo.findByProposalId(input.proposalId))!;
+      return { status: current.status, executionState: current.executionState ?? 'REPLAY_SUPPRESSED' };
+    }
+
+    let result: { readonly ok: boolean; readonly ticket?: number; readonly price?: number; readonly error?: string };
+    try {
+      result = await this.deps.execution.send({
+        symbol: record.symbol,
+        direction: record.direction as 'BUY' | 'SELL',
+        volume: record.volume,
+        stopLoss: record.stopLoss ?? undefined,
+        takeProfit: record.takeProfit ?? undefined,
+        comment: `mcp:${input.proposalId}`,
+      });
+    } catch (error) {
+      // Exceção do broker (timeout, conexão) — nunca deixa a proposta presa
+      // num estado intermediário: grava EXECUTION_FAILED com o erro
+      // sanitizado (mensagem apenas, sem stack) e devolve. Retry cai no
+      // check `status !== PENDING_HUMAN` acima -> INVALID_STATE, sem
+      // chamar o broker de novo.
+      const message = error instanceof Error ? error.message : 'erro desconhecido do broker';
+      const updated = await this.repo.update(input.proposalId, {
+        status: 'EXECUTION_FAILED',
+        executionJson: JSON.stringify({ ok: false, error: message }),
+      });
+      return { status: updated.status, executionState: updated.executionState, execution: { ok: false, error: message } };
+    }
 
     if (result.ok) {
       const updated = await this.repo.update(input.proposalId, {
