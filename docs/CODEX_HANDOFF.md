@@ -1,6 +1,82 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-17
+Última atualização: 2026-07-18
+
+## Sessão 2026-07-17/18 — MCP Piloto v1 (branch `feat/mcp-piloto`)
+
+O MCP deixou de ser só-leitura: novo servidor `wr-mcp-pilot` (Streamable HTTP,
+`src/mcp/pilot/`, `npm run mcp:pilot`) deixa o Hermes Agent operar a
+plataforma inteira. Fluxo: brainstorm → spec
+(`docs/superpowers/specs/2026-07-17-mcp-piloto-design.md`) → plano
+(`docs/superpowers/plans/2026-07-17-mcp-piloto.md`) → 8 tasks por subagentes
+com review por task → review final da branch (Ready to merge: YES) →
+verificação E2E ao vivo pelo controller.
+
+### Decisões do usuário (spec)
+
+- **Acesso livre a tudo, exceto ordem**: 36 tools (32 free), só `trade.*`
+  (4) tem gate humano. Admin fora do MCP por decisão explícita.
+- **Aprovação via chat do Hermes** (`trade.approve` é tool MCP) com
+  `confirmationCode` de 6 dígitos como controle compensatório.
+- **Execução v1 só em conta DEMO** — guarda dura no bridge Python
+  (`WR_TRADING_DEMO_ONLY`, fail-closed, testada sem MT5) + kill switch
+  `WR_TRADING_ENABLED` continua mestre.
+- Abordagem C: piloto é proxy das APIs existentes (Next :3001 com
+  `WR_SERVICE_TOKEN` Bearer só para `/api/*`; Flask spread/vol; bridge WS
+  com ws-token) — Next/Flask/bridge continuam loopback-only; só o piloto
+  expõe porta ao WSL (`WR_MCP_HTTP_HOST` explícito + `WR_MCP_HTTP_TOKEN`).
+
+### Entregas técnicas (13+ commits na branch)
+
+1. Servidor HTTP+Bearer com gestão de sessões (uma por cliente),
+   `privilege: 'free'|'gated'` obrigatório em toda tool, auditoria de
+   chamadas sem valores.
+2. Trilho de trade (`src/application/mcp-trade/` + modelo Prisma aditivo
+   `McpTradeProposal`): propose → RiskPolicy determinístico → code sha256 →
+   approve com transição CAS atômica (anti duplo-send comprovado) →
+   OrderIntent (idempotente) → `Mt5DemoBroker` via bridge. Rate limit 10/h
+   (requestedBy fixo server-side `mcp:hermes`), expiração 30min, 3 tentativas.
+3. Bridge Python: handlers ADITIVOS `GET_ACCOUNT_INFO` +
+   `GET_*_SNAPSHOT` (positions/orders/history unicast — os broadcasts da UI
+   ficaram intocados) + guarda DEMO fail-closed.
+4. Scan de opções server-side (`POST /api/options/scan` no spread_api,
+   reusando scanner_opcoes refatorado); `min_correlacao` agora honrado no
+   find-best-pairs; ML (previsão/backtest) in-process com validação
+   `INSUFFICIENT_DATA`.
+5. Suíte nova `npm run test:mcp-pilot` (config, auth, sessões, tools por
+   grupo, trilho completo com broker fake) + `python/tests/test_demo_guard.py`.
+6. Docs: `docs/MCP_PILOT.md` (setup, tokens, firewall, conexão Hermes,
+   catálogo, rollout) + `.env.example` com os 14 envs novos.
+
+### E2E ao vivo (controller) — PASS total
+
+Ambiente isolado (env temp, DB temp, MT5 demo real): 401 sem Bearer; 36
+tools/4 gated; CVM 138 via service token; conta DEMO real (equity 837k,
+XPMT5-DEMO); candles vivos; `trade.propose` → PENDING_HUMAN + code; code
+errado → INVALID_CODE; code certo → **APPROVED + BLOCKED_KILL_SWITCH**
+(etapa 1 exata); `trade.status` com ciclo completo sem expor hash.
+3 bugs reais achados SÓ no E2E e corrigidos (`f6f6107`): Origin ausente no
+WS do Node (bridge rejeitava), sessão única no servidor (reconexão do
+Hermes quebrava), proposalId não-UUID (descasamento service×tools).
+
+### Backlogs registrados (review final)
+
+- Corrida mutate+restore do `min_correlacao_filtro` no calculator do
+  spread_api (passar como argumento antes de uso multi-cliente concorrente).
+- Escopo por rota do `WR_SERVICE_TOKEN` (hoje vale para todo /api/*).
+- Reconciliação de proposta APPROVED presa (crash entre CAS e send —
+  fail-closed, consultável).
+- **Atenção**: a guarda DEMO agora vale também para a UI (ordem manual em
+  conta real exige `WR_TRADING_DEMO_ONLY=false` consciente além do kill
+  switch).
+
+### Próximos passos
+
+1. Merge da branch na main (decisão do usuário).
+2. Conectar o Hermes real (WSL): tokens no .env, `WR_MCP_HTTP_HOST` no IP
+   do vswitch, firewall (docs/MCP_PILOT.md), `hermes mcp add`.
+3. Rollout etapa 2 (ligar `WR_TRADING_ENABLED` p/ DEMO) após alguns dias de
+   observação do comportamento do agente na etapa 1.
 
 ## Sessão 2026-07-17 — Verificação do banco CVM pós-atualização FRE (Guardião)
 
