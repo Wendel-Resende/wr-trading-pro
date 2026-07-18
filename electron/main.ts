@@ -23,6 +23,7 @@ const MIN_OPTIONS_SAVE_INTERVAL_MS = 500;
 let mainWindow: BrowserWindow | null = null;
 let nextServer: ChildProcess | null = null;
 let mcpPilotProcess: ChildProcess | null = null;
+let mcpPilotStartPromise: Promise<McpPilotStatus> | null = null;
 let mcpPilotError: string | null = null;
 let pythonProcesses: ChildProcess[] = [];
 let lastOptionsSaveAt = 0;
@@ -324,8 +325,23 @@ function isPortInUse(port: number, timeoutMs = 1000, host = '127.0.0.1'): Promis
   });
 }
 
+function getMcpPilotHost(): string {
+  return process.env.WR_MCP_HTTP_HOST?.trim() || '127.0.0.1';
+}
+
+function getMcpHostError(host = getMcpPilotHost()): string | null {
+  if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return null;
+  if (net.isIP(host) === 4) {
+    const [first, second] = host.split('.').map(Number);
+    // Faixa privada usada pelo adaptador vEthernet do WSL. Não permita
+    // bind genérico em LAN/Internet sem uma mudança de configuração explícita.
+    if (first === 172 && second >= 16 && second <= 31) return null;
+  }
+  return 'Host MCP não permitido. Use loopback ou o IP privado do WSL (172.16/12).';
+}
+
 function getMcpPilotEndpoint(): string {
-  const host = process.env.WR_MCP_HTTP_HOST?.trim() || '127.0.0.1';
+  const host = getMcpPilotHost();
   const port = process.env.WR_MCP_HTTP_PORT?.trim() || '8790';
   return `http://${host}:${port}/mcp`;
 }
@@ -335,14 +351,18 @@ function getMcpPilotEntry(): { entry: string; cwd: string } {
     ? path.join(process.resourcesPath, 'app')
     : PROJECT_ROOT;
   return {
-    entry: path.join(appRoot, 'scripts', 'mcp-pilot', '.dist', 'src', 'mcp', 'pilot', 'index.js'),
+    entry: path.join(appRoot, 'scripts', 'mcp-pilot', 'dist', 'src', 'mcp', 'pilot', 'index.js'),
     cwd: appRoot,
   };
 }
 
 async function getMcpPilotStatus(): Promise<McpPilotStatus> {
   const endpoint = getMcpPilotEndpoint();
-  const host = process.env.WR_MCP_HTTP_HOST?.trim() || '127.0.0.1';
+  const host = getMcpPilotHost();
+  const hostError = getMcpHostError(host);
+  if (hostError) {
+    return { state: 'error', endpoint, managedByElectron: false, pid: null, error: hostError, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+  }
   const port = Number(process.env.WR_MCP_HTTP_PORT?.trim() || '8790');
   const managedAlive = mcpPilotProcess !== null && mcpPilotProcess.exitCode === null;
   const portOpen = Number.isInteger(port) && port > 0 && port <= 65535
@@ -361,9 +381,15 @@ async function getMcpPilotStatus(): Promise<McpPilotStatus> {
   return { state: mcpPilotError ? 'error' : 'offline', endpoint, managedByElectron: false, pid: null, error: mcpPilotError, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
 }
 
-async function startMcpPilot(): Promise<McpPilotStatus> {
+async function startMcpPilotInternal(): Promise<McpPilotStatus> {
   const existing = await getMcpPilotStatus();
   if (existing.state === 'online' || existing.state === 'starting') return existing;
+
+  const hostError = getMcpHostError();
+  if (hostError) {
+    mcpPilotError = hostError;
+    return getMcpPilotStatus();
+  }
 
   const httpToken = process.env.WR_MCP_HTTP_TOKEN?.trim() ?? '';
   const serviceToken = process.env.WR_SERVICE_TOKEN?.trim() ?? '';
@@ -379,9 +405,11 @@ async function startMcpPilot(): Promise<McpPilotStatus> {
   }
 
   mcpPilotError = null;
-  const child = spawn('node', [entry], {
+  // O Electron contém o runtime Node. ELECTRON_RUN_AS_NODE evita depender
+  // de node.exe instalado no PATH da máquina do usuário.
+  const child = spawn(process.execPath, [entry], {
     cwd,
-    env: childEnv(),
+    env: { ...childEnv(), ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
     windowsHide: true,
@@ -406,6 +434,16 @@ async function startMcpPilot(): Promise<McpPilotStatus> {
   });
 
   return getMcpPilotStatus();
+}
+
+function startMcpPilot(): Promise<McpPilotStatus> {
+  if (mcpPilotStartPromise) return mcpPilotStartPromise;
+  const pending = startMcpPilotInternal();
+  mcpPilotStartPromise = pending;
+  void pending.finally(() => {
+    if (mcpPilotStartPromise === pending) mcpPilotStartPromise = null;
+  });
+  return pending;
 }
 
 function stopMcpPilot(): void {

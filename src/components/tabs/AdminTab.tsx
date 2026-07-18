@@ -178,9 +178,10 @@ function McpCard({
   const state = status?.state ?? "offline";
   const isOnline = state === "online";
   const isStarting = state === "starting";
+  const isExternal = isOnline && !status?.managedByElectron;
   const canControl = typeof window !== "undefined"
     && Boolean(window.electronAPI)
-    && (state !== "online" || Boolean(status?.managedByElectron));
+    && !isExternal;
   const border = isOnline ? "border-green-500/40" : state === "error" ? "border-red-500/40" : "border-cyber-border";
   const label = isOnline ? "ONLINE" : isStarting ? "INICIANDO" : state === "error" ? "ERRO" : "OFFLINE";
 
@@ -203,6 +204,7 @@ function McpCard({
       <p className="text-xs text-gray-600 font-space truncate" title={status?.endpoint ?? ""}>
         {status?.endpoint || "Disponível somente no app desktop"}
       </p>
+      {isExternal && <p className="text-xs text-yellow-400/80 font-space mt-1">Instância externa: controle indisponível.</p>}
       {status?.error && <p className="text-xs text-red-400/70 font-space mt-1">{status.error}</p>}
       {status && !status.wsAuthReady && <p className="text-xs text-yellow-400/80 font-space mt-1">Bridge MT5 sem autenticação.</p>}
       <button
@@ -212,7 +214,7 @@ function McpCard({
         className="cyber-button cyber-button-secondary mt-3 w-full flex items-center justify-center gap-2 disabled:opacity-50"
       >
         <Power className="w-3 h-3" />
-        <span className="font-space text-xs">{isOnline ? "Desligar" : "Ligar"}</span>
+        <span className="font-space text-xs">{isExternal ? "Externo" : isOnline ? "Desligar" : "Ligar"}</span>
       </button>
     </div>
   );

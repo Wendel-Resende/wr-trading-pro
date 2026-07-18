@@ -4,7 +4,7 @@ const { join } = require('node:path');
 const os = require('node:os');
 
 const root = join(__dirname, '..', '..');
-const dist = join(__dirname, '.dist');
+const dist = join(__dirname, 'dist');
 
 const run = (command, args, env) => {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: false, env: env ?? process.env });
@@ -25,7 +25,7 @@ try {
   const testEnv = { ...process.env, DATABASE_URL: databaseUrl };
 
   run(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], testEnv);
-  run(process.execPath, ['scripts/mcp-pilot/.dist/scripts/mcp-pilot/mcp-pilot-test.js'], testEnv);
+  run(process.execPath, ['scripts/mcp-pilot/dist/scripts/mcp-pilot/mcp-pilot-test.js'], testEnv);
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;

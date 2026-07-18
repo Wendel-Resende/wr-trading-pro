@@ -45,7 +45,7 @@
     "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
     "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js",
     "mcp:pilot:compile": "tsc -p scripts/mcp-pilot/tsconfig.json",
-    "mcp:pilot": "npm run mcp:pilot:compile && node scripts/mcp-pilot/.dist/src/mcp/pilot/index.js",
+    "mcp:pilot": "npm run mcp:pilot:compile && node scripts/mcp-pilot/dist/src/mcp/pilot/index.js",
     "test:mcp-pilot": "node scripts/mcp-pilot/run-mcp-pilot-tests.cjs"
   },
   "build": {
@@ -59,7 +59,7 @@
       ".next/**/*",
       "agents/**/*",
       "python/**/*",
-      "scripts/mcp-pilot/.dist/**/*",
+      "scripts/mcp-pilot/dist/**/*",
       "package.json",
       "node_modules/better-sqlite3/**/*",
       "node_modules/bindings/**/*",
