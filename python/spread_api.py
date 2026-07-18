@@ -665,6 +665,42 @@ def find_best_pairs():
         }), 500
 
 
+@app.route('/api/options/scan', methods=['POST'])
+def scan_options_route():
+    """Roda o scan de opções (covered call / cash-secured put) server-side
+    para um ativo, reutilizando `scan_options` de `python/options/scanner_opcoes.py`
+    (mesma regra OTM da plataforma; persiste o scan em data/options/options_data.db).
+
+    Import feito dentro do handler (não no topo do módulo): `scanner_opcoes.py`
+    importa `MetaTrader5` no carregamento — se isso falhar/travar sem MT5
+    disponível, não deve derrubar a inicialização do `spread_api.py`.
+    """
+    data: Dict[str, Any] = {}
+    try:
+        data = request.json or {}
+        symbol = data.get('symbol')
+        if not symbol:
+            return jsonify({'error': 'symbol é obrigatório'}), 400
+        capital = data.get('capital', 10_000)
+        strike_range_pct_input = data.get('strike_range_pct', 10)
+        min_annual_pct_input = data.get('min_annual_pct', 5)
+        # Rota recebe percentuais "humanos" (10 = 10%); scan_options espera fração decimal.
+        strike_range_pct = strike_range_pct_input / 100
+        min_annual_pct = min_annual_pct_input / 100
+
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'options'))
+        from scanner_opcoes import scan_options
+
+        resultado = scan_options(symbol, capital, strike_range_pct, min_annual_pct)
+        return jsonify(resultado)
+    except RuntimeError as e:
+        logger.warning(f"Scan de opções indisponível para {data.get('symbol') if isinstance(data, dict) else '?'}: {e}")
+        return jsonify({'error': str(e), 'code': 'MT5_DISCONNECTED'}), 503
+    except Exception as e:
+        logger.error(f"Erro no scan de opções: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/spread/pares-sugeridos', methods=['GET'])
 def get_pares_sugeridos():
     """Retorna a lista de pares sugeridos"""

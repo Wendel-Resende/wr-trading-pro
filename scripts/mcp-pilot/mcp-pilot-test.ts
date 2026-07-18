@@ -13,6 +13,8 @@ import { buildMonitoringTools } from '../../src/mcp/pilot/tools/monitoring';
 import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
 import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
 import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
+import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
+import { buildMlTools } from '../../src/mcp/pilot/tools/ml';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 
 const TOKEN = 't'.repeat(48);
@@ -212,12 +214,103 @@ async function bridgeSerializationTests(): Promise<void> {
   }
 }
 
+async function marketLiveToolsTests(): Promise<void> {
+  const seen: { method?: string; url?: string; body?: unknown } = {};
+  const stub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      seen.method = req.method; seen.url = req.url;
+      seen.body = raw ? JSON.parse(raw) : undefined;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ spot: 10, volatility: {}, calls: [], puts: [], top: [] }));
+    });
+  });
+  await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+  const stubUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}`;
+  try {
+    const spread = createHttpJson(stubUrl);
+    const volatility = createHttpJson(stubUrl);
+    const tools = buildMarketLiveTools(spread, volatility);
+    assert.ok(tools.every((t) => t.privilege === 'free'));
+
+    const scan = tools.find((t) => t.name === 'market.scan_options')!;
+    const result = await scan.handler({ symbol: 'petr4' });
+    assert.equal(result.isError, undefined);
+    assert.equal(seen.method, 'POST');
+    assert.equal(seen.url, '/api/options/scan');
+    assert.deepEqual(seen.body, { symbol: 'PETR4', capital: 10_000, strike_range_pct: 10, min_annual_pct: 5 });
+    console.log('market.scan_options: OK (rota, uppercase de símbolo e defaults aplicados)');
+  } finally { stub.close(); }
+}
+
+async function marketLiveMt5DisconnectedTests(): Promise<void> {
+  const stub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'MT5 não disponível/conectado', code: 'MT5_DISCONNECTED' }));
+    });
+  });
+  await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+  const stubUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}`;
+  try {
+    const spread = createHttpJson(stubUrl);
+    const volatility = createHttpJson(stubUrl);
+    const tools = buildMarketLiveTools(spread, volatility);
+    const scan = tools.find((t) => t.name === 'market.scan_options')!;
+    const result = await scan.handler({ symbol: 'PETR4' });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /UPSTREAM_ERROR/);
+    assert.match(result.content[0].text, /MT5 não disponível\/conectado/);
+    console.log('market.scan_options sem MT5: OK (503 MT5_DISCONNECTED vira isError UPSTREAM_ERROR)');
+  } finally { stub.close(); }
+}
+
+/** Gera candles sintéticos com tendência de alta suave para os testes de ML. */
+function syntheticCandles(count: number): Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> {
+  const candles = [];
+  let price = 10;
+  for (let i = 0; i < count; i++) {
+    price += 0.05 + (i % 3 === 0 ? 0.02 : 0);
+    candles.push({ time: 1700000000 + i * 3600, open: price - 0.02, high: price + 0.03, low: price - 0.05, close: price, volume: 1000 + i });
+  }
+  return candles;
+}
+
+async function mlToolsTests(): Promise<void> {
+  const stubBridge = {
+    request: async (_type: string, _data?: Record<string, unknown>) => ({ candles: syntheticCandles(100) }),
+  };
+  const tools = buildMlTools(stubBridge);
+  assert.ok(tools.every((t) => t.privilege === 'free'));
+
+  const predict = tools.find((t) => t.name === 'ml.run_prediction')!;
+  const result = await predict.handler({ symbol: 'PETR4', timeframe: 'H1', model: 'ma_crossover' });
+  assert.equal(result.isError, undefined);
+  const parsed = JSON.parse(result.content[0].text) as { signal?: string; confidence?: number };
+  assert.ok(['BUY', 'SELL', 'HOLD'].includes(parsed.signal ?? ''), 'motor real deve devolver signal válido');
+  assert.equal(typeof parsed.confidence, 'number');
+  console.log('ml.run_prediction: OK (100 candles sintéticos -> signal/confidence do motor real)');
+
+  const shortBridge = { request: async () => ({ candles: syntheticCandles(5) }) };
+  const shortTools = buildMlTools(shortBridge);
+  const shortPredict = shortTools.find((t) => t.name === 'ml.run_prediction')!;
+  const shortResult = await shortPredict.handler({ symbol: 'PETR4', timeframe: 'H1', model: 'ma_crossover' });
+  assert.equal(shortResult.isError, true);
+  assert.match(shortResult.content[0].text, /INSUFFICIENT_DATA/);
+  assert.match(shortResult.content[0].text, /obtidos 5, necess[aá]rios 60/);
+  console.log('ml.run_prediction com 5 candles: OK (INSUFFICIENT_DATA com contagens obtidas/necessárias)');
+}
+
 async function main(): Promise<void> {
   serviceTokenTests();
   configTests();
   await proxyToolsTests();
   await portfolioToolsTests();
   await bridgeSerializationTests();
+  await marketLiveToolsTests();
+  await marketLiveMt5DisconnectedTests();
+  await mlToolsTests();
   const prisma = new PrismaClient();
   try { await serverTests(prisma); } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');

@@ -27,6 +27,7 @@ export type ReadModelErrorCode =
   | 'MT5_DISCONNECTED'
   | 'BRIDGE_ERROR'
   | 'BRIDGE_AUTH_UNAVAILABLE'
+  | 'INSUFFICIENT_DATA'
   | 'INTERNAL_ERROR';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
@@ -58,6 +59,7 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   MT5_DISCONNECTED: 503,
   BRIDGE_ERROR: 502,
   BRIDGE_AUTH_UNAVAILABLE: 503,
+  INSUFFICIENT_DATA: 422,
   INTERNAL_ERROR: 500,
 };
 

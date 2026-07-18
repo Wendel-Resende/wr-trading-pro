@@ -284,36 +284,18 @@ def discover_options(asset):
     return options
 
 
-def scanner(asset='PETR4'):
-    if not mt5.initialize():
-        print(f"ERRO MT5: {mt5.last_error()}")
-        return
-
-    spot = get_spot(asset)
-    if spot <= 0:
-        print(f"ERRO: nao foi possivel obter preco spot para {asset}")
-        mt5.shutdown()
-        return
-
-    print(f"{asset} spot: R${spot:.2f}")
-    print(f"Capital: R${CAPITAL:,.0f} | Lote: {LOT_SIZE} | Max ações: {CAPITAL // (int(spot) * LOT_SIZE)} lotes")
-    print(f"Faixa de strikes: R${spot * (1 - RANGE_PCT):.2f} — R${spot * (1 + RANGE_PCT):.2f}\n")
-
-    vol_data = get_volatility(asset)
+def _collect_raw_options(symbol, spot, range_pct, capital):
+    """Coleta as opções cruas (dentro da faixa OTM) para `symbol` — extraído
+    do corpo original de `scanner()` para ser reutilizado por `scan_options`
+    (rota `POST /api/options/scan`) sem duplicar a lógica de filtro OTM.
+    Requer MT5 já inicializado; não fecha a conexão (chamador decide).
+    Retorna `(vol_data, calls, puts)` no mesmo formato usado pelo CLI.
+    """
+    vol_data = get_volatility(symbol)
     daily_std = vol_data.get('daily_std') if vol_data else None
-    if vol_data:
-        print(
-            f"Volatilidade: diária {vol_data['daily_std']:.2%} | "
-            f"anual {vol_data['annual_std']:.2%} | "
-            f"5 pregões {vol_data['weekly_pct']:+.2f}% | "
-            f"candles {vol_data['n_candles']}\n"
-        )
-    else:
-        print("Volatilidade: indisponível (candles D1 insuficientes)\n")
 
-    option_symbols = discover_options(asset)
+    option_symbols = discover_options(symbol)
 
-    # Coletar dados
     all_opts = []
     for s in option_symbols:
         info = mt5.symbol_info(s.name)
@@ -323,7 +305,7 @@ def scanner(asset='PETR4'):
         if tipo == 'UNKNOWN':
             continue
         dte = get_dte(s.expiration_time)
-        if not (spot * (1 - RANGE_PCT) <= strike <= spot * (1 + RANGE_PCT)):
+        if not (spot * (1 - range_pct) <= strike <= spot * (1 + range_pct)):
             continue
         if tipo == 'CALL' and strike <= spot:
             continue
@@ -352,12 +334,134 @@ def scanner(asset='PETR4'):
             'tipo_venc': 'Sem' if is_weekly(s.name) else 'Men',
             'estilo': get_opt_style(info),
             'custo': strike * LOT_SIZE,
-            'cabe_10k': (strike * LOT_SIZE) <= CAPITAL,
+            'cabe_10k': (strike * LOT_SIZE) <= capital,
         })
 
-    # Separar calls e puts
     calls = [o for o in all_opts if o['tipo'] == 'CALL']
     puts = [o for o in all_opts if o['tipo'] == 'PUT']
+    return vol_data, calls, puts
+
+
+def _build_offers(calls, puts, spot, capital):
+    """Constrói as listas resumidas (covered call / cash-secured put) a
+    partir das opções cruas de `_collect_raw_options` — mesma lógica usada
+    no loop de impressão do CLI, sem os `print`.
+    """
+    cc_best = []
+    for c in sorted(calls, key=lambda x: (x['dte'], abs(x['strike'] - spot))):
+        if c['bid'] <= 0:
+            continue
+        premio_total = c['bid'] * LOT_SIZE
+        anual = anualizar(c['bid'], c['strike'], c['dte'])
+        exp_str = c['exp'].strftime('%Y-%m-%d') if c['exp'] else '?'
+        roi = premio_total / capital * 100 if capital > 0 else 0
+        otm = (c['strike'] - spot) / spot * 100
+        cc_best.append({
+            'symbol': c['symbol'], 'exp': exp_str, 'dte': c['dte'],
+            'strike': c['strike'], 'bid': c['bid'], 'otm_pct': otm,
+            'premio_total': premio_total, 'anual': anual, 'roi': roi,
+            'p_exerc': c['p_exerc'], 'spread_pct': c['spread_pct'],
+        })
+
+    csp_best = []
+    for p in sorted(puts, key=lambda x: (x['dte'], abs(x['strike'] - spot))):
+        if p['bid'] <= 0:
+            continue
+        premio_total = p['bid'] * LOT_SIZE
+        margem = p['strike'] * LOT_SIZE
+        anual = anualizar(p['bid'], p['strike'], p['dte'])
+        exp_str = p['exp'].strftime('%Y-%m-%d') if p['exp'] else '?'
+        roi = premio_total / margem * 100 if margem > 0 else 0
+        otm = (spot - p['strike']) / spot * 100
+        csp_best.append({
+            'symbol': p['symbol'], 'exp': exp_str, 'dte': p['dte'],
+            'strike': p['strike'], 'bid': p['bid'], 'otm_pct': otm,
+            'premio_total': premio_total, 'anual': anual, 'roi': roi,
+            'margem': margem, 'cabe': margem <= capital,
+            'p_exerc': p['p_exerc'], 'spread_pct': p['spread_pct'],
+        })
+    return cc_best, csp_best
+
+
+def _build_top(cc_best, csp_best, min_annual):
+    """Combina covered calls + cash-secured puts e devolve o top 5 por
+    prêmio anualizado (>= `min_annual`; se nenhum atingir o mínimo, cai
+    para o top 5 geral — mesmo comportamento do CLI original)."""
+    combined = []
+    for c in cc_best:
+        combined.append({**c, 'tipo': 'COVERED CALL', 'nota': f"OTM {c['otm_pct']:+.1f}%"})
+    for p in csp_best:
+        combined.append({**p, 'tipo': 'CASH-SECURED PUT', 'nota': f"OTM {p['otm_pct']:+.1f}% | {'cabe' if p['cabe'] else 'NÃO cabe no capital'}"})
+    combined.sort(key=lambda x: (x['anual'], -x.get('spread_pct', 999)), reverse=True)
+    return [o for o in combined if o['anual'] >= min_annual][:5] or combined[:5]
+
+
+def scan_options(symbol='PETR4', capital=CAPITAL, strike_range_pct=None, min_annual_pct=None):
+    """Núcleo do scan, extraído para ser chamável tanto pelo CLI (`scanner`)
+    quanto pela rota `POST /api/options/scan` de `spread_api.py`.
+
+    `strike_range_pct`/`min_annual_pct` são frações decimais (0.10 = 10%),
+    mesma unidade de `RANGE_PCT`/`MIN_PREMIO_ANUALIZADO`.
+    Levanta `RuntimeError` se o MT5 não estiver disponível/conectado ou o
+    spot não puder ser obtido — o chamador decide como traduzir isso
+    (a rota Flask devolve 503 MT5_DISCONNECTED).
+
+    Retorna `{spot, volatility, calls, puts, top}` e persiste o scan no
+    banco `data/options/options_data.db`, exatamente como o CLI fazia
+    (mesma regra OTM: CALL com strike > spot, PUT com strike < spot).
+    """
+    range_pct = RANGE_PCT if strike_range_pct is None else strike_range_pct
+    min_annual = MIN_PREMIO_ANUALIZADO if min_annual_pct is None else min_annual_pct
+
+    if not mt5.initialize():
+        raise RuntimeError(f"MT5 não disponível/conectado: {mt5.last_error()}")
+    try:
+        spot = get_spot(symbol)
+        if spot <= 0:
+            raise RuntimeError(f"não foi possível obter preço spot para {symbol}")
+
+        vol_data, calls, puts = _collect_raw_options(symbol, spot, range_pct, capital)
+        cc_best, csp_best = _build_offers(calls, puts, spot, capital)
+        top = _build_top(cc_best, csp_best, min_annual)
+        scan_id = save_scan(symbol, spot, vol_data, calls, puts)
+    finally:
+        mt5.shutdown()
+
+    return {
+        'spot': spot,
+        'volatility': vol_data,
+        'calls': cc_best,
+        'puts': csp_best,
+        'top': top,
+        'scan_id': scan_id,
+    }
+
+
+def scanner(asset='PETR4'):
+    if not mt5.initialize():
+        print(f"ERRO MT5: {mt5.last_error()}")
+        return
+
+    spot = get_spot(asset)
+    if spot <= 0:
+        print(f"ERRO: nao foi possivel obter preco spot para {asset}")
+        mt5.shutdown()
+        return
+
+    print(f"{asset} spot: R${spot:.2f}")
+    print(f"Capital: R${CAPITAL:,.0f} | Lote: {LOT_SIZE} | Max ações: {CAPITAL // (int(spot) * LOT_SIZE)} lotes")
+    print(f"Faixa de strikes: R${spot * (1 - RANGE_PCT):.2f} — R${spot * (1 + RANGE_PCT):.2f}\n")
+
+    vol_data, calls, puts = _collect_raw_options(asset, spot, RANGE_PCT, CAPITAL)
+    if vol_data:
+        print(
+            f"Volatilidade: diária {vol_data['daily_std']:.2%} | "
+            f"anual {vol_data['annual_std']:.2%} | "
+            f"5 pregões {vol_data['weekly_pct']:+.2f}% | "
+            f"candles {vol_data['n_candles']}\n"
+        )
+    else:
+        print("Volatilidade: indisponível (candles D1 insuficientes)\n")
 
     print(f"Opções na faixa: {len(calls)} calls, {len(puts)} puts")
 

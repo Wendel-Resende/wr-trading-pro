@@ -8,7 +8,10 @@
     "skipLibCheck": true,
     "rootDir": "../..",
     "outDir": ".dist",
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@/*": ["../../src/*"]
+    }
   },
   "include": [
     "mcp-pilot-test.ts",
@@ -16,6 +19,11 @@
     "../../src/application/**/*.ts",
     "../../src/adapters/prisma/**/*.ts",
     "../../src/domain/v1/**/*.ts",
-    "../../src/app/api/v1/_shared/http.ts"
+    "../../src/app/api/v1/_shared/http.ts",
+    "../../src/services/mlModels.ts",
+    "../../src/services/backtesting.ts",
+    "../../src/services/historicalDataService.ts",
+    "../../src/lib/prisma.ts",
+    "../../src/services/mt5Service.ts"
   ]
 }
