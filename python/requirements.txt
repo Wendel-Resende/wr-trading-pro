@@ -5,3 +5,6 @@ pandas
 pandas_ta
 pydantic>=2.12,<3
 websockets>=15,<16
+lightgbm
+timesfm
+pyarrow
