@@ -144,9 +144,13 @@ visão de previsões da UI.
 ### BacktestRun com custos
 
 Estratégia long-only por decil superior de score, rebalanceio a cada 10
-pregões, custos B3 realistas (corretagem + emolumentos + slippage conservador,
-parametrizados no request). Persistido como `BacktestRun` do trilho Fase 5.
-Acurácia sem retorno líquido não paga corretagem — as duas métricas aparecem.
+pregões. Persistido como `BacktestRun` do trilho Fase 5. Acurácia sem retorno
+líquido não paga corretagem — as duas métricas aparecem.
+
+*Ajuste v1 (decisão do usuário, pré-voo 2026-07-18):* na v1 o backtest é um
+proxy direcional (±2% por acerto/erro, custo fixo 25bps), rotulado como proxy
+nas métricas. Retorno real por posição com custos B3 parametrizados fica para
+a v1.1, com os preços já no banco.
 
 ## Contratos do serviço Python (`ml_api.py`, Flask :5560)
 
