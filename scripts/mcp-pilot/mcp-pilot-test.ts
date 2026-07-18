@@ -243,6 +243,43 @@ async function marketLiveToolsTests(): Promise<void> {
   } finally { stub.close(); }
 }
 
+async function marketFindSpreadPairsTests(): Promise<void> {
+  const seen: { body?: unknown } = {};
+  const stub = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      seen.body = raw ? JSON.parse(raw) : undefined;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ pairs: [] }));
+    });
+  });
+  await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+  const stubUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}`;
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  try {
+    const spread = createHttpJson(stubUrl);
+    const volatility = createHttpJson(stubUrl);
+    const tools = buildMarketLiveTools(spread, volatility);
+    const findPairs = tools.find((t) => t.name === 'market.find_spread_pairs')!;
+
+    // Sem args: `data_inicial`/`data_final` devem ser preenchidos com defaults (hoje e hoje-365d),
+    // já que a rota Flask indexa `data['data_inicial']` sem default (KeyError se ausente).
+    const result1 = await findPairs.handler({});
+    assert.equal(result1.isError, undefined);
+    const body1 = seen.body as { data_inicial?: string; data_final?: string; min_correlacao?: number };
+    assert.match(body1.data_inicial ?? '', DATE_RE);
+    assert.match(body1.data_final ?? '', DATE_RE);
+    assert.equal(body1.min_correlacao, undefined);
+
+    // Com args explícitos: datas e min_correlacao repassados como enviados.
+    const result2 = await findPairs.handler({ startDate: '2025-01-01', endDate: '2025-06-30', minCorrelation: 0.8 });
+    assert.equal(result2.isError, undefined);
+    assert.deepEqual(seen.body, { data_inicial: '2025-01-01', data_final: '2025-06-30', min_correlacao: 0.8 });
+
+    console.log('market.find_spread_pairs: OK (data_inicial/data_final sempre presentes, com defaults e valores explícitos)');
+  } finally { stub.close(); }
+}
+
 async function marketLiveMt5DisconnectedTests(): Promise<void> {
   const stub = createServer((req, res) => {
     let raw = '';
@@ -309,6 +346,7 @@ async function main(): Promise<void> {
   await portfolioToolsTests();
   await bridgeSerializationTests();
   await marketLiveToolsTests();
+  await marketFindSpreadPairsTests();
   await marketLiveMt5DisconnectedTests();
   await mlToolsTests();
   const prisma = new PrismaClient();
