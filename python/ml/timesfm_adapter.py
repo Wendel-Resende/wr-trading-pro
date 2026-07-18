@@ -33,6 +33,9 @@ class TimesFmFeatureProvider:
         self._cache_dir = cache_dir
         self._max_context = max_context
         os.makedirs(cache_dir, exist_ok=True)
+        # Cache em memória por símbolo: symbol -> {key: {'tfm_ret_10', 'tfm_iq'}}.
+        # Evita re-ler/regravar o parquet inteiro a cada chamada (O(n^2) de IO).
+        self._mem: dict[str, dict[str, dict]] = {}
 
     def _get_forecaster(self):
         if self._forecaster is None:
@@ -42,25 +45,34 @@ class TimesFmFeatureProvider:
     def _cache_path(self, symbol):
         return os.path.join(self._cache_dir, f'{symbol}.parquet')
 
+    def _load_symbol_cache(self, symbol: str) -> dict:
+        """Carrega o parquet do símbolo para memória UMA única vez por processo."""
+        if symbol in self._mem:
+            return self._mem[symbol]
+        entries: dict[str, dict] = {}
+        path = self._cache_path(symbol)
+        if os.path.exists(path):
+            cached = pd.read_parquet(path)
+            for _, r in cached.iterrows():
+                entries[r['key']] = {'tfm_ret_10': float(r['tfm_ret_10']),
+                                      'tfm_iq': float(r['tfm_iq'])}
+        self._mem[symbol] = entries
+        return entries
+
     def features_for(self, symbol: str, closes: pd.Series) -> dict:
         if len(closes) < MIN_CONTEXT:
             raise ValueError(f'INSUFFICIENT_DATA: contexto {len(closes)} < {MIN_CONTEXT}')
         context = [float(x) for x in closes.iloc[-self._max_context:]]
         key = closes.index[-1].strftime('%Y-%m-%d') + ':' + \
             hashlib.sha256(str(context).encode()).hexdigest()[:16]
-        path = self._cache_path(symbol)
-        if os.path.exists(path):
-            cached = pd.read_parquet(path)
-            hit = cached[cached['key'] == key]
-            if len(hit):
-                return {'tfm_ret_10': float(hit['tfm_ret_10'].iloc[0]),
-                        'tfm_iq': float(hit['tfm_iq'].iloc[0])}
+        entries = self._load_symbol_cache(symbol)
+        if key in entries:
+            return dict(entries[key])
         fc = self._get_forecaster().forecast(context, horizon=10)
         last = context[-1]
         feats = {'tfm_ret_10': fc['median'][-1] / last - 1,
                  'tfm_iq': (fc['q90'][-1] - fc['q10'][-1]) / last}
-        row = pd.DataFrame([{'key': key, **feats}])
-        if os.path.exists(path):
-            row = pd.concat([pd.read_parquet(path), row], ignore_index=True)
-        row.to_parquet(path, index=False)
+        entries[key] = feats
+        pd.DataFrame([{'key': k, **v} for k, v in entries.items()]).to_parquet(
+            self._cache_path(symbol), index=False)
         return feats

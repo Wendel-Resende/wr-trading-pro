@@ -23,6 +23,12 @@ def test_features_and_cache():
     assert f['tfm_iq'] > 0
     f2 = p.features_for('WEGE3', closes)  # mesma série → cache, sem nova chamada
     assert stub.calls == 1 and f2 == f
+    # Persistência: um SEGUNDO provider apontando pro mesmo cache_dir também
+    # dá hit no parquet gravado (leitura única, sem re-chamar o stub).
+    stub2 = StubForecaster()
+    p2 = TimesFmFeatureProvider(forecaster=stub2, cache_dir=cache_dir, max_context=512)
+    f3 = p2.features_for('WEGE3', closes)
+    assert stub2.calls == 0 and f3 == f
 
 def test_insufficient_context():
     p = TimesFmFeatureProvider(forecaster=StubForecaster(), cache_dir=tempfile.mkdtemp())
