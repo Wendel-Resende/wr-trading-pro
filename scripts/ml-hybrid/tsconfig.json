@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@/*": ["../../src/*"]
+    }
+  },
+  "include": [
+    "ml-hybrid-test.ts",
+    "../../src/application/ml-hybrid/**/*.ts",
+    "../../src/lib/prisma.ts"
+  ]
+}
