@@ -17,5 +17,8 @@
     "../../src/domain/v1/**/*.ts",
     "../../src/mcp/**/*.ts",
     "../../src/app/api/v1/_shared/http.ts"
+  ],
+  "exclude": [
+    "../../src/mcp/pilot/**/*.ts"
   ]
 }
