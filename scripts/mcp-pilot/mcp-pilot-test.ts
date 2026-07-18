@@ -78,7 +78,20 @@ async function serverTests(prisma: PrismaClient): Promise<void> {
       assert.ok(names.includes(expected), `tool ${expected} deveria estar no catálogo`);
     }
     await client.close();
-    console.log('servidor HTTP + Bearer + catálogo read-only: OK');
+
+    // Sessões múltiplas: um SEGUNDO cliente (nova sessão MCP) precisa
+    // conseguir inicializar depois do primeiro — reconexão do Hermes.
+    // Regressão do achado E2E "Server already initialized".
+    const transport2 = new StreamableHTTPClientTransport(new URL(`${handle.url}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } },
+    });
+    const client2 = new Client({ name: 'test-2', version: '0.0.0' });
+    await client2.connect(transport2);
+    const tools2 = await client2.listTools();
+    assert.ok(tools2.tools.length >= 8, 'segunda sessão deveria listar o catálogo normalmente');
+    await client2.close();
+
+    console.log('servidor HTTP + Bearer + catálogo read-only: OK (2 sessões sequenciais)');
   } finally {
     await handle.close();
   }

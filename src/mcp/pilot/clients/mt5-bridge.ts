@@ -90,7 +90,17 @@ export interface CreateBridgeClientOptions {
 }
 
 export function createBridgeClient(url: string, options: CreateBridgeClientOptions = {}): BridgeClient {
-  const socketFactory = options.socketFactory ?? ((u: string) => new WebSocket(u) as unknown as WebSocketLike);
+  // O bridge valida Origin (anti-CSWSH, Fase 0) e rejeita conexões sem o
+  // header. O WebSocket do Node (undici) não envia Origin por padrão, mas
+  // aceita `{ headers }` como extensão — enviamos uma origem da allowlist
+  // local do bridge (network_config.ALLOWED_ORIGINS). Achado do E2E real:
+  // sem isto, toda chamada via bridge falha com "Origin ausente".
+  const socketFactory =
+    options.socketFactory ??
+    ((u: string) =>
+      new (WebSocket as unknown as new (url: string, opts?: object) => WebSocketLike)(u, {
+        headers: { Origin: 'http://127.0.0.1:3001' },
+      }));
 
   let socket: WebSocketLike | null = null;
   let connecting: Promise<WebSocketLike> | null = null;

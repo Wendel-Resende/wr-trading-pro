@@ -23,11 +23,10 @@ function bearerOk(req: IncomingMessage, token: string): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
-export async function startPilotServer(
+function buildMcpServer(
   prisma: PrismaClient,
-  config: PilotConfig,
-  extraTools: readonly McpToolDefinition[] = [],
-): Promise<{ close(): Promise<void>; url: string }> {
+  extraTools: readonly McpToolDefinition[],
+): McpServer {
   const mcp = new McpServer({ name: 'wr-trade-pro-mcp-pilot', version: '1.0.0' });
   const tools = [...buildToolRegistry(createMcpReadServices(prisma)), ...extraTools];
   for (const tool of tools) {
@@ -47,22 +46,69 @@ export async function startPilotServer(
       },
     );
   }
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
-  await mcp.connect(transport);
+  return mcp;
+}
+
+export async function startPilotServer(
+  prisma: PrismaClient,
+  config: PilotConfig,
+  extraTools: readonly McpToolDefinition[] = [],
+): Promise<{ close(): Promise<void>; url: string }> {
+  // Uma sessão MCP por cliente (padrão de session management do SDK):
+  // cada `initialize` sem `mcp-session-id` ganha servidor+transport
+  // próprios; requests seguintes roteiam pelo header. Sem isto, um
+  // segundo cliente (ou uma reconexão do Hermes) recebia "Server
+  // already initialized" — achado do E2E real.
+  const sessions = new Map<string, { mcp: McpServer; transport: StreamableHTTPServerTransport }>();
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
-    if (!req.url?.startsWith('/mcp')) { res.writeHead(404).end(); return; }
-    if (!bearerOk(req, config.token)) {
-      res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Não autenticado.' }));
-      return;
-    }
-    void transport.handleRequest(req, res);
+    void (async () => {
+      if (!req.url?.startsWith('/mcp')) { res.writeHead(404).end(); return; }
+      if (!bearerOk(req, config.token)) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Não autenticado.' }));
+        return;
+      }
+      const sessionId = req.headers['mcp-session-id'];
+      const existing = typeof sessionId === 'string' ? sessions.get(sessionId) : undefined;
+      if (existing) {
+        await existing.transport.handleRequest(req, res);
+        if (req.method === 'DELETE' && typeof sessionId === 'string') {
+          const closing = sessions.get(sessionId);
+          sessions.delete(sessionId);
+          await closing?.mcp.close().catch(() => undefined);
+        }
+        return;
+      }
+      // Sessão nova: só um POST de initialize pode abrir; o transport do
+      // SDK rejeita o resto com o erro apropriado.
+      const mcp = buildMcpServer(prisma, extraTools);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid: string) => {
+          sessions.set(sid, { mcp, transport });
+        },
+      });
+      transport.onclose = () => {
+        if (transport.sessionId) sessions.delete(transport.sessionId);
+      };
+      await mcp.connect(transport);
+      await transport.handleRequest(req, res);
+    })().catch((error) => {
+      console.error('[mcp-pilot] erro no request HTTP:', error instanceof Error ? error.message : error);
+      if (!res.headersSent) res.writeHead(500).end();
+    });
   });
   await new Promise<void>((resolve) => http.listen(config.port, config.host, resolve));
   const address = http.address();
   const port = typeof address === 'object' && address ? address.port : config.port;
   return {
     url: `http://${config.host}:${port}`,
-    close: async () => { await mcp.close(); await new Promise<void>((r) => http.close(() => r())); },
+    close: async () => {
+      for (const [sid, session] of sessions) {
+        sessions.delete(sid);
+        await session.mcp.close().catch(() => undefined);
+      }
+      await new Promise<void>((r) => http.close(() => r()));
+    },
   };
 }

@@ -1,4 +1,4 @@
-import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { RiskPolicyService } from '../risk-policy/service';
 import type { OrderIntentService } from '../order-intent/service';
@@ -129,7 +129,9 @@ export class McpTradeService {
     const snapshot = await this.deps.snapshot.get(input.symbol);
     const decisionTime = new Date(now.getTime() + DECISION_TIME_OFFSET_MS).toISOString();
 
-    const proposalId = `mcp-${now.getTime()}-${randomInt(100000, 1000000)}`;
+    // UUID: contrato com as tools trade.* (schema z.string().uuid()) — achado
+    // do E2E real: formato "mcp-<ts>-<n>" era rejeitado pelo zod das tools.
+    const proposalId = randomUUID();
 
     const proposal = {
       kind: 'PROPOSAL' as const,
