@@ -64,6 +64,22 @@ def redacted_str(obj: Any) -> str:
         return '***'
 
 
+def is_demo_only_enabled(raw: Any) -> bool:
+    """Interpreta `WR_TRADING_DEMO_ONLY` com fail-closed (restritivo por
+    padrão), coerente com a Global Constraint do plano MCP Piloto
+    ("fail-closed em toda a cadeia"). Só retorna `False` (guarda
+    DESLIGADA) para valores explícitos de desligamento — qualquer outra
+    coisa (`None`, string vazia, typo, valor inesperado) mantém a guarda
+    LIGADA, ao contrário de um parsing ingênuo tipo `.lower() in
+    ('true', '1', 'yes')`, que desliga silenciosamente a guarda diante de
+    um valor malformado.
+    """
+    if raw is None:
+        return True
+    normalized = str(raw).strip().lower()
+    return normalized not in ('false', '0', 'no')
+
+
 def is_order_allowed_by_account(demo_only: bool, account: Any, demo_mode_value: int = 0) -> bool:
     """Guarda DEMO (MCP Piloto): decide se uma ordem pode ser enviada dada a conta MT5 atual.
 
@@ -1277,7 +1293,10 @@ class MT5Bridge:
 
         # Guarda DEMO (MCP Piloto): por padrão só conta demo pode operar.
         # Independente do chamador — vale para UI e para o wr-mcp-pilot.
-        demo_only = os.environ.get('WR_TRADING_DEMO_ONLY', 'true').lower() in ('true', '1', 'yes')
+        # `is_demo_only_enabled` é fail-closed: só desliga a guarda com
+        # valor explícito ('false'/'0'/'no'); ausente/vazio/typo mantém
+        # ligada.
+        demo_only = is_demo_only_enabled(os.environ.get('WR_TRADING_DEMO_ONLY'))
         acct = mt5.account_info() if demo_only else None
         if not is_order_allowed_by_account(demo_only, acct, mt5.ACCOUNT_TRADE_MODE_DEMO):
             logger.warning("Ordem BLOQUEADA: WR_TRADING_DEMO_ONLY=true e a conta não é DEMO")

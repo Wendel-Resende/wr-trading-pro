@@ -54,6 +54,12 @@ export class Mt5DemoBroker implements PilotExecutionPort {
       // vazar stack/credenciais e mantém a mensagem já traduzida pelo
       // `BridgeClient` (`bridgeErrorToReadModelError`), que nunca inclui
       // segredos (token, senha) — só código/mensagem do bridge.
+      //
+      // `error.message` aqui é seguro de expor porque `BridgeClient`
+      // GARANTE que todo erro vindo do bridge (WS `type: 'ERROR'`, timeout,
+      // falha de conexão) chega como `ReadModelError` já sanitizado — nunca
+      // um erro cru do driver/protocolo. Se essa garantia mudar no
+      // `BridgeClient`, esta suposição precisa ser revisitada.
       if (error instanceof ReadModelError) {
         return { ok: false, error: error.message };
       }

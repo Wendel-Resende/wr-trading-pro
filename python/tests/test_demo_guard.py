@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from mt5_bridge import is_order_allowed_by_account  # noqa: E402
+from mt5_bridge import is_demo_only_enabled, is_order_allowed_by_account  # noqa: E402
 
 
 class FakeAccount:
@@ -45,6 +45,37 @@ class TestIsOrderAllowedByAccount(unittest.TestCase):
         # o chamador real passa `mt5.ACCOUNT_TRADE_MODE_DEMO`.
         self.assertTrue(is_order_allowed_by_account(True, FakeAccount(trade_mode=5), demo_mode_value=5))
         self.assertFalse(is_order_allowed_by_account(True, FakeAccount(trade_mode=0), demo_mode_value=5))
+
+
+class TestIsDemoOnlyEnabled(unittest.TestCase):
+    """Fail-closed: só desliga a guarda com valor explícito de desligamento;
+    ausente/vazio/typo/qualquer outra coisa mantém a guarda LIGADA
+    (ao contrário de um parsing ingênuo `.lower() in ('true','1','yes')`,
+    que desliga silenciosamente diante de valor malformado)."""
+
+    def test_ausente_mantem_ligada(self):
+        self.assertTrue(is_demo_only_enabled(None))
+
+    def test_vazio_mantem_ligada(self):
+        self.assertTrue(is_demo_only_enabled(''))
+
+    def test_typo_mantem_ligada(self):
+        self.assertTrue(is_demo_only_enabled('typo'))
+
+    def test_true_mantem_ligada(self):
+        self.assertTrue(is_demo_only_enabled('true'))
+
+    def test_false_desliga(self):
+        self.assertFalse(is_demo_only_enabled('false'))
+
+    def test_false_maiusculo_desliga(self):
+        self.assertFalse(is_demo_only_enabled('FALSE'))
+
+    def test_zero_desliga(self):
+        self.assertFalse(is_demo_only_enabled('0'))
+
+    def test_no_desliga(self):
+        self.assertFalse(is_demo_only_enabled('no'))
 
 
 if __name__ == '__main__':
