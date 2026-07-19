@@ -50,7 +50,8 @@ python/
 ├── mt5_bridge.py        # WebSocket :8766 — bridge MT5 ↔ frontend
 ├── spread_api.py        # Flask :5000 — API de spreads
 ├── volatility_api.py    # Flask :5555 — API de volatilidade
-└── profitdll_bridge.py  # Bridge Profit DLL (ainda não ativo)
+├── profitdll_bridge.py  # Bridge Profit DLL (ainda não ativo)
+└── ml_api.py           # Flask :5560 — motor ML (backfill D1, TimesFM, LightGBM)
 ```
 
 ### Desktop (Electron)
@@ -72,7 +73,7 @@ Regra arquitetural: dados locais do WR Trading Pro devem ficar dentro de `wr_tra
 
 ## Como Rodar
 
-### Modo desenvolvimento (4 terminais)
+### Modo desenvolvimento (5 terminais)
 ```bash
 # Terminal 1
 python python/mt5_bridge.py
@@ -84,6 +85,9 @@ python python/spread_api.py
 python python/volatility_api.py
 
 # Terminal 4
+python python/ml_api.py
+
+# Terminal 5
 npm run dev
 ```
 
