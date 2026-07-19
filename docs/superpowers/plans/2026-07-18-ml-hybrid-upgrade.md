@@ -29,6 +29,7 @@
 3. Baseline fundamentalista = z-score composto in-repo (média de z de `roe`, `margem_liquida`, `-divida_bruta_pl`, `crescimento_lucro_yoy`, corte na mediana cross-section) — os exports de score não são versionados no repo.
 4. `BacktestRun.instrumentId = 'UNIVERSE:CVM138'` (o modelo é de universo; o schema pede instrumento único).
 5. Backtest da v1 é proxy direcional (±2% por acerto/erro, custo fixo 25bps) — decisão do usuário no pré-voo (2026-07-18): retorno real com custos parametrizados fica para a v1.1, quando os preços já estarão no banco.
+6. Sem `BacktestRun` na v1 (descoberto na Task 9): o `BacktestRunService` da Fase 5 recalcula métricas com o engine determinístico a partir de bars/signals — persistir o proxy lá falsificaria proveniência. O proxy fica em `trainingEvidenceJson.backtestProxy`; `BacktestRun` governado entra na v1.1 com o backtest real. `runTraining` não retorna `backtestId`.
 
 ---
 
