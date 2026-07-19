@@ -30,6 +30,8 @@ export default function AdminTab() {
   const [mt5Status, setMt5Status] = useState<"online" | "offline">("offline");
   const [mcpStatus, setMcpStatus] = useState<McpPilotStatus | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
+  const [mlStatus, setMlStatus] = useState<MlEngineStatus | null>(null);
+  const [mlLoading, setMlLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
@@ -82,11 +84,49 @@ export default function AdminTab() {
     }
   };
 
+  const fetchMlStatus = useCallback(async () => {
+    if (!window.electronAPI) {
+      setMlStatus(null);
+      return;
+    }
+    try {
+      setMlStatus(await window.electronAPI.getMlStatus());
+    } catch {
+      setMlStatus({
+        state: "error",
+        endpoint: "",
+        managedByElectron: false,
+        pid: null,
+        error: "Não foi possível consultar o ML Engine.",
+      });
+    }
+  }, []);
+
+  const handleMlToggle = async () => {
+    if (!window.electronAPI || mlLoading) return;
+    setMlLoading(true);
+    try {
+      const isRunning = mlStatus?.state === "online" || mlStatus?.state === "starting";
+      setMlStatus(isRunning
+        ? await window.electronAPI.stopMlEngine()
+        : await window.electronAPI.startMlEngine());
+    } finally {
+      setMlLoading(false);
+      await fetchMlStatus();
+    }
+  };
+
   useEffect(() => {
     fetchMcpStatus();
     const interval = setInterval(fetchMcpStatus, 30_000);
     return () => clearInterval(interval);
   }, [fetchMcpStatus]);
+
+  useEffect(() => {
+    fetchMlStatus();
+    const interval = setInterval(fetchMlStatus, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchMlStatus]);
 
   useEffect(() => {
     const syncMt5 = () => {
@@ -116,12 +156,16 @@ export default function AdminTab() {
   ];
 
   const mcpIsOnline = mcpStatus?.state === "online";
-  const onlineCount = allServices.filter((s) => s.status === "online").length + (mcpIsOnline ? 1 : 0);
-  const totalServices = allServices.length + 1;
+  const mlIsOnline = mlStatus?.state === "online";
+  const onlineCount = allServices.filter((s) => s.status === "online").length
+    + (mcpIsOnline ? 1 : 0)
+    + (mlIsOnline ? 1 : 0);
+  const totalServices = allServices.length + 2;
 
   const refreshAll = () => {
     fetchStatus();
     fetchMcpStatus();
+    fetchMlStatus();
   };
 
   return (
@@ -157,6 +201,7 @@ export default function AdminTab() {
           <ServiceCard key={svc.name} service={svc} loading={loading && !data} />
         ))}
         <McpCard status={mcpStatus} loading={mcpLoading} onToggle={handleMcpToggle} />
+        <MlCard status={mlStatus} loading={mlLoading} onToggle={handleMlToggle} />
       </div>
 
       <div className="text-xs text-gray-500 font-space border-t border-cyber-border pt-4">
@@ -207,6 +252,59 @@ function McpCard({
       {isExternal && <p className="text-xs text-yellow-400/80 font-space mt-1">Instância externa: controle indisponível.</p>}
       {status?.error && <p className="text-xs text-red-400/70 font-space mt-1">{status.error}</p>}
       {status && !status.wsAuthReady && <p className="text-xs text-yellow-400/80 font-space mt-1">Bridge MT5 sem autenticação.</p>}
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={!canControl || loading || isStarting}
+        className="cyber-button cyber-button-secondary mt-3 w-full flex items-center justify-center gap-2 disabled:opacity-50"
+      >
+        <Power className="w-3 h-3" />
+        <span className="font-space text-xs">{isExternal ? "Externo" : isOnline ? "Desligar" : "Ligar"}</span>
+      </button>
+    </div>
+  );
+}
+
+function MlCard({
+  status,
+  loading,
+  onToggle,
+}: {
+  status: MlEngineStatus | null;
+  loading: boolean;
+  onToggle: () => void;
+}) {
+  const state = status?.state ?? "offline";
+  const isOnline = state === "online";
+  const isStarting = state === "starting";
+  const isExternal = isOnline && !status?.managedByElectron;
+  const canControl = typeof window !== "undefined"
+    && Boolean(window.electronAPI)
+    && !isExternal;
+  const border = isOnline ? "border-green-500/40" : state === "error" ? "border-red-500/40" : "border-cyber-border";
+  const label = isOnline ? "ONLINE" : isStarting ? "INICIANDO" : state === "error" ? "ERRO" : "OFFLINE";
+
+  return (
+    <div className={`cyber-card p-4 hud-corner border ${border}`}>
+      <div className="flex items-start justify-between mb-3">
+        <h3 className="font-orbitron text-sm text-white leading-tight">ML Engine</h3>
+        {loading || isStarting
+          ? <Loader2 className="w-4 h-4 text-cyber-cyan animate-spin flex-shrink-0" />
+          : isOnline
+            ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+            : <Bot className="w-4 h-4 text-gray-500 flex-shrink-0" />}
+      </div>
+      <div className="flex items-center gap-2 mb-2">
+        {isOnline ? <Wifi className="w-3 h-3 text-green-400" /> : <WifiOff className="w-3 h-3 text-red-400" />}
+        <span className={`text-sm font-space font-semibold ${isOnline ? "text-green-400" : state === "error" ? "text-red-400" : "text-gray-400"}`}>
+          {label}
+        </span>
+      </div>
+      <p className="text-xs text-gray-600 font-space truncate" title={status?.endpoint ?? ""}>
+        {status?.endpoint || "Disponível somente no app desktop"}
+      </p>
+      {isExternal && <p className="text-xs text-yellow-400/80 font-space mt-1">Instância externa: controle indisponível.</p>}
+      {status?.error && <p className="text-xs text-red-400/70 font-space mt-1">{status.error}</p>}
       <button
         type="button"
         onClick={onToggle}

@@ -60,6 +60,9 @@ let nextServer = null;
 let mcpPilotProcess = null;
 let mcpPilotStartPromise = null;
 let mcpPilotError = null;
+let mlEngineProcess = null;
+let mlEngineStartPromise = null;
+let mlEngineError = null;
 let pythonProcesses = [];
 let lastOptionsSaveAt = 0;
 function isTrustedRendererUrl(rawUrl) {
@@ -475,6 +478,100 @@ function stopMcpPilot() {
         // Processo pode ter encerrado entre a consulta e o stop.
     }
 }
+function getMlEnginePort() {
+    return Number(process.env.WR_ML_API_PORT ?? 5560);
+}
+function getMlEngineEndpoint() {
+    return `http://127.0.0.1:${getMlEnginePort()}/ml/health`;
+}
+async function getMlEngineStatus() {
+    const endpoint = getMlEngineEndpoint();
+    const port = getMlEnginePort();
+    const managedAlive = mlEngineProcess !== null && mlEngineProcess.exitCode === null;
+    const portOpen = Number.isInteger(port) && port > 0 && port <= 65535
+        ? await isPortInUse(port, 1000, '127.0.0.1')
+        : false;
+    if (managedAlive && portOpen) {
+        return { state: 'online', endpoint, managedByElectron: true, pid: mlEngineProcess?.pid ?? null, error: null };
+    }
+    if (managedAlive) {
+        return { state: 'starting', endpoint, managedByElectron: true, pid: mlEngineProcess?.pid ?? null, error: null };
+    }
+    if (portOpen) {
+        return { state: 'online', endpoint, managedByElectron: false, pid: null, error: null };
+    }
+    return { state: mlEngineError ? 'error' : 'offline', endpoint, managedByElectron: false, pid: null, error: mlEngineError };
+}
+async function startMlEngineInternal() {
+    const existing = await getMlEngineStatus();
+    if (existing.state === 'online' || existing.state === 'starting')
+        return existing;
+    const pythonPath = getPythonPath();
+    if (!fs_1.default.existsSync(pythonPath)) {
+        mlEngineError = 'Python do conda IA_Day_Trading não encontrado.';
+        return getMlEngineStatus();
+    }
+    const scriptPath = path_1.default.join(PROJECT_ROOT, 'python', 'ml_api.py');
+    if (!fs_1.default.existsSync(scriptPath)) {
+        mlEngineError = 'Script ml_api.py não encontrado.';
+        return getMlEngineStatus();
+    }
+    mlEngineError = null;
+    const child = (0, child_process_1.spawn)(pythonPath, [scriptPath], {
+        env: childEnv(),
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+    });
+    mlEngineProcess = child;
+    const rememberOutput = (data) => {
+        const text = data.toString();
+        console.log(`[ml_api] ${text.trim()}`);
+    };
+    child.stdout?.on('data', rememberOutput);
+    child.stderr?.on('data', rememberOutput);
+    child.on('error', () => {
+        mlEngineError = 'Falha ao iniciar ML Engine.';
+        mlEngineProcess = null;
+    });
+    child.on('exit', (code) => {
+        if (mlEngineProcess === child) {
+            mlEngineProcess = null;
+            if (code !== 0 && code !== null)
+                mlEngineError = `ML Engine encerrou com código ${code}.`;
+        }
+    });
+    return getMlEngineStatus();
+}
+function startMlEngine() {
+    if (mlEngineStartPromise)
+        return mlEngineStartPromise;
+    const pending = startMlEngineInternal();
+    mlEngineStartPromise = pending;
+    void pending.finally(() => {
+        if (mlEngineStartPromise === pending)
+            mlEngineStartPromise = null;
+    });
+    return pending;
+}
+function stopMlEngine() {
+    const child = mlEngineProcess;
+    mlEngineProcess = null;
+    mlEngineError = null;
+    if (!child || child.exitCode !== null)
+        return;
+    try {
+        if (process.platform === 'win32' && child.pid) {
+            (0, child_process_1.spawn)('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', shell: false, windowsHide: true });
+        }
+        else {
+            child.kill('SIGTERM');
+        }
+    }
+    catch {
+        // Processo pode ter encerrado entre a consulta e o stop.
+    }
+}
 async function startPythonServices() {
     console.log('[Electron] Starting Python backend services...');
     // Wait briefly to ensure ports from previous session are freed (TIME_WAIT on Windows)
@@ -634,6 +731,7 @@ electron_1.app.whenReady().then(() => {
 });
 electron_1.app.on('window-all-closed', () => {
     stopMcpPilot();
+    stopMlEngine();
     stopPythonServices();
     if (nextServer) {
         try {
@@ -649,6 +747,7 @@ electron_1.app.on('window-all-closed', () => {
 });
 electron_1.app.on('before-quit', () => {
     stopMcpPilot();
+    stopMlEngine();
     stopPythonServices();
 });
 handleTrusted('open-external', async (_event, value) => {
@@ -667,6 +766,12 @@ handleTrusted('mcp-start', async () => startMcpPilot());
 handleTrusted('mcp-stop', async () => {
     stopMcpPilot();
     return getMcpPilotStatus();
+});
+handleTrusted('ml-status', async () => getMlEngineStatus());
+handleTrusted('ml-start', async () => startMlEngine());
+handleTrusted('ml-stop', async () => {
+    stopMlEngine();
+    return getMlEngineStatus();
 });
 // ─── SQLite for Options (v4) ─────────────────────────────────────────────────
 const DB_PATH = path_1.default.join(OPTIONS_DATA_DIR, 'options_data.db');
