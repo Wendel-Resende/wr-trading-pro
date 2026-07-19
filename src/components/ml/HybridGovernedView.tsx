@@ -37,6 +37,7 @@ interface TrainingEvidence {
   artifact: { hash: string; path: string };
   backtestProxy?: Record<string, unknown>;
   datasetHash: string;
+  timesfmVersion?: string | null;
   windowStart: string;
   windowEnd: string;
 }
@@ -100,7 +101,12 @@ export default function HybridGovernedView() {
       setActiveVersion(latest);
       if (latest?.trainingEvidenceJson) {
         try {
-          setEvidence(JSON.parse(latest.trainingEvidenceJson) as TrainingEvidence);
+          const parsed = JSON.parse(latest.trainingEvidenceJson) as Partial<TrainingEvidence> | null;
+          if (!parsed?.aggregate || !parsed?.gate?.comparisons || !parsed?.baselines) {
+            setEvidence(null);
+          } else {
+            setEvidence(parsed as TrainingEvidence);
+          }
         } catch {
           setEvidence(null);
         }
@@ -236,11 +242,11 @@ export default function HybridGovernedView() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-gray-900/60 rounded p-3">
               <p className="text-xs text-gray-400">Acurácia agregada</p>
-              <p className="text-lg font-bold">{(evidence.aggregate.accuracy * 100).toFixed(1)}%</p>
+              <p className="text-lg font-bold">{((evidence.aggregate?.accuracy ?? 0) * 100).toFixed(1)}%</p>
             </div>
             <div className="bg-gray-900/60 rounded p-3">
               <p className="text-xs text-gray-400">N amostras</p>
-              <p className="text-lg font-bold">{evidence.aggregate.nSamples}</p>
+              <p className="text-lg font-bold">{evidence.aggregate?.nSamples ?? '—'}</p>
             </div>
             <div className="bg-gray-900/60 rounded p-3">
               <p className="text-xs text-gray-400">Dataset hash</p>
@@ -248,7 +254,11 @@ export default function HybridGovernedView() {
             </div>
             <div className="bg-gray-900/60 rounded p-3">
               <p className="text-xs text-gray-400">Artifact hash</p>
-              <p className="text-xs font-mono break-all">{evidence.artifact.hash}</p>
+              <p className="text-xs font-mono break-all">{evidence.artifact?.hash}</p>
+            </div>
+            <div className="bg-gray-900/60 rounded p-3">
+              <p className="text-xs text-gray-400">TimesFM</p>
+              <p className="text-xs font-mono break-all">{evidence.timesfmVersion ?? '—'}</p>
             </div>
           </div>
 
@@ -269,7 +279,7 @@ export default function HybridGovernedView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {evidence.gate.comparisons.map((c) => (
+                  {(evidence.gate?.comparisons ?? []).map((c) => (
                     <tr key={c.baseline} className="border-t border-gray-800">
                       <td className="py-1 pr-4 font-mono">{c.baseline}</td>
                       <td className="py-1 pr-4">{(c.accuracyDiff * 100).toFixed(2)}%</td>
@@ -287,19 +297,19 @@ export default function HybridGovernedView() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
             <div className="bg-gray-900/40 rounded p-2">
               <p className="text-gray-400">alwaysUp</p>
-              <p className="font-mono">{(evidence.baselines.alwaysUp.accuracy * 100).toFixed(1)}%</p>
+              <p className="font-mono">{((evidence.baselines?.alwaysUp?.accuracy ?? 0) * 100).toFixed(1)}%</p>
             </div>
             <div className="bg-gray-900/40 rounded p-2">
               <p className="text-gray-400">timesfmOnly</p>
-              <p className="font-mono">{(evidence.baselines.timesfmOnly.accuracy * 100).toFixed(1)}%</p>
+              <p className="font-mono">{((evidence.baselines?.timesfmOnly?.accuracy ?? 0) * 100).toFixed(1)}%</p>
             </div>
             <div className="bg-gray-900/40 rounded p-2">
               <p className="text-gray-400">fundamentalOnly</p>
-              <p className="font-mono">{(evidence.baselines.fundamentalOnly.accuracy * 100).toFixed(1)}%</p>
+              <p className="font-mono">{((evidence.baselines?.fundamentalOnly?.accuracy ?? 0) * 100).toFixed(1)}%</p>
             </div>
             <div className="bg-gray-900/40 rounded p-2">
               <p className="text-gray-400">priceOnlyLgbm</p>
-              <p className="font-mono">{(evidence.baselines.priceOnlyLgbm.accuracy * 100).toFixed(1)}%</p>
+              <p className="font-mono">{((evidence.baselines?.priceOnlyLgbm?.accuracy ?? 0) * 100).toFixed(1)}%</p>
             </div>
           </div>
 

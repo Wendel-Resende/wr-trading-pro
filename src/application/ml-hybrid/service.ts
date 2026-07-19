@@ -24,6 +24,7 @@ import { evaluateGate, type GateResult, type TrainingBlock } from './gate';
 
 export interface TrainResult {
   readonly datasetHash: string;
+  readonly timesfmVersion?: string;
   readonly windowStart: string;
   readonly windowEnd: string;
   readonly hyperparameters: Record<string, unknown>;
@@ -113,6 +114,7 @@ export class MlHybridService {
         artifact: trainResult.artifact,
         backtestProxy: trainResult.backtest.metrics,
         datasetHash: trainResult.datasetHash,
+        timesfmVersion: trainResult.timesfmVersion ?? null,
         windowStart: trainResult.windowStart,
         windowEnd: trainResult.windowEnd,
       });

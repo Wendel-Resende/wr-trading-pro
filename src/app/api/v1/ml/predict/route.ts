@@ -8,7 +8,11 @@ export const dynamic = 'force-dynamic';
 
 const BodySchema = z
   .object({
-    symbol: z.string().min(1).max(20),
+    symbol: z
+      .string()
+      .min(1)
+      .max(20)
+      .transform((s) => s.trim().toUpperCase()),
   })
   .strict();
 

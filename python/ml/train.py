@@ -60,6 +60,7 @@ def run_training(ds: pd.DataFrame, models_dir: str, dataset_hash: str = '') -> d
     wf.to_csv(os.path.join(out_dir, 'walkforward_predictions.csv'), index=False)
     result = {
         'datasetHash': dataset_hash,
+        'timesfmVersion': 'google/timesfm-2.5-200m-pytorch',
         'windowStart': ds['date'].min().strftime('%Y-%m-%d'),
         'windowEnd': ds['date'].max().strftime('%Y-%m-%d'),
         'hyperparameters': HYPERPARAMETERS,
