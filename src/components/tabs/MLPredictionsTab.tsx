@@ -4,6 +4,7 @@ import React, { useState, useCallback } from 'react';
 import { runMACrossover, runLinearRegression, type ModelPrediction, type Signal } from '@/services/mlModels';
 import type { Candle } from '@/services/historicalDataService';
 import { MT5ServiceSingleton } from '@/services/mt5Service';
+import HybridGovernedView from '@/components/ml/HybridGovernedView';
 
 const mt5Service = MT5ServiceSingleton.getInstance();
 
@@ -91,6 +92,12 @@ export default function MLPredictionsTab() {
   return (
     <div className="p-6 space-y-6 text-white">
       <h2 className="font-orbitron text-2xl font-bold neon-text-cyan">Previsões ML</h2>
+
+      <HybridGovernedView />
+
+      <h3 className="font-orbitron text-lg font-bold text-gray-300 pt-2">
+        Heurísticas (legado — sem validação walk-forward)
+      </h3>
 
       {/* Controles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
