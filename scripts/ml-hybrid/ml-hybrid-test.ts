@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { evaluateGate, type TrainingBlock } from '../../src/application/ml-hybrid/gate';
-import { MlHybridService } from '../../src/application/ml-hybrid/service';
+import { MlHybridService, createHttpMlApiPort } from '../../src/application/ml-hybrid/service';
+import { ReadModelError } from '../../src/application/read-models-v1/errors';
 
 function block(i: number, nHits: { model: number; base: number }, n = 10): TrainingBlock {
   return { block: `T${i % 7}:2024-${(i % 12) + 1}`, n, hitsModel: nHits.model,
@@ -79,7 +80,39 @@ async function serviceTests(): Promise<void> {
   await prisma.$disconnect();
 }
 
+async function httpMlApiPortTests(): Promise<void> {
+  const calledUrls: string[] = [];
+  const okFetch = (async (input: RequestInfo | URL) => {
+    calledUrls.push(String(input));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as typeof fetch;
+
+  const port = createHttpMlApiPort('http://x:1', okFetch);
+  await port.train();
+  assert(calledUrls[calledUrls.length - 1] === 'http://x:1/ml/train', 'createHttpMlApiPort.train chama /ml/train');
+
+  await port.backfill();
+  assert(calledUrls[calledUrls.length - 1] === 'http://x:1/ml/backfill', 'createHttpMlApiPort.backfill chama /ml/backfill');
+
+  await port.predict('WEGE3', 'deadbeef');
+  assert(calledUrls[calledUrls.length - 1] === 'http://x:1/ml/predict', 'createHttpMlApiPort.predict chama /ml/predict');
+
+  const errorFetch = (async () =>
+    new Response(JSON.stringify({ error: 'MODEL_NOT_FOUND' }), { status: 404 })) as typeof fetch;
+  const errorPort = createHttpMlApiPort('http://x:1', errorFetch);
+  try {
+    await errorPort.train();
+    assert(false, 'não-2xx deve lançar ReadModelError');
+  } catch (error) {
+    assert(
+      error instanceof ReadModelError && error.code === 'UPSTREAM_ERROR' && error.message === 'MODEL_NOT_FOUND',
+      'não-2xx vira ReadModelError UPSTREAM_ERROR com body.error',
+    );
+  }
+}
+
 (async () => {
   await gateTests();
   await serviceTests();
+  await httpMlApiPortTests();
 })();

@@ -198,8 +198,8 @@ export function createHttpMlApiPort(baseUrl: string, fetchImpl: typeof fetch = f
   }
 
   return {
-    backfill: (symbols) => call('/backfill', { symbols }, 120_000),
-    train: (symbols) => call('/train', { symbols }, 600_000),
-    predict: (symbol, artifactHash) => call('/predict', { symbol, artifactHash }, 120_000),
+    backfill: (symbols) => call('/ml/backfill', { symbols }, 120_000),
+    train: (symbols) => call('/ml/train', { symbols }, 600_000),
+    predict: (symbol, artifactHash) => call('/ml/predict', { symbol, artifactHash }, 120_000),
   };
 }
