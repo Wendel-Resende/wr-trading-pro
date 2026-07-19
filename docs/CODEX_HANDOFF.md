@@ -54,8 +54,14 @@ híbrido aprendido. O gate fez exatamente o que existe para fazer.
 - Backtest é proxy direcional (desvio 5); sem BacktestRun governado
   (desvio 6 — o serviço Fase 5 recomputa métricas, proxy lá falsificaria
   proveniência). Desvios 1–6 no cabeçalho do plano.
-- Próximos (v1.1+): backtest real com custos, mais features/horizontes,
-  fine-tuning TimesFM sobre o mesmo harness.
+- Próximos (v1.1+), em ordem: (1) **predict defasado** (Important da review
+  final, hoje inalcançável): `predict` usa a última linha do dataset, que
+  exclui as barras sem alvo — a "previsão do dia" fica ~10 pregões atrás;
+  corrigir montando a linha de inferência sem exigir `y` ANTES de promover
+  qualquer modelo; (2) backtest real com custos parametrizados +
+  BacktestRun governado; (3) mais features/horizontes; (4) fine-tuning
+  TimesFM sobre o mesmo harness. Backlog menor no relatório da review
+  final (`.superpowers/sdd/final-review-report.md`) e no ledger.
 
 ## Sessão 2026-07-17/18 — MCP Piloto v1 (branch `feat/mcp-piloto`)
 
