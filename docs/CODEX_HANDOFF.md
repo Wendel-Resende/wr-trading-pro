@@ -1,6 +1,61 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-18
+Última atualização: 2026-07-18 (noite)
+
+## Sessão 2026-07-18 — ML Híbrido v1 (branch `feat/ml-hibrido`)
+
+Upgrade da camada ML: modelo de direção a 10 pregões (LightGBM) sobre features
+point-in-time — preço + fundamentos CVM defasados pelo prazo legal (ITR +45d,
+DFP +90d) + TimesFM 2.5 200M zero-shot como feature — com walk-forward anual
+(embargo 21 pregões), 4 baselines e gate estatístico (bootstrap em blocos
+ticker-mês, IC95%) no trilho governado da Fase 5 (primeiro consumidor real).
+Fluxo: brainstorm → spec (`docs/superpowers/specs/2026-07-18-ml-hybrid-upgrade-design.md`)
+→ plano 12 tasks (`docs/superpowers/plans/2026-07-18-ml-hybrid-upgrade.md`)
+→ subagentes com review por task. Guia operacional: `docs/ML_HYBRID.md`.
+
+### Entregas
+
+1. `python/ml/` novo: candles (backfill D1 MT5 full-refresh), features de
+   preço, fundamentos point-in-time, adapter TimesFM (lazy, cache parquet,
+   GPU RTX 4060 — torch 2.6.0+cu124 instalado no conda), dataset builder com
+   teste anti-vazamento, walk-forward + treino. 7 suítes de teste.
+2. `python/ml_api.py` (Flask :5560, loopback, deps injetáveis) + card
+   "ML Engine" na aba Admin (Electron liga/desliga, padrão MCP Pilot).
+3. Next: `src/application/ml-hybrid/` (gate determinístico mulberry32 +
+   orquestração) e rotas `/api/v1/ml/{backfill,train,predict}`;
+   `ResearchRun` sempre, `ModelVersion` só se gate aprovar, `Signal` nas
+   previsões ao vivo. Suíte `npm run test:ml-hybrid`.
+4. UI: visão "Híbrido governado" na aba Previsões ML (estado honesto sem
+   modelo aprovado; heurísticas antigas rotuladas "legado").
+
+### Resultado científico do primeiro treino (registrado como está)
+
+Universo 126/138 (12 tickers indisponíveis na XP, reportados por ticker);
+1.248 barras D1/ticker (2021→2026); 15.084 amostras walk-forward 2024–2026;
+47 min de treino (TimesFM ~25k previsões). Acurácia direcional:
+**híbrido 47,5% | fundamentalista puro 52,3% | TimesFM 50,6% | sempre-alta
+49,2% | só-preço 47,1%**. **Gate REPROVOU** (nenhum baseline batido com
+IC95%) → ResearchRun `cmrr3mtah0001i1242twda715` persistido, sem
+ModelVersion, UI mostra estado honesto. Confirma o experimento anterior do
+Guardião: neste horizonte, o filtro fundamentalista puro segue melhor que o
+híbrido aprendido. O gate fez exatamente o que existe para fazer.
+
+### Bugs reais achados só no E2E ao vivo
+
+- `createHttpMlApiPort` chamava `/train` sem o prefixo `/ml` (fix `3151631`
+  + teste de URL capturada).
+- `features_for` retornava `np.float32` (quebraria o jsonify) — cast float.
+- Cache TimesFM relia o parquet inteiro a cada chamada — cache em memória.
+
+### Operacional / limitações v1 (detalhe em docs/ML_HYBRID.md)
+
+- 1º treino do universo excede o timeout (600s) da rota governada: rodar
+  `/ml/train` direto 1x (popula `data/ml/tfm_cache/`), depois a rota reusa.
+- Backtest é proxy direcional (desvio 5); sem BacktestRun governado
+  (desvio 6 — o serviço Fase 5 recomputa métricas, proxy lá falsificaria
+  proveniência). Desvios 1–6 no cabeçalho do plano.
+- Próximos (v1.1+): backtest real com custos, mais features/horizontes,
+  fine-tuning TimesFM sobre o mesmo harness.
 
 ## Sessão 2026-07-17/18 — MCP Piloto v1 (branch `feat/mcp-piloto`)
 
