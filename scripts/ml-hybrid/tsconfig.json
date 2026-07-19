@@ -15,7 +15,9 @@
   },
   "include": [
     "ml-hybrid-test.ts",
-    "../../src/application/ml-hybrid/**/*.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/domain/v1/**/*.ts",
+    "../../src/application/**/*.ts",
     "../../src/lib/prisma.ts"
   ]
 }
