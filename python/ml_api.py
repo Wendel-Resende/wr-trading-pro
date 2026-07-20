@@ -10,7 +10,7 @@ import pandas as pd
 from flask import Flask, jsonify, request
 
 from ml.candles import Mt5DailyClient, backfill_symbols, load_daily_candles
-from ml.dataset import ALL_FEATURES, build_dataset
+from ml.dataset import ALL_FEATURES, build_dataset, build_inference_row
 from ml.fundamentals import list_universe
 from ml.timesfm_adapter import TimesFmFeatureProvider
 from ml.train import run_training
@@ -67,10 +67,9 @@ def create_app(deps=None):
         if not artifact_hash or not os.path.exists(path):
             return jsonify({'error': 'MODEL_NOT_FOUND'}), 404
         try:
-            ds, _ = build_dataset(cfg['db_path'], cfg['cvm_db_path'], [symbol], tfm(), sample_every=1)
+            row = build_inference_row(cfg['db_path'], cfg['cvm_db_path'], symbol, tfm())
         except ValueError as exc:
             return jsonify({'error': 'INSUFFICIENT_DATA', 'detail': str(exc)}), 422
-        row = ds.iloc[[-1]]
         with open(path, 'r') as f:
             model_str = f.read()
         booster = lgb.Booster(model_str=model_str)

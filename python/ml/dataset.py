@@ -40,3 +40,24 @@ def build_dataset(db_path, cvm_db_path, symbols, tfm_provider, sample_every=5):
     ds = pd.concat(parts, ignore_index=True).sort_values(['date', 'symbol']).reset_index(drop=True)
     payload = ds.round(10).to_csv(index=False).encode()
     return ds, 'sha256:' + hashlib.sha256(payload).hexdigest()
+
+def build_inference_row(db_path, cvm_db_path, symbol, tfm_provider) -> pd.DataFrame:
+    """Linha de inferência para o último pregão disponível.
+
+    Diferente de `build_dataset`, NÃO exige `y` (que só existe até
+    `horizon` pregões atrás, pois depende do preço futuro) — senão a
+    "previsão de hoje" ficaria sempre ~10 pregões defasada. Usa apenas
+    dados <= última data de candle, preservando a regra point-in-time.
+    """
+    candles = load_daily_candles(db_path, symbol)
+    if len(candles) < _MIN_HISTORY:
+        raise ValueError(f'INSUFFICIENT_DATA: {symbol} tem historico insuficiente')
+    f = price_features(candles)
+    fund = load_fundamental_history(cvm_db_path, symbol)
+    fj = asof_fundamentals(f.index, fund) if len(fund) else \
+        pd.DataFrame(index=f.index, columns=FUND_COLUMNS, dtype=float)
+    closes = candles.set_index('time')['close']
+    date = f.index[-1]
+    tfm = tfm_provider.features_for(symbol, closes.loc[:date])
+    row = {'symbol': symbol, 'date': date, **f.loc[date].to_dict(), **fj.loc[date].to_dict(), **tfm}
+    return pd.DataFrame([row])
