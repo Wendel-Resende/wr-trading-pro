@@ -178,12 +178,23 @@ export class MlHybridService {
 
 export function createHttpMlApiPort(baseUrl: string, fetchImpl: typeof fetch = fetch): MlApiPort {
   async function call<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
-    const response = await fetchImpl(`${baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body ?? {}),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (cause) {
+      if (cause instanceof Error && cause.name === 'TimeoutError') {
+        throw new ReadModelError('UPSTREAM_TIMEOUT', `motor ML não respondeu em ${timeoutMs}ms (${path})`);
+      }
+      throw new ReadModelError(
+        'UPSTREAM_ERROR',
+        'motor ML (porta 5560) inacessível — ligue o card "ML Engine" na aba Admin',
+      );
+    }
     if (!response.ok) {
       let message = String(response.status);
       try {

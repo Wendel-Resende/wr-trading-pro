@@ -109,6 +109,36 @@ async function httpMlApiPortTests(): Promise<void> {
       'não-2xx vira ReadModelError UPSTREAM_ERROR com body.error',
     );
   }
+
+  const connRefusedFetch = (async () => {
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  const downPort = createHttpMlApiPort('http://x:1', connRefusedFetch);
+  try {
+    await downPort.train();
+    assert(false, 'falha de conexão deve lançar ReadModelError');
+  } catch (error) {
+    assert(
+      error instanceof ReadModelError && error.code === 'UPSTREAM_ERROR',
+      'motor ML fora do ar vira ReadModelError UPSTREAM_ERROR (não escapa como exceção crua p/ INTERNAL_ERROR)',
+    );
+  }
+
+  const timeoutFetch = (async () => {
+    const err = new Error('The operation was aborted');
+    err.name = 'TimeoutError';
+    throw err;
+  }) as typeof fetch;
+  const timeoutPort = createHttpMlApiPort('http://x:1', timeoutFetch);
+  try {
+    await timeoutPort.train();
+    assert(false, 'timeout deve lançar ReadModelError');
+  } catch (error) {
+    assert(
+      error instanceof ReadModelError && error.code === 'UPSTREAM_TIMEOUT',
+      'timeout de AbortSignal vira ReadModelError UPSTREAM_TIMEOUT',
+    );
+  }
 }
 
 (async () => {
