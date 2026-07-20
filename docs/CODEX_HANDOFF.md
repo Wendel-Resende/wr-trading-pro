@@ -1,6 +1,42 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-18 (noite)
+Última atualização: 2026-07-20
+
+## Sessão 2026-07-20 — ML Híbrido v1.1: predict defasado (branch `main`)
+
+Corrigido o item (1) do backlog v1.1 registrado na sessão 2026-07-18: a
+rota `/ml/predict` usava `build_dataset()` + última linha, mas
+`build_dataset()` descarta as últimas ~10 barras (o alvo `y` depende do
+preço futuro), então a "previsão de hoje" na prática usava features de
+~10 pregões atrás.
+
+### Entrega
+
+- `python/ml/dataset.py`: nova `build_inference_row(db_path, cvm_db_path,
+  symbol, tfm_provider)` — monta a linha de features para a última barra
+  de candle real, sem exigir `y`, preservando point-in-time (lag legal
+  dos fundamentos, TimesFM só até a data).
+- `python/ml_api.py`: `/ml/predict` passou a usar `build_inference_row`
+  em vez de `build_dataset(sample_every=1)` + `iloc[-1]`.
+- `python/tests/test_ml_dataset.py`: novo teste
+  `test_inference_row_uses_last_candle_not_last_labeled_row` prova que a
+  data da linha de inferência é a última barra de candle e é mais
+  recente que a última linha rotulada do dataset de treino.
+- Commit `a1ae7d4`. `test_ml_dataset.py` e `test_ml_api.py` rodados
+  diretamente (script `__main__`, não via `pytest` — o plugin do pytest
+  no ambiente conda quebra num import não relacionado de `web3`/`eth_abi`
+  no `inspect.getargspec`, pré-existente, nada a ver com esta mudança):
+  ambos `OK`.
+- Lado Next (`src/application/ml-hybrid/service.ts`) não precisou de
+  mudança: só repassa `prediction.date` para `barTime`/`knowledgeTime`
+  do `Signal`, já correto com a data mais recente.
+
+### Restante do backlog v1.1 (da sessão 2026-07-18)
+
+2. Backtest real com custos parametrizados + `BacktestRun` governado
+   (hoje é proxy direcional, desvio 5/6 do plano).
+3. Mais features/horizontes.
+4. Fine-tuning TimesFM sobre o mesmo harness.
 
 ## Sessão 2026-07-18 — ML Híbrido v1 (branch `feat/ml-hibrido`)
 
