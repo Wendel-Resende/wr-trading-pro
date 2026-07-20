@@ -40,6 +40,34 @@ def test_insufficient_context():
     except ValueError as e:
         assert 'INSUFFICIENT_DATA' in str(e)
 
+def test_corrupted_cache_file_self_heals():
+    """Um parquet truncado (ex.: processo morto no meio de uma escrita
+    anterior) não pode derrubar o treino inteiro: descarta o cache ruim,
+    recomputa e a próxima escrita atômica substitui o arquivo."""
+    cache_dir = tempfile.mkdtemp()
+    closes = pd.Series(np.linspace(100, 110, 300),
+                       index=pd.date_range('2024-01-01', periods=300, freq='B'))
+    bad_path = os.path.join(cache_dir, 'WEGE3.parquet')
+    with open(bad_path, 'wb') as fh:
+        fh.write(b'\x00\x01')                          # parquet inválido/truncado
+
+    stub = StubForecaster()
+    p = TimesFmFeatureProvider(forecaster=stub, cache_dir=cache_dir, max_context=512)
+    f = p.features_for('WEGE3', closes)                # não deve lançar
+    assert stub.calls == 1 and type(f['tfm_ret_10']) is float
+
+    assert pd.read_parquet(bad_path) is not None        # arquivo foi substituído por um válido
+
+def test_write_is_atomic_no_leftover_tmp():
+    cache_dir = tempfile.mkdtemp()
+    closes = pd.Series(np.linspace(100, 110, 300),
+                       index=pd.date_range('2024-01-01', periods=300, freq='B'))
+    TimesFmFeatureProvider(forecaster=StubForecaster(), cache_dir=cache_dir,
+                            max_context=512).features_for('WEGE3', closes)
+    files = os.listdir(cache_dir)
+    assert files == ['WEGE3.parquet'], f'esperava só o parquet final, achou {files}'
+
 if __name__ == '__main__':
     test_features_and_cache(); test_insufficient_context()
+    test_corrupted_cache_file_self_heals(); test_write_is_atomic_no_leftover_tmp()
     print('test_ml_timesfm_adapter: OK')

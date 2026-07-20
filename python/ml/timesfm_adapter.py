@@ -5,7 +5,7 @@ chamada sem forecaster injetado. Se a API da lib `timesfm` divergir na versão
 instalada, SÓ este arquivo muda. Cache parquet por símbolo: (data do último
 close, hash do contexto) → features; invalida sozinho se a série mudar.
 """
-import hashlib, os
+import hashlib, os, uuid, warnings
 import pandas as pd
 
 MIN_CONTEXT = 128
@@ -52,10 +52,17 @@ class TimesFmFeatureProvider:
         entries: dict[str, dict] = {}
         path = self._cache_path(symbol)
         if os.path.exists(path):
-            cached = pd.read_parquet(path)
-            for _, r in cached.iterrows():
-                entries[r['key']] = {'tfm_ret_10': float(r['tfm_ret_10']),
-                                      'tfm_iq': float(r['tfm_iq'])}
+            try:
+                cached = pd.read_parquet(path)
+                for _, r in cached.iterrows():
+                    entries[r['key']] = {'tfm_ret_10': float(r['tfm_ret_10']),
+                                          'tfm_iq': float(r['tfm_iq'])}
+            except Exception as exc:
+                # Cache parquet corrompido (ex.: processo morto no meio da
+                # escrita anterior) NÃO pode derrubar o treino inteiro — só
+                # custa recomputar TimesFM para este símbolo; a próxima
+                # escrita atômica substitui o arquivo ruim.
+                warnings.warn(f'cache TimesFM corrompido para {symbol} ({path}): {exc} — recomputando')
         self._mem[symbol] = entries
         return entries
 
@@ -73,6 +80,8 @@ class TimesFmFeatureProvider:
         feats = {'tfm_ret_10': float(fc['median'][-1] / last - 1),
                  'tfm_iq': float((fc['q90'][-1] - fc['q10'][-1]) / last)}
         entries[key] = feats
-        pd.DataFrame([{'key': k, **v} for k, v in entries.items()]).to_parquet(
-            self._cache_path(symbol), index=False)
+        path = self._cache_path(symbol)
+        tmp_path = f'{path}.{uuid.uuid4().hex}.tmp'
+        pd.DataFrame([{'key': k, **v} for k, v in entries.items()]).to_parquet(tmp_path, index=False)
+        os.replace(tmp_path, path)  # atômico: nunca deixa parquet truncado no lugar do arquivo real
         return feats
