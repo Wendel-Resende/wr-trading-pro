@@ -2,6 +2,63 @@
 
 Última atualização: 2026-07-20
 
+## Sessão 2026-07-20 (cont. 2) — UPSTREAM_ERROR: 500 ao Treinar (branch `main`)
+
+Depois de ligar o ML Engine (sessão anterior corrigiu o `INTERNAL_ERROR`
+genérico), o Treinar passou a mostrar `UPSTREAM_ERROR: 500` — melhor que
+antes (não é mais opaco), mas ainda sem causa visível no toast porque o
+Flask devolveu um 500 HTML puro (sem JSON, `debug=False`).
+
+### Causa raiz
+
+`data/ml/tfm_cache/BRSR6.parquet` estava truncado (4 bytes) — escrita
+anterior interrompida no meio, provável efeito colateral do timeout de
+600s conhecido no 1º treino do universo completo (nota da sessão
+2026-07-18: "1º treino excede o timeout da rota governada"; se o
+processo Node/Python foi cortado no meio de uma escrita de cache, o
+parquet fica corrompido). `TimesFmFeatureProvider._load_symbol_cache`
+lia o parquet sem tratar exceção; `pyarrow.lib.ArrowInvalid` subia cru
+até o Flask → 500 sem corpo → `createHttpMlApiPort` só via o código HTTP
+("500") como mensagem, sem detalhe.
+
+Reproduzido chamando `create_app().test_client().post('/ml/train', ...)`
+diretamente em Python (sem passar pelo Flask dev server) para capturar o
+traceback completo — o service HTTP não expõe traceback por design.
+
+### Correção
+
+`python/ml/timesfm_adapter.py`:
+- `_load_symbol_cache`: parquet corrompido vira `warnings.warn` + cache
+  vazio pra aquele símbolo (recomputa TimesFM), não derruba o treino.
+- `features_for`: escrita agora é atômica (`.tmp` + `os.replace`) — um
+  processo morto no meio da escrita nunca mais deixa um parquet
+  truncado no lugar do arquivo real. Resolve a causa raiz (não só o
+  sintoma): mesmo se o timeout de 600s voltar a cortar um treino no
+  meio, o cache não corrompe mais.
+- `python/tests/test_ml_timesfm_adapter.py`: 2 testes novos (cache
+  corrompido se autocura; escrita não deixa `.tmp` órfão).
+- Removido manualmente o `BRSR6.parquet` corrompido do working tree
+  (`data/ml/` não é versionado). Reproduzi `POST /ml/train
+  {symbols:[BRSR6]}` via test_client após o fix: `200`, cache regravado
+  normalmente.
+- Commit `9da4d15`. Suíte Python completa de ML (`test_ml_dataset`,
+  `test_ml_api`, `test_ml_timesfm_adapter`, `test_ml_candles`,
+  `test_ml_features`, `test_ml_fundamentals`, `test_ml_walkforward`)
+  rodada individualmente (não via `pytest` — plugin quebra em import
+  não relacionado de `web3`/`eth_abi`, ver sessão anterior): todas `OK`.
+
+### Observação para quem depurar erros parecidos no futuro
+
+`UPSTREAM_ERROR: <status>` sem mensagem = o `ml_api.py` devolveu um erro
+HTTP sem corpo JSON (geralmente uma exceção Python não tratada virando
+500 padrão do Flask). Para ver o traceback real, rodar em Python direto
+(não pelo Flask dev server nem pela UI):
+```python
+from ml_api import create_app
+c = create_app().test_client()
+r = c.post('/ml/train', json={'symbols': ['<TICKER>']})
+```
+
 ## Sessão 2026-07-20 (cont.) — diagnóstico do INTERNAL_ERROR ao Treinar (branch `main`)
 
 Usuário reportou `INTERNAL_ERROR: erro interno inesperado` ao clicar
