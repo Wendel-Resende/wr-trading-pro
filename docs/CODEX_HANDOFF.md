@@ -2,6 +2,49 @@
 
 Última atualização: 2026-07-20
 
+## Sessão 2026-07-20 (cont.) — diagnóstico do INTERNAL_ERROR ao Treinar (branch `main`)
+
+Usuário reportou `INTERNAL_ERROR: erro interno inesperado` ao clicar
+"Treinar (walk-forward)" na aba Previsões ML.
+
+### Causa raiz
+
+O serviço Python `python/ml_api.py` (Flask, porta 5560) estava desligado
+(`curl 127.0.0.1:5560/ml/health` sem resposta). Quando `fetch` não
+consegue conectar, `createHttpMlApiPort.call()` deixava a exceção crua
+de rede (`TypeError: fetch failed`) subir; como não é `ReadModelError`,
+a rota `/api/v1/ml/train` caía no catch genérico de `jsonError`
+(`src/app/api/v1/_shared/http.ts`), que por design sanitiza qualquer
+erro não tipado para `INTERNAL_ERROR` — sem pista nenhuma da causa real
+no toast.
+
+### Correção (não é bug de lógica de treino, é de superfície de erro)
+
+- `src/application/ml-hybrid/service.ts` (`createHttpMlApiPort`): falha
+  de conexão agora vira `ReadModelError('UPSTREAM_ERROR', ...)` com
+  mensagem acionável ("ligue o card ML Engine na aba Admin"); timeout do
+  `AbortSignal` vira `ReadModelError('UPSTREAM_TIMEOUT', ...)`. O toast
+  em `HybridGovernedView` já renderiza `${code}: ${message}`, então a
+  mensagem fica legível sem mudar UI.
+- `scripts/ml-hybrid/ml-hybrid-test.ts`: 2 casos novos (conexão recusada
+  → `UPSTREAM_ERROR`; timeout → `UPSTREAM_TIMEOUT`) em
+  `httpMlApiPortTests`.
+- Commit `a99656b`. `npm run test:ml-hybrid` (17 asserções) e
+  `npx tsc --noEmit` passaram.
+
+### Ação pendente do usuário
+
+O erro original só some se o serviço `ml_api.py` estiver de fato
+rodando. Duas formas: (1) manualmente, `python python/ml_api.py` (env
+conda `IA_Day_Trading`) num dos 5 terminais do modo dev; (2) pelo
+Electron, ligar o card **"ML Engine"** na aba Admin (o serviço não sobe
+sozinho — é opt-in, diferente do MT5 bridge/spread/volatility que o
+`electron/main.ts` inicia automaticamente). Depois de ligado, "Treinar"
+deve funcionar — mas atenção ao limite conhecido: o 1º treino do
+universo completo excede os 600s de timeout da rota governada (ver nota
+"Operacional / limitações v1" na sessão 2026-07-18 acima); rodar
+`/ml/train` direto uma vez para popular `data/ml/tfm_cache/` antes.
+
 ## Sessão 2026-07-20 — ML Híbrido v1.1: predict defasado (branch `main`)
 
 Corrigido o item (1) do backlog v1.1 registrado na sessão 2026-07-18: a
