@@ -2,6 +2,27 @@
 
 Última atualização: 2026-07-20
 
+## Próxima iniciativa aprovada — infraestrutura de pesquisa governada (referência Vibe-Trading)
+
+O usuário aprovou implementar incrementalmente padrões de engenharia estudados
+no Vibe-Trading, **sem copiar código, pacotes, frontend, assets ou conectores**.
+A referência completa e a fila canônica estão em:
+
+- `docs/superpowers/specs/2026-07-20-vibe-informed-research-infrastructure-design.md`
+- `docs/superpowers/plans/2026-07-20-vibe-informed-research-infrastructure.md`
+
+Ordem obrigatória: **A** backtest econômico real do ML Híbrido → **B** Experiment
+Run Card → **C1/C2** hipótese/meta/evidência → **D** eventos/timeline AgentRun →
+**E** preflight operacional → **F** validação estatística. Mandato DEMO temporal
+é apenas estudo futuro e requer nova aprovação.
+
+Claude Code deve iniciar **somente pelo Item A**: primeiro criar spec aditiva em
+`docs/architecture/`, parar para revisão do Guardião e só então implementar em
+worktree. Não editar este `CODEX_HANDOFF.md` durante o item, não fazer
+commit/push e não criar execução de ordens. Manter MT5/CVM point-in-time,
+`BacktestRun` canônico, entrada t+1, custos explícitos, DEMO-only e todos os
+gates atuais.
+
 ## Sessão 2026-07-20 (cont. 2) — UPSTREAM_ERROR: 500 ao Treinar (branch `main`)
 
 Depois de ligar o ML Engine (sessão anterior corrigiu o `INTERNAL_ERROR`
