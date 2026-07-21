@@ -18,6 +18,7 @@
     "../../src/adapters/prisma/**/*.ts",
     "../../src/domain/v1/**/*.ts",
     "../../src/application/**/*.ts",
-    "../../src/lib/prisma.ts"
+    "../../src/lib/prisma.ts",
+    "../../src/lib/auth/**/*.ts"
   ]
 }

@@ -17,6 +17,12 @@ export class PrismaBacktestRepository implements BacktestRepository {
         windowEnd: new Date(submission.windowEnd),
         metricsJson: submission.metricsJson,
         embargoDays: submission.embargoDays,
+        costProfileId: submission.costProfileId ?? null,
+        costProfileVersion: submission.costProfileVersion ?? null,
+        predictionHorizonBars: submission.predictionHorizonBars ?? null,
+        exitRuleKey: submission.exitRuleKey ?? null,
+        idempotencyKey: submission.idempotencyKey ?? null,
+        metricsSchemaVersion: submission.metricsSchemaVersion ?? null,
       },
     });
     return toBacktestRun(row);
@@ -24,6 +30,11 @@ export class PrismaBacktestRepository implements BacktestRepository {
 
   async findById(backtestId: string): Promise<BacktestRunPersistedShape | null> {
     const row = await this.prisma.backtestRun.findUnique({ where: { backtestId } });
+    return row ? toBacktestRun(row) : null;
+  }
+
+  async findByIdempotencyKey(idempotencyKey: string): Promise<BacktestRunPersistedShape | null> {
+    const row = await this.prisma.backtestRun.findUnique({ where: { idempotencyKey } });
     return row ? toBacktestRun(row) : null;
   }
 

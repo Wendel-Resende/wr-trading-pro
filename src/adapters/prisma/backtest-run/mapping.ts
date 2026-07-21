@@ -13,4 +13,10 @@ export const toBacktestRun = (row: BacktestRunRow): BacktestRunPersistedShape =>
   metricsJson: row.metricsJson,
   embargoDays: row.embargoDays,
   createdAt: row.createdAt.toISOString(),
+  costProfileId: row.costProfileId,
+  costProfileVersion: row.costProfileVersion,
+  predictionHorizonBars: row.predictionHorizonBars,
+  exitRuleKey: row.exitRuleKey,
+  idempotencyKey: row.idempotencyKey,
+  metricsSchemaVersion: row.metricsSchemaVersion,
 });

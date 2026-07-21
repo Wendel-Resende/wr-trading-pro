@@ -19,7 +19,7 @@ try {
 
   tempDir = mkdtempSync(join(os.tmpdir(), 'wr-backtest-run-test-'));
   const databaseUrl = `file:${join(tempDir, 'test.db').replace(/\\/g, '/')}`;
-  const testEnv = { ...process.env, DATABASE_URL: databaseUrl };
+  const testEnv = { ...process.env, DATABASE_URL: databaseUrl, WR_ADMIN_USER_IDS: 'guardiao-admin' };
 
   run(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], testEnv);
   run(process.execPath, ['scripts/backtest-run/.dist/scripts/backtest-run/backtest-run-test.js'], testEnv);

@@ -858,8 +858,51 @@ model BacktestRun {
   embargoDays    Int // purge/embargo entre treino e teste
   createdAt      DateTime @default(now())
 
+  // -------------------------------------------------------------------
+  // Item A (ML Híbrido — backtest econômico real, spec revisão 4).
+  // ADITIVO e NULLABLE: BacktestRun criados pela rota genérica
+  // /api/v1/backtests (fora do fluxo ML) continuam gravando null nestes
+  // seis campos — só o fluxo `runForMlHybrid()` os exige, via tipo
+  // TS/Zod na fronteira, nunca via constraint de banco (que precisa
+  // ficar permissiva para não quebrar BacktestRun legado).
+  // Ver docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md
+  // -------------------------------------------------------------------
+  costProfileId         String?
+  costProfileVersion    Int?
+  predictionHorizonBars Int?
+  exitRuleKey           String? // ex.: "open_next_bar:10" — determinístico a partir de entryRule + predictionHorizonBars
+  idempotencyKey        String? // sha256 hex de modelVersionId|artifactHash|instrumentId|costProfileId:version|exitRuleKey
+  metricsSchemaVersion  Int? // versiona o formato de metricsJson (envelope BacktestMetricsEnvelopeV1 quando presente)
+
+  @@unique([idempotencyKey])
   @@index([researchRunId])
   @@index([modelVersionId, instrumentId])
+}
+
+// ---------------------------------------------------------------------------
+// Item A (ML Híbrido — backtest econômico real, spec revisão 4, decisão D5).
+// Custos B3 nunca ficam implícitos: todo BacktestRun do fluxo ML exige um
+// BacktestCostProfile explícito e versionado. Criação/arquivamento são
+// Admin-only (ver src/lib/auth/admin.ts); createdBy/archivedBy vêm sempre da
+// sessão autenticada, nunca do corpo da requisição. Perfis não são
+// deletados — só arquivados (append-only).
+// ---------------------------------------------------------------------------
+model BacktestCostProfile {
+  id             String    @id @default(cuid())
+  version        Int
+  label          String
+  fixedBrokerage Float
+  emolumentsPct  Float
+  spreadBps      Float
+  slippageBps    Float
+  lotSize        Float
+  source         String // proveniência do número, obrigatória, nunca "default"
+  createdBy      String
+  createdAt      DateTime  @default(now())
+  archivedAt     DateTime?
+  archivedBy     String?
+
+  @@unique([label, version])
 }
 
 // ---------------------------------------------------------------------------

@@ -56,7 +56,7 @@ export interface BacktestSignalInput {
   readonly takeProfitPrice?: number | null;
 }
 
-export type TradeExitReason = 'STOP' | 'TAKE_PROFIT' | 'WINDOW_END';
+export type TradeExitReason = 'STOP' | 'TAKE_PROFIT' | 'WINDOW_END' | 'HORIZON_END';
 
 export interface BacktestTrade {
   readonly signalBarTime: string;
@@ -91,6 +91,17 @@ export interface BacktestEngineInput {
   readonly costs: BacktestCosts;
   readonly periodsPerYear: number;
   readonly entryRule: EntryRule;
+  /**
+   * Item A / D8 (ML Híbrido — spec revisão 3): horizonte de PREVISÃO fixo,
+   * contado a partir do SINAL (bar `t`), não da entrada (`t+1`). Um modelo
+   * que prevê `close[t+10] > close[t]` precisa que a posição feche
+   * exatamente em `t+10` (preço de saída = close dessa barra), não em
+   * `entry + horizonte` (`t+11`) — esse era um off-by-one real corrigido
+   * na revisão 3 da spec do Item A. Campo opcional: omitido preserva o
+   * comportamento atual do motor (WINDOW_END/stop/TP), sem mudança para
+   * nenhum consumidor existente.
+   */
+  readonly predictionHorizonBars?: number;
 }
 
 export interface BacktestEngineResult {
@@ -152,6 +163,12 @@ export function runDeterministicBacktest(input: BacktestEngineInput): BacktestEn
     let exitPrice = exitBar.close;
     let exitReason: TradeExitReason = 'WINDOW_END';
 
+    // D8: exit-by-horizon is counted from the SIGNAL bar (t), not the entry
+    // bar (t+1) — target[t+10] means the position must close AT t+10, not
+    // t+11. `undefined` when the field is omitted preserves today's engine
+    // behavior exactly (no horizon cutoff at all).
+    const horizonBarIndex = input.predictionHorizonBars !== undefined ? signalBarIndex + input.predictionHorizonBars : undefined;
+
     for (let i = entryBarIndex; i < bars.length; i += 1) {
       const bar = bars[i];
       if (compareInstants(parseInstant(bar.knowledgeTime)!, parseInstant(bar.time)!) > 0) {
@@ -171,6 +188,10 @@ export function runDeterministicBacktest(input: BacktestEngineInput): BacktestEn
         if (signal.takeProfitPrice != null && bar.low <= signal.takeProfitPrice) {
           exitBar = bar; exitPrice = signal.takeProfitPrice; exitReason = 'TAKE_PROFIT'; break;
         }
+      }
+      // Stop/TP checked above take priority even on the horizon bar itself.
+      if (horizonBarIndex !== undefined && i === horizonBarIndex) {
+        exitBar = bar; exitPrice = bar.close; exitReason = 'HORIZON_END'; break;
       }
     }
 

@@ -113,12 +113,29 @@ zero-shot ainda não tem cache local. Fluxo recomendado:
 
 Tudo em `data/ml/` (gitignored — runtime, não versionado):
 
+- `data/ml/bars_snapshot/<universeBarsDigest>/` — snapshot OHLCV cru,
+  congelado ANTES de qualquer feature ser computada (Item A / D1, D-hash).
+  `universeBarsDigest` (64 hex) é um SHA-256 sobre o payload canônico de
+  barras (`<symbol>.parquet` por ticker do universo, ordenadas por `time`),
+  cobrindo EXATAMENTE os valores persistidos no parquet — sem arredondamento
+  intermediário (corrigido pela revisão independente de G-003 item 3).
+  Publicação atômica: escrito num diretório provisório e publicado com
+  `os.replace` atômico; dedup por digest idêntico nunca sobrescreve um
+  snapshot já publicado (primeiro escritor vence, seguro sob escrita
+  concorrente do mesmo universo). `build_dataset`/treino só leem daqui, nunca
+  de `HistoricalCandle` ao vivo — um backfill concorrente não pode mudar os
+  dados sob um treino em andamento.
 - `data/ml/models/<hash>/`
   - `model.txt` — modelo LightGBM serializado.
   - `walkforward_predictions.csv` — previsões do walk-forward (referenciadas
     por `trainingEvidenceJson`, não persistidas linha-a-linha em `Signal`;
     ver desvio consciente #2 do plano).
   - `metrics.json` — métricas agregadas e comparação contra os 4 baselines.
+  - `bars_snapshot_manifest.json` — proveniência do snapshot de barras usado
+    (`universeBarsDigest`, `perSymbol`), separada do `datasetDigest`.
+  - Publicação também atômica e imutável (mesmo padrão do bars_snapshot):
+    diretório final nunca é sobrescrito, mesmo sob proveniências distintas
+    que produzam coincidentemente o mesmo `artifactHash`.
 - `data/ml/tfm_cache/` — cache de inferência zero-shot do TimesFM.
 
 Proveniência oficial via `ResearchRun`/`ModelVersion` do trilho Fase 5: o
@@ -139,9 +156,14 @@ seed fixa 42):
 4. **LightGBM só-preço** — sem fundamentos nem TimesFM; mede o valor
    incremental dos fundamentos, que é a hipótese central do projeto.
 
-Walk-forward: janela expansiva anual, embargo de 21 pregões entre treino e
-teste, amostragem a cada 5 pregões por ticker (reduz sobreposição das janelas
-de 10 dias).
+Walk-forward: janela expansiva anual, embargo de **21 pregões** entre treino e
+teste — contados sobre o próprio calendário de dias de negociação presente no
+dataset (posições no vetor ordenado de dias únicos com dado), não uma
+aproximação em dias corridos (`python/ml/walkforward.py::EMBARGO_TRADING_DAYS`,
+corrigido pela revisão independente de G-003 item 4: um embargo fixo de "30
+dias corridos" podia conter qualquer número real de pregões dependendo de
+feriados/interrupções no meio do caminho). Amostragem a cada 5 pregões por
+ticker (reduz sobreposição das janelas de 10 dias).
 
 **Reprovar é um resultado válido.** Um `ResearchRun` reprovado fica
 registrado com métricas completas, mas não gera `ModelVersion` — o modelo não
@@ -153,10 +175,24 @@ modelo aprovado no gate") com link para os `ResearchRun` reprovados.
 - **Backtest é proxy direcional**, não retorno real: ±2% por acerto/erro,
   custo fixo de 25bps, rotulado como proxy nas métricas. Retorno real por
   posição com custos B3 parametrizados fica para a v1.1.
-- **Sem `BacktestRun` governado na v1** (desvio consciente #6): o
-  `BacktestRunService` da Fase 5 recalcula métricas a partir de bars/signals
-  reais; persistir o proxy lá falsificaria proveniência. O proxy fica em
-  `trainingEvidenceJson.backtestProxy`.
+- **`BacktestRun` governado real, via `runForMlHybrid`** (Item A, revisão 4):
+  todo treino aprovado no gate dispara um `BacktestRun` real por instrumento
+  do universo — motor determinístico (D8 horizonte t..t+10, D9 sem
+  sobreposição), sinais e barras vindos exclusivamente do walk-forward
+  out-of-sample (D3) e do snapshot congelado (D1), nunca de `/ml/predict` nem
+  de `HistoricalCandle` ao vivo. Exige um `costProfileId` resolvido (D5;
+  `runTraining` falha `COST_PROFILE_REQUIRED` sem ele) — a obrigatoriedade é
+  imposta pela camada de aplicação (tipo TS/Zod), não por FK no banco:
+  `BacktestRun.costProfileId` continua `String?` solto no schema
+  (`prisma/schema.prisma`), nullable e sem `@relation`, porque a rota legada
+  genérica (`/api/v1/backtests`) continua gravando `null` e a constraint do
+  banco precisa ficar permissiva para não quebrar esse fluxo. Idempotência
+  por chave determinística (`modelVersionId` + `artifactHash` + `instrumentId`
+  + `costProfileId`/`costProfileVersion` + regra de saída); corrida
+  concorrente na criação (violação `P2002`) resolve para `ALREADY_EXISTS`,
+  nunca propaga como erro genérico. O proxy direcional do Python permanece
+  em `trainingEvidenceJson.backtestProxy`, rotulado como proxy, nunca
+  confundido com o `BacktestRun` real.
 - **Sem fine-tuning do TimesFM** — só zero-shot; fine-tuning é trilha de
   pesquisa futura sobre o mesmo harness.
 - **Universo CVM-only** — só os 138 tickers com fundamentos cadastrados;

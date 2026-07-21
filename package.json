@@ -41,6 +41,7 @@
     "test:research-run": "node scripts/research-run/run-research-run-tests.cjs",
     "test:model-version": "node scripts/model-version/run-model-version-tests.cjs",
     "test:signal": "node scripts/signal/run-signal-tests.cjs",
+    "test:b3-session": "node scripts/b3-session/run-b3-session-tests.cjs",
     "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
     "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
     "test:ml-hybrid": "node scripts/ml-hybrid/run-ml-hybrid-tests.cjs",
