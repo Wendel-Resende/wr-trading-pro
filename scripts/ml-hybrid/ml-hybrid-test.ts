@@ -257,13 +257,14 @@ async function gateEvidenceTests(): Promise<void> {
   }
 
   // ModelVersion "solta", sem gate.approved === true (gate.approved: false).
-  await modelVersionService.submit({
+  const v1 = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: '2026-07-17T00:00:00.000Z',
     hyperparametersJson: '{}',
     trainingEvidenceJson: JSON.stringify({ gate: { approved: false, comparisons: [] } }),
   });
+  await modelVersionService.publish(v1.modelVersion, new Date().toISOString());
   await service.predictLive('WEGE3').then(
     () => assert(false, 'ModelVersion com gate.approved=false não deveria habilitar predictLive'),
     (error: unknown) => assert(
@@ -273,13 +274,14 @@ async function gateEvidenceTests(): Promise<void> {
   );
 
   // ModelVersion "solta" SEM campo `gate` nenhum — também deve ser rejeitada.
-  await modelVersionService.submit({
+  const v2 = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: '2026-07-18T00:00:00.000Z',
     hyperparametersJson: '{}',
     trainingEvidenceJson: JSON.stringify({ foo: 'bar' }),
   });
+  await modelVersionService.publish(v2.modelVersion, new Date().toISOString());
   await service.predictLive('WEGE3').then(
     () => assert(false, 'ModelVersion solta sem campo gate não deveria habilitar predictLive'),
     (error: unknown) => assert(
@@ -289,7 +291,7 @@ async function gateEvidenceTests(): Promise<void> {
   );
 
   // ModelVersion "solta" COM gate.approved === true bem formado — deve funcionar.
-  await modelVersionService.submit({
+  const v3 = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: '2026-07-19T00:00:00.000Z',
@@ -300,6 +302,7 @@ async function gateEvidenceTests(): Promise<void> {
       datasetHash: 'd'.repeat(64),
     }),
   });
+  await modelVersionService.publish(v3.modelVersion, new Date().toISOString());
   const live = await service.predictLive('WEGE3');
   assert(live.prediction.symbol === 'WEGE3', 'predictLive funciona quando gate.approved === true bem formado (bloqueador 1)');
   // Achado alto 4 (auditoria final do Guardião, 2026-07-22): predictLive
@@ -416,7 +419,7 @@ async function adversarialPredictionPayloadPreEffectTests(): Promise<void> {
       await modelVersionService.invalidate(v.modelVersion, new Date().toISOString(), 'isolamento de teste (adversarialPredictionPayloadPreEffectTests)');
     }
   }
-  await modelVersionService.submit({
+  const v4 = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: '2026-07-22T01:00:00.000Z',
@@ -427,6 +430,7 @@ async function adversarialPredictionPayloadPreEffectTests(): Promise<void> {
       datasetHash: 'd'.repeat(64),
     }),
   });
+  await modelVersionService.publish(v4.modelVersion, new Date().toISOString());
 
   async function expectRejected(prediction: Record<string, unknown>, label: string): Promise<void> {
     const fakeApi = {
@@ -502,7 +506,7 @@ async function modelVersionTieBreakTests(): Promise<void> {
   }
 
   const sameAsOf = '2026-07-22T02:00:00.000Z';
-  const olderId = await modelVersionService.submit({
+  const olderMv = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: sameAsOf,
@@ -512,8 +516,10 @@ async function modelVersionTieBreakTests(): Promise<void> {
       artifact: { hash: 'a'.repeat(64), path: 'unused' },
       datasetHash: 'a'.repeat(64),
     }),
-  }).then((v) => v.modelVersion);
-  const newerId = await modelVersionService.submit({
+  });
+  await modelVersionService.publish(olderMv.modelVersion, new Date().toISOString());
+  const olderId = olderMv.modelVersion;
+  const newerMv = await modelVersionService.submit({
     kind: 'ML',
     label: 'ml-hybrid-swing-v1',
     asOf: sameAsOf,
@@ -523,7 +529,9 @@ async function modelVersionTieBreakTests(): Promise<void> {
       artifact: { hash: 'b'.repeat(64), path: 'unused' },
       datasetHash: 'b'.repeat(64),
     }),
-  }).then((v) => v.modelVersion);
+  });
+  await modelVersionService.publish(newerMv.modelVersion, new Date().toISOString());
+  const newerId = newerMv.modelVersion;
 
   // Grava `createdAt` explicitamente (mesmo `asOf`, `createdAt` real dos dois
   // inserts poderia empatar no mesmo milissegundo em ambiente rápido) — a
