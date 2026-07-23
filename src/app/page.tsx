@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { useRouter } from "next/navigation";
 import {
-  LayoutDashboard, FileText, BarChart3, Brain, Cpu,
+  LayoutDashboard, FileText, BarChart3, Brain,
   ArrowDownLeft, TrendingUp, Database, Wifi, WifiOff, Zap, LogOut, Bot, Landmark
 } from "lucide-react";
 import MT5ConnectionForm from "@/components/MT5ConnectionForm";
@@ -18,20 +18,18 @@ const PortfolioTab = lazy(() => import("@/components/tabs/PortfolioTab"));
 const SpreadTab = lazy(() => import("@/components/tabs/SpreadTab"));
 const MonitoringTab = lazy(() => import("@/components/tabs/MonitoringTab"));
 const MLPredictionsTab = lazy(() => import("@/components/tabs/MLPredictionsTab"));
-const MLModelsTab = lazy(() => import("@/components/tabs/MLModelsTab"));
 const OptionsTab = lazy(() => import("@/components/tabs/OptionsTab"));
 const AdminTab = lazy(() => import("@/components/tabs/AdminTab"));
 const AgentTab = lazy(() => import("@/components/tabs/AgentTab"));
 const CvmFundamentalsTab = lazy(() => import("@/components/tabs/CvmFundamentalsTab"));
 
-type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "models" | "opcoes" | "fundamentos" | "admin" | "agentes";
+type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "opcoes" | "fundamentos" | "admin" | "agentes";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "orders", label: "Ordens", icon: FileText },
   { id: "portfolio", label: "Portfólio", icon: BarChart3 },
   { id: "ml", label: "Previsões ML", icon: Brain },
-  { id: "models", label: "Modelos ML", icon: Cpu },
   { id: "spread", label: "Spread B3", icon: ArrowDownLeft },
   { id: "opcoes", label: "Opções", icon: TrendingUp },
   { id: "fundamentos", label: "Fundamentos CVM", icon: Landmark },
@@ -248,11 +246,6 @@ export default function Dashboard() {
         {mountedTabs.has("ml") && (
           <div style={{ display: activeTab === "ml" ? "block" : "none" }}>
             <Suspense fallback={<TabLoader />}><MLPredictionsTab /></Suspense>
-          </div>
-        )}
-        {mountedTabs.has("models") && (
-          <div style={{ display: activeTab === "models" ? "block" : "none" }}>
-            <Suspense fallback={<TabLoader />}><MLModelsTab /></Suspense>
           </div>
         )}
         {mountedTabs.has("opcoes") && (

@@ -6,7 +6,9 @@ import {
 } from '../../src/application/ml-hybrid/service';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 import { createBacktestCostProfileService } from '../../src/application/backtest-cost-profile';
+import { createModelVersionService } from '../../src/application/model-version';
 import { emptyB3SessionCalendar } from '../../src/domain/v1/time/b3-session';
+import { toPredictLivePublicDTO } from '../../src/app/api/v1/ml/predict/_dto';
 
 // G-003 item 5: 30 barras (não 20) para garantir que o sinal do teste de
 // não-sobreposição em index 11 tenha barra de saída em t+10 (index 21) —
@@ -158,6 +160,8 @@ async function serviceTests(): Promise<void> {
     'treino aprovado cria ModelVersion');
   const run = await prisma.researchRun.findUnique({ where: { runId: approved.researchRunId } });
   assert(run !== null && run.datasetId === 'sha256:abc', 'ResearchRun persistido com datasetHash');
+  assert(run!.modelVersionId === approved.modelVersionId,
+    'ResearchRun é linkado ao ModelVersion criado após aprovação do gate (bloqueador 2)');
 
   const modelVersion = await prisma.modelVersion.findUnique({ where: { modelVersion: approved.modelVersionId! } });
   assert(modelVersion !== null && modelVersion.trainingEvidenceJson !== null, 'ModelVersion persistida com trainingEvidenceJson');
@@ -201,6 +205,11 @@ async function serviceTests(): Promise<void> {
   const signal = await prisma.signal.findUnique({ where: { signalId: live.signalId } });
   assert(signal !== null && signal.direction === 'BUY' && signal.instrumentId === 'WEGE3',
     'predictLive persiste Signal');
+  // Item B (correção residual, 2026-07-22): `datasetHash` devolvido por
+  // `predictLive` precisa ser o digest 64-hex cru (`datasetDigest`), nunca o
+  // identificador semântico prefixado (`sha256:...`) usado só em `ResearchRun.datasetId`.
+  assert(live.datasetHash === trainResult.datasetDigest,
+    'predictLive devolve datasetHash como o digest 64-hex de datasetDigest, não o id semântico prefixado (item B)');
 
   const weakBlocks = strongBlocks.map((b) => ({ ...b, hitsModel: 5 }));
   const rejApi = { ...fakeApi, train: async () => ({ ...trainResult, blocks: weakBlocks }) };
@@ -208,7 +217,411 @@ async function serviceTests(): Promise<void> {
   assert(!rejected.gate.approved && rejected.modelVersionId === null,
     'treino reprovado registra ResearchRun sem ModelVersion');
   assert(rejected.backtests === null, 'treino reprovado NUNCA dispara backtest real (sem ModelVersion p/ provar)');
+  const rejectedRun = await prisma.researchRun.findUnique({ where: { runId: rejected.researchRunId } });
+  assert(rejectedRun !== null && rejectedRun.modelVersionId === null,
+    'ResearchRun de treino reprovado permanece sem modelVersionId (bloqueador 2)');
   await prisma.$disconnect();
+}
+
+/**
+ * Bloqueador 1 (revisão Guardião): garante que `predictLive` nunca aceita
+ * uma `ModelVersion` "solta" criada fora do fluxo `runTraining` — mesmo que
+ * tenha o label correto e não esteja invalidada, se `trainingEvidenceJson`
+ * não tiver `gate.approved === true` de forma estrita, ela nunca deve virar
+ * candidata.
+ */
+async function gateEvidenceTests(): Promise<void> {
+  const prisma = new PrismaClient();
+  const fakeApi = {
+    backfill: async () => ({ ok: [], failed: {} }),
+    train: async () => { throw new Error('não deveria ser chamado neste teste'); },
+    predict: async (symbol: string) => ({
+      symbol, date: '2026-07-17', direction: 'BUY' as const, score: 0.55,
+      topFeatures: [], sourceMeta: {} }),
+    getWalkforwardPredictions: async () => page([]),
+    getSnapshotBars: async () => page([]),
+  };
+  const service = new MlHybridService({ mlApi: fakeApi, prisma });
+  const modelVersionService = createModelVersionService(prisma);
+
+  // Isolamento: `serviceTests()` já rodou antes e deixou ModelVersions
+  // aprovadas de verdade com o mesmo MODEL_LABEL — invalida todas antes de
+  // testar isoladamente o comportamento de ModelVersions "soltas", senão
+  // `predictLive` encontraria uma candidata legítima remanescente e o teste
+  // de rejeição daria falso-negativo.
+  const existing = await modelVersionService.listByKind('ML');
+  for (const v of existing) {
+    if (v.label === 'ml-hybrid-swing-v1' && v.invalidatedAt === null) {
+      await modelVersionService.invalidate(v.modelVersion, new Date().toISOString(), 'isolamento de teste (gateEvidenceTests)');
+    }
+  }
+
+  // ModelVersion "solta", sem gate.approved === true (gate.approved: false).
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-17T00:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({ gate: { approved: false, comparisons: [] } }),
+  });
+  await service.predictLive('WEGE3').then(
+    () => assert(false, 'ModelVersion com gate.approved=false não deveria habilitar predictLive'),
+    (error: unknown) => assert(
+      error instanceof ReadModelError && error.code === 'MODEL_VERSION_NOT_FOUND',
+      'predictLive rejeita ModelVersion solta com gate.approved=false (bloqueador 1)',
+    ),
+  );
+
+  // ModelVersion "solta" SEM campo `gate` nenhum — também deve ser rejeitada.
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-18T00:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({ foo: 'bar' }),
+  });
+  await service.predictLive('WEGE3').then(
+    () => assert(false, 'ModelVersion solta sem campo gate não deveria habilitar predictLive'),
+    (error: unknown) => assert(
+      error instanceof ReadModelError && error.code === 'MODEL_VERSION_NOT_FOUND',
+      'predictLive rejeita ModelVersion solta sem campo gate (bloqueador 1)',
+    ),
+  );
+
+  // ModelVersion "solta" COM gate.approved === true bem formado — deve funcionar.
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-19T00:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'e'.repeat(64), path: 'unused' },
+      datasetHash: 'd'.repeat(64),
+    }),
+  });
+  const live = await service.predictLive('WEGE3');
+  assert(live.prediction.symbol === 'WEGE3', 'predictLive funciona quando gate.approved === true bem formado (bloqueador 1)');
+  // Achado alto 4 (auditoria final do Guardião, 2026-07-22): predictLive
+  // devolve a referência canônica REALMENTE usada — nunca deixa a UI
+  // reaproveitar uma versão carregada antes.
+  assert(live.modelVersionId.length > 0, 'predictLive devolve modelVersionId canônico (achado alto 4)');
+  assert(live.datasetHash === 'd'.repeat(64), 'predictLive devolve datasetHash canônico da evidência (achado alto 4)');
+  assert(live.artifactHash === 'e'.repeat(64), 'predictLive devolve artifactHash canônico da evidência (achado alto 4)');
+
+  await prisma.$disconnect();
+}
+
+/**
+ * Item B (correção residual, 2026-07-22, ponto 4): uma `ModelVersion`
+ * aprovada no gate mas com digest de dataset/artefato malformado precisa
+ * falhar ANTES de chamar o motor Python e ANTES de persistir qualquer
+ * `Signal` — nunca só na hora de montar o DTO público, depois do efeito.
+ */
+async function invalidDigestPreEffectTests(): Promise<void> {
+  const prisma = new PrismaClient();
+  let predictCalled = false;
+  const fakeApi = {
+    backfill: async () => ({ ok: [], failed: {} }),
+    train: async () => { throw new Error('não deveria ser chamado neste teste'); },
+    predict: async (symbol: string) => {
+      predictCalled = true;
+      return { symbol, date: '2026-07-17', direction: 'BUY' as const, score: 0.55, topFeatures: [], sourceMeta: {} };
+    },
+    getWalkforwardPredictions: async () => page([]),
+    getSnapshotBars: async () => page([]),
+  };
+  const service = new MlHybridService({ mlApi: fakeApi, prisma });
+  const modelVersionService = createModelVersionService(prisma);
+
+  // Isolamento: invalida quaisquer ModelVersions aprovadas remanescentes de
+  // testes anteriores com o mesmo label, senão `predictLive` acharia uma
+  // candidata legítima antes de chegar na "solta" com digest inválido.
+  const existing = await modelVersionService.listByKind('ML');
+  for (const v of existing) {
+    if (v.label === 'ml-hybrid-swing-v1' && v.invalidatedAt === null) {
+      await modelVersionService.invalidate(v.modelVersion, new Date().toISOString(), 'isolamento de teste (invalidDigestPreEffectTests)');
+    }
+  }
+
+  const signalsBefore = await prisma.signal.count();
+
+  // ModelVersion aprovada no gate, mas com artifactHash NÃO 64-hex.
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-20T00:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'not-a-valid-digest', path: 'unused' },
+      datasetHash: 'd'.repeat(64),
+    }),
+  });
+  await service.predictLive('WEGE3').then(
+    () => assert(false, 'ModelVersion aprovada com artifactHash inválido não deveria habilitar predictLive'),
+    (error: unknown) => assert(
+      error instanceof ReadModelError && error.code === 'MODEL_VERSION_NOT_FOUND',
+      'predictLive rejeita digest de artifactHash não 64-hex ANTES do upstream (item B, ponto 1/4)',
+    ),
+  );
+  assert(!predictCalled, 'mlApi.predict NUNCA é chamado quando o digest é inválido (item B, ponto 1)');
+  assert((await prisma.signal.count()) === signalsBefore, 'nenhum Signal novo é criado quando o digest é inválido (item B, ponto 1)');
+
+  // Mesma verificação para datasetHash malformado (artifactHash válido).
+  await modelVersionService.invalidate(
+    (await modelVersionService.listByKind('ML')).find((v) => v.asOf === '2026-07-20T00:00:00.000Z')!.modelVersion,
+    new Date().toISOString(),
+    'isolamento (próximo caso deste teste)',
+  );
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-21T00:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'e'.repeat(64), path: 'unused' },
+      datasetHash: 'curto',
+    }),
+  });
+  await service.predictLive('WEGE3').then(
+    () => assert(false, 'ModelVersion aprovada com datasetHash inválido não deveria habilitar predictLive'),
+    (error: unknown) => assert(
+      error instanceof ReadModelError && error.code === 'MODEL_VERSION_NOT_FOUND',
+      'predictLive rejeita digest de datasetHash não 64-hex ANTES do upstream (item B, ponto 1/4)',
+    ),
+  );
+  assert(!predictCalled, 'mlApi.predict continua nunca chamado com datasetHash inválido (item B, ponto 1)');
+  assert((await prisma.signal.count()) === signalsBefore, 'nenhum Signal novo é criado com datasetHash inválido (item B, ponto 1)');
+
+  await prisma.$disconnect();
+}
+
+/**
+ * Item B (correção residual, 2026-07-22, bloqueador 2): `predictLive`
+ * precisa validar o payload do Python INTEIRO — symbol canônico, data
+ * válida, direction, score em [0,1] e importance >= 0 — ANTES de
+ * `signalService.generate`. Upstream adversarial em qualquer um destes
+ * campos tem que falhar como erro controlado, sem criar `Signal` nenhum
+ * (nunca só o DTO público de resposta barrando depois do efeito).
+ */
+async function adversarialPredictionPayloadPreEffectTests(): Promise<void> {
+  const prisma = new PrismaClient();
+  const modelVersionService = createModelVersionService(prisma);
+
+  const existing = await modelVersionService.listByKind('ML');
+  for (const v of existing) {
+    if (v.label === 'ml-hybrid-swing-v1' && v.invalidatedAt === null) {
+      await modelVersionService.invalidate(v.modelVersion, new Date().toISOString(), 'isolamento de teste (adversarialPredictionPayloadPreEffectTests)');
+    }
+  }
+  await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: '2026-07-22T01:00:00.000Z',
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'e'.repeat(64), path: 'unused' },
+      datasetHash: 'd'.repeat(64),
+    }),
+  });
+
+  async function expectRejected(prediction: Record<string, unknown>, label: string): Promise<void> {
+    const fakeApi = {
+      backfill: async () => ({ ok: [], failed: {} }),
+      train: async () => { throw new Error('não deveria ser chamado neste teste'); },
+      predict: async () => prediction as never,
+      getWalkforwardPredictions: async () => page([]),
+      getSnapshotBars: async () => page([]),
+    };
+    const service = new MlHybridService({ mlApi: fakeApi, prisma });
+    const before = await prisma.signal.count();
+    await service.predictLive('WEGE3').then(
+      () => assert(false, `predictLive deveria rejeitar payload adversarial: ${label}`),
+      (error: unknown) => assert(
+        error instanceof ReadModelError && error.code === 'UPSTREAM_ERROR',
+        `predictLive rejeita ${label} como ReadModelError UPSTREAM_ERROR (bloqueador 2)`,
+      ),
+    );
+    const after = await prisma.signal.count();
+    assert(after === before, `nenhum Signal novo é criado com ${label} (bloqueador 2, prova antes/depois)`);
+  }
+
+  const validBase = {
+    symbol: 'WEGE3', date: '2026-07-22', direction: 'BUY' as const, score: 0.5,
+    topFeatures: [{ name: 'tfm_ret_10', importance: 0.5 }], sourceMeta: {},
+  };
+
+  await expectRejected({ ...validBase, score: 1.5 }, 'score acima de 1 (fora do domínio)');
+  await expectRejected({ ...validBase, score: -0.2 }, 'score negativo (fora do domínio)');
+  await expectRejected({ ...validBase, symbol: 'PETR-4' }, 'symbol fora do formato canônico');
+  await expectRejected({ ...validBase, date: 'not-a-date' }, 'data inválida');
+  await expectRejected({ ...validBase, date: '2026-02-31' }, 'data impossível (calendário inexistente, formato válido)');
+  await expectRejected(
+    { ...validBase, topFeatures: [{ name: 'tfm_ret_10', importance: -1 }] },
+    'importance negativa em topFeatures',
+  );
+
+  // Prova de que o payload válido, sem nenhum destes defeitos, ainda funciona
+  // normalmente e cria exatamente um Signal.
+  const okApi = {
+    backfill: async () => ({ ok: [], failed: {} }),
+    train: async () => { throw new Error('não deveria ser chamado neste teste'); },
+    predict: async () => validBase,
+    getWalkforwardPredictions: async () => page([]),
+    getSnapshotBars: async () => page([]),
+  };
+  const okService = new MlHybridService({ mlApi: okApi, prisma });
+  const beforeOk = await prisma.signal.count();
+  const live = await okService.predictLive('WEGE3');
+  const afterOk = await prisma.signal.count();
+  assert(afterOk === beforeOk + 1, 'payload válido (sem defeitos) cria exatamente um Signal novo');
+  assert(live.prediction.symbol === 'WEGE3', 'payload válido devolve a previsão normalmente');
+
+  await prisma.$disconnect();
+}
+
+/**
+ * Item B (correção residual, 2026-07-22, bloqueador 3): duas `ModelVersion`
+ * aprovadas com o MESMO `asOf` precisam desempatar deterministicamente por
+ * `createdAt desc`, depois `modelVersion desc` — igual à ordenação usada
+ * pela API/UI (`listByKindPaginated`, `HybridGovernedView`), nunca depender
+ * da ordem bruta de retorno do Prisma.
+ */
+async function modelVersionTieBreakTests(): Promise<void> {
+  const prisma = new PrismaClient();
+  const modelVersionService = createModelVersionService(prisma);
+
+  const existing = await modelVersionService.listByKind('ML');
+  for (const v of existing) {
+    if (v.label === 'ml-hybrid-swing-v1' && v.invalidatedAt === null) {
+      await modelVersionService.invalidate(v.modelVersion, new Date().toISOString(), 'isolamento de teste (modelVersionTieBreakTests)');
+    }
+  }
+
+  const sameAsOf = '2026-07-22T02:00:00.000Z';
+  const olderId = await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: sameAsOf,
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'a'.repeat(64), path: 'unused' },
+      datasetHash: 'a'.repeat(64),
+    }),
+  }).then((v) => v.modelVersion);
+  const newerId = await modelVersionService.submit({
+    kind: 'ML',
+    label: 'ml-hybrid-swing-v1',
+    asOf: sameAsOf,
+    hyperparametersJson: '{}',
+    trainingEvidenceJson: JSON.stringify({
+      gate: { approved: true, comparisons: [] },
+      artifact: { hash: 'b'.repeat(64), path: 'unused' },
+      datasetHash: 'b'.repeat(64),
+    }),
+  }).then((v) => v.modelVersion);
+
+  // Grava `createdAt` explicitamente (mesmo `asOf`, `createdAt` real dos dois
+  // inserts poderia empatar no mesmo milissegundo em ambiente rápido) — a
+  // versão "newer" precisa ter createdAt estritamente mais recente para
+  // provar o desempate determinístico, não uma corrida de relógio.
+  await prisma.modelVersion.update({ where: { modelVersion: olderId }, data: { createdAt: new Date('2026-07-22T03:00:00.000Z') } });
+  await prisma.modelVersion.update({ where: { modelVersion: newerId }, data: { createdAt: new Date('2026-07-22T04:00:00.000Z') } });
+
+  const fakeApi = {
+    backfill: async () => ({ ok: [], failed: {} }),
+    train: async () => { throw new Error('não deveria ser chamado neste teste'); },
+    predict: async () => ({
+      symbol: 'WEGE3', date: '2026-07-22', direction: 'BUY' as const, score: 0.5,
+      topFeatures: [], sourceMeta: {},
+    }),
+    getWalkforwardPredictions: async () => page([]),
+    getSnapshotBars: async () => page([]),
+  };
+  const service = new MlHybridService({ mlApi: fakeApi, prisma });
+  const live = await service.predictLive('WEGE3');
+  assert(live.modelVersionId === newerId, 'empate de asOf desempata por createdAt desc — a versão mais nova por createdAt vence (bloqueador 3)');
+  assert(live.modelVersionId !== olderId, 'a versão aprovada mais antiga por createdAt NÃO é escolhida no empate de asOf (bloqueador 3)');
+
+  await prisma.$disconnect();
+}
+
+/**
+ * Item B (ponto 2/3): DTO público rejeita IDs fora do formato canônico
+ * (`^[a-z0-9]+$`, limite 64) e score fora de [0, 1] / importance negativa —
+ * mesmo que `predictLive` internamente tenha produzido esse shape.
+ */
+function dtoValidationTests(): void {
+  const base = {
+    signalId: 'clabc123def456',
+    prediction: {
+      symbol: 'WEGE3', date: '2026-07-17', direction: 'BUY' as const, score: 0.6,
+      topFeatures: [{ name: 'tfm_ret_10', importance: 1.5 }], sourceMeta: {},
+    },
+    modelVersionId: 'clxyz987uvw654',
+    datasetHash: 'd'.repeat(64),
+    artifactHash: 'e'.repeat(64),
+  };
+
+  const ok = toPredictLivePublicDTO(base);
+  assert(ok.signalId === base.signalId && ok.modelVersionId === base.modelVersionId, 'DTO aceita IDs canônicos válidos');
+
+  const badSignalId = { ...base, signalId: '../etc/passwd' };
+  try {
+    toPredictLivePublicDTO(badSignalId);
+    assert(false, 'DTO deveria rejeitar signalId com path/token não canônico');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'signalId não-canônico falha como ReadModelError (item B, ponto 2)');
+  }
+
+  const badModelVersionId = { ...base, modelVersionId: 'A'.repeat(10) };
+  try {
+    toPredictLivePublicDTO(badModelVersionId);
+    assert(false, 'DTO deveria rejeitar modelVersionId com maiúsculas (fora do formato cuid)');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'modelVersionId não-canônico falha como ReadModelError (item B, ponto 2)');
+  }
+
+  const tooLongId = { ...base, signalId: 'a'.repeat(65) };
+  try {
+    toPredictLivePublicDTO(tooLongId);
+    assert(false, 'DTO deveria rejeitar signalId acima de 64 caracteres');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'signalId acima do limite 64 falha como ReadModelError (item B, ponto 2)');
+  }
+
+  const scoreTooHigh = { ...base, prediction: { ...base.prediction, score: 1.5 } };
+  try {
+    toPredictLivePublicDTO(scoreTooHigh);
+    assert(false, 'DTO deveria rejeitar score > 1');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'score > 1 falha como ReadModelError (item B, ponto 3)');
+  }
+
+  const scoreNegative = { ...base, prediction: { ...base.prediction, score: -0.1 } };
+  try {
+    toPredictLivePublicDTO(scoreNegative);
+    assert(false, 'DTO deveria rejeitar score < 0');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'score < 0 falha como ReadModelError (item B, ponto 3)');
+  }
+
+  const negativeImportance = {
+    ...base,
+    prediction: { ...base.prediction, topFeatures: [{ name: 'tfm_ret_10', importance: -1 }] },
+  };
+  try {
+    toPredictLivePublicDTO(negativeImportance);
+    assert(false, 'DTO deveria rejeitar importance negativa');
+  } catch (error) {
+    assert(error instanceof ReadModelError, 'importance negativa falha como ReadModelError (item B, ponto 3)');
+  }
+
+  console.log('DTO predictLive (IDs canônicos, score 0-1, importance >= 0): OK');
 }
 
 async function httpMlApiPortTests(): Promise<void> {
@@ -277,5 +690,10 @@ async function httpMlApiPortTests(): Promise<void> {
   d9NonOverlapAndD8OffsetTests();
   d8MissingExitBarTests();
   await serviceTests();
+  await gateEvidenceTests();
+  await invalidDigestPreEffectTests();
+  await adversarialPredictionPayloadPreEffectTests();
+  await modelVersionTieBreakTests();
+  dtoValidationTests();
   await httpMlApiPortTests();
 })();

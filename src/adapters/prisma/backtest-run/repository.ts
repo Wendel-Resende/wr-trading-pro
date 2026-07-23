@@ -38,10 +38,16 @@ export class PrismaBacktestRepository implements BacktestRepository {
     return row ? toBacktestRun(row) : null;
   }
 
-  async findByModelVersion(modelVersionId: string): Promise<readonly BacktestRunPersistedShape[]> {
+  async findByModelVersion(modelVersionId: string, limit?: number, cursor?: string): Promise<readonly BacktestRunPersistedShape[]> {
     const rows = await this.prisma.backtestRun.findMany({
       where: { modelVersionId },
-      orderBy: [{ createdAt: 'asc' }, { backtestId: 'asc' }],
+      // Bloqueador 3 (revisão final do Guardião): ordenação estável e
+      // determinística `createdAt desc, backtestId desc` — mais recente
+      // primeiro, para paginação server-side consistente com research-runs
+      // e cost-profiles.
+      orderBy: [{ createdAt: 'desc' }, { backtestId: 'desc' }],
+      ...(limit !== undefined ? { take: limit } : {}),
+      ...(cursor ? { cursor: { backtestId: cursor }, skip: 1 } : {}),
     });
     return Object.freeze(rows.map(toBacktestRun));
   }

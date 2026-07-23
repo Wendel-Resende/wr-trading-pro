@@ -34,8 +34,23 @@ export class ResearchRunService {
     return assembleResearchRun(run);
   }
 
-  async listByDataset(datasetId: string): Promise<readonly ResearchRunReadModelV1[]> {
-    const runs = await this.ports.researchRunRepository.findByDataset(datasetId);
+  async listByDataset(datasetId: string, limit?: number, cursor?: string): Promise<readonly ResearchRunReadModelV1[]> {
+    const runs = await this.ports.researchRunRepository.findByDataset(datasetId, limit, cursor);
+    return Object.freeze(runs.map(assembleResearchRun));
+  }
+
+  async listByModelVersion(modelVersionId: string, limit: number, cursor?: string): Promise<readonly ResearchRunReadModelV1[]> {
+    const runs = await this.ports.researchRunRepository.findByModelVersion(modelVersionId, limit, cursor);
+    return Object.freeze(runs.map(assembleResearchRun));
+  }
+
+  async linkModelVersion(runId: string, modelVersionId: string): Promise<ResearchRunReadModelV1> {
+    const run = await this.ports.researchRunRepository.linkModelVersion(runId, modelVersionId);
+    return assembleResearchRun(run);
+  }
+
+  async listRecentByName(name: string, limit: number, cursor?: string): Promise<readonly ResearchRunReadModelV1[]> {
+    const runs = await this.ports.researchRunRepository.findRecentByName(name, limit, cursor);
     return Object.freeze(runs.map(assembleResearchRun));
   }
 }

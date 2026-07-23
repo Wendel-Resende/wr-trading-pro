@@ -35,6 +35,16 @@ export class PrismaModelVersionRepository implements ModelVersionRepository {
     return Object.freeze(rows.map(toModelVersion));
   }
 
+  async listByKindPaginated(kind: ModelVersionKind, limit: number, cursor?: string): Promise<readonly ModelVersion[]> {
+    const rows = await this.prisma.modelVersion.findMany({
+      where: { kind },
+      orderBy: [{ asOf: 'desc' }, { createdAt: 'desc' }, { modelVersion: 'desc' }],
+      take: limit,
+      ...(cursor ? { cursor: { modelVersion: cursor }, skip: 1 } : {}),
+    });
+    return Object.freeze(rows.map(toModelVersion));
+  }
+
   async invalidate(modelVersion: string, invalidatedAt: string, reason: string): Promise<ModelVersion> {
     const existing = await this.prisma.modelVersion.findUnique({ where: { modelVersion } });
     if (!existing) throw new ModelVersionNotFoundError(`ModelVersion ${modelVersion} não encontrado`);

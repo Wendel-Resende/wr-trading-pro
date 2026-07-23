@@ -4,8 +4,9 @@ import { createBacktestRunService } from '../../../../application/backtest-run';
 import { BacktestCostsSchema, EntryRuleSchema, TimestampSchema } from '../../../../adapters/prisma/backtest-run';
 import { SignalDirectionSchema } from '../../../../adapters/prisma/signal';
 import { TimeframeSchema } from '../../../../adapters/prisma/market-bar/schemas';
-import { jsonError, jsonSuccess, parseWithSchema } from '../_shared/http';
+import { extractStrictQuery, jsonError, jsonSuccess, parseWithSchema } from '../_shared/http';
 import { ReadModelError } from '../../../../application/read-models-v1';
+import { toBacktestRunPublicDTO } from './_dto';
 
 export const dynamic = 'force-dynamic';
 
@@ -82,27 +83,35 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-const ListQuerySchema = z.object({ modelVersionId: z.string().min(1).max(64) }).strict();
+const ListQuerySchema = z
+  .object({
+    modelVersionId: z.string().min(1).max(64),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z.string().min(1).max(64).optional(),
+  })
+  .strict();
 
+/**
+ * Bloqueador 3 (revisão final do Guardião): paginação server-side estável
+ * (`limit+1`/cursor, ordenação `createdAt desc, backtestId desc`) — o
+ * cliente nunca mais recebe a coleção inteira de uma vez.
+ */
 export async function GET(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    const allowedKeys = ['modelVersionId'] as const;
-    const raw: Record<string, string> = {};
-    for (const key of url.searchParams.keys()) {
-      if (!allowedKeys.includes(key as (typeof allowedKeys)[number])) {
-        throw new ReadModelError('INVALID_QUERY', `parâmetro de query desconhecido: ${key}`);
-      }
-    }
-    for (const key of allowedKeys) {
-      const value = url.searchParams.get(key);
-      if (value !== null) raw[key] = value;
-    }
+    const raw = extractStrictQuery(request, ['modelVersionId', 'limit', 'cursor'] as const);
     const query = parseWithSchema(ListQuerySchema, raw);
 
     const service = createBacktestRunService(prisma);
-    const runs = await service.listByModelVersion(query.modelVersionId);
-    return jsonSuccess(runs, { count: runs.length });
+    const limit = query.limit ?? 20;
+    const runs = await service.listByModelVersion(query.modelVersionId, limit + 1, query.cursor);
+
+    const hasNext = runs.length > limit;
+    const page = hasNext ? runs.slice(0, limit) : runs;
+    const nextCursor = hasNext ? page[page.length - 1].backtestId : null;
+
+    // Achado médio 8: DTO resumido — nunca `trades`/`entryRule`/`embargoDays`/
+    // `costs` bruto/`provenance.foldsCovered` na listagem pública.
+    return jsonSuccess(page.map(toBacktestRunPublicDTO), { count: page.length, nextCursor });
   } catch (error) {
     return jsonError(error);
   }

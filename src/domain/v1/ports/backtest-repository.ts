@@ -44,7 +44,7 @@ export interface BacktestRunSubmission {
 export interface BacktestRepository {
   create(submission: BacktestRunSubmission): Promise<BacktestRunPersistedShape>;
   findById(backtestId: string): Promise<BacktestRunPersistedShape | null>;
-  findByModelVersion(modelVersionId: string): Promise<readonly BacktestRunPersistedShape[]>;
+  findByModelVersion(modelVersionId: string, limit?: number, cursor?: string): Promise<readonly BacktestRunPersistedShape[]>;
   /** Item A (D10) — base da idempotência: nunca cria uma segunda linha para a mesma chave. */
   findByIdempotencyKey(idempotencyKey: string): Promise<BacktestRunPersistedShape | null>;
 }

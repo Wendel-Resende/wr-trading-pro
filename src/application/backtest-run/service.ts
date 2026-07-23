@@ -200,8 +200,8 @@ export class BacktestRunService {
     return assembleBacktestRun(run);
   }
 
-  async listByModelVersion(modelVersionId: string): Promise<readonly BacktestRunReadModelV1[]> {
-    const runs = await this.ports.backtestRepository.findByModelVersion(modelVersionId);
+  async listByModelVersion(modelVersionId: string, limit?: number, cursor?: string): Promise<readonly BacktestRunReadModelV1[]> {
+    const runs = await this.ports.backtestRepository.findByModelVersion(modelVersionId, limit, cursor);
     return Object.freeze(runs.map(assembleBacktestRun));
   }
 }

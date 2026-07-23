@@ -29,10 +29,37 @@ export class PrismaResearchRunRepository implements ResearchRunRepository {
     return row ? toResearchRun(row) : null;
   }
 
-  async findByDataset(datasetId: string): Promise<readonly ResearchRun[]> {
+  async findByDataset(datasetId: string, limit?: number, cursor?: string): Promise<readonly ResearchRun[]> {
     const rows = await this.prisma.researchRun.findMany({
       where: { datasetId },
       orderBy: [{ createdAt: 'asc' }, { runId: 'asc' }],
+      ...(limit !== undefined ? { take: limit } : {}),
+      ...(cursor ? { cursor: { runId: cursor }, skip: 1 } : {}),
+    });
+    return Object.freeze(rows.map(toResearchRun));
+  }
+
+  async findByModelVersion(modelVersionId: string, limit: number, cursor?: string): Promise<readonly ResearchRun[]> {
+    const rows = await this.prisma.researchRun.findMany({
+      where: { modelVersionId },
+      orderBy: [{ createdAt: 'desc' }, { runId: 'desc' }],
+      take: limit,
+      ...(cursor ? { cursor: { runId: cursor }, skip: 1 } : {}),
+    });
+    return Object.freeze(rows.map(toResearchRun));
+  }
+
+  async linkModelVersion(runId: string, modelVersionId: string): Promise<ResearchRun> {
+    const row = await this.prisma.researchRun.update({ where: { runId }, data: { modelVersionId } });
+    return toResearchRun(row);
+  }
+
+  async findRecentByName(name: string, limit: number, cursor?: string): Promise<readonly ResearchRun[]> {
+    const rows = await this.prisma.researchRun.findMany({
+      where: { name },
+      orderBy: [{ createdAt: 'desc' }, { runId: 'desc' }],
+      take: limit,
+      ...(cursor ? { cursor: { runId: cursor }, skip: 1 } : {}),
     });
     return Object.freeze(rows.map(toResearchRun));
   }

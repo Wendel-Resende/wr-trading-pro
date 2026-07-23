@@ -40,12 +40,34 @@ async function createAndReadBack(prisma: PrismaClient): Promise<void> {
   console.log('R-RM: ResearchRun criação + leitura por id/dataset — OK');
 }
 
+async function linkModelVersionAndFindRecentByName(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchRunRepository(prisma);
+  const runId = await insertResearchRunForTest(prisma, 'guardiao', baseSubmission({ name: 'ml-hybrid-swing-v1-test' }));
+
+  const linked = await repo.linkModelVersion(runId, 'mv-fake-id');
+  assert.equal(linked.modelVersionId, 'mv-fake-id');
+
+  const found = await repo.findById(runId);
+  assert.equal(found?.modelVersionId, 'mv-fake-id', 'linkModelVersion persiste modelVersionId (bloqueador 2)');
+
+  // Segundo run mais recente, mesmo nome — findRecentByName deve ordenar createdAt desc.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const runId2 = await insertResearchRunForTest(prisma, 'guardiao', baseSubmission({ name: 'ml-hybrid-swing-v1-test' }));
+
+  const recent = await repo.findRecentByName('ml-hybrid-swing-v1-test', 10);
+  assert.ok(recent.length >= 2, 'findRecentByName retorna ambos os runs do nome');
+  assert.equal(recent[0].runId, runId2, 'findRecentByName ordena por createdAt desc (mais recente primeiro)');
+
+  console.log('R-RM: ResearchRun linkModelVersion + findRecentByName — OK');
+}
+
 async function main(): Promise<void> {
   await strictSchemaRejectsExtraField();
   await invalidWindowRejected();
   const prisma = new PrismaClient();
   try {
     await createAndReadBack(prisma);
+    await linkModelVersionAndFindRecentByName(prisma);
   } finally {
     await prisma.$disconnect();
   }

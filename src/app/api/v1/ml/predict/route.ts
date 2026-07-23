@@ -3,6 +3,7 @@ import { createHttpMlApiPort, MlHybridService } from '../../../../../application
 import { ReadModelError } from '../../../../../application/read-models-v1';
 import { prisma } from '../../../../../lib/prisma';
 import { jsonError, jsonSuccess, parseWithSchema } from '../../_shared/http';
+import { toPredictLivePublicDTO } from './_dto';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,7 +34,7 @@ export async function POST(request: Request): Promise<Response> {
     const service = new MlHybridService({ mlApi, prisma });
     const result = await service.predictLive(body.symbol);
 
-    return jsonSuccess(result, {}, 201);
+    return jsonSuccess(toPredictLivePublicDTO(result), {}, 201);
   } catch (error) {
     return jsonError(error);
   }

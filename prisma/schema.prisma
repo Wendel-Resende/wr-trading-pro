@@ -906,6 +906,29 @@ model BacktestCostProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Item B (auditoria final do Guardião, 2026-07-22, bloqueador crítico 1):
+// cobertura/falhas do último backfill D1 precisam sobreviver a reload —
+// nunca só `useState` no navegador, nunca `localStorage`. ADITIVO: nova
+// tabela append-only, nenhum modelo existente foi alterado.
+// `updatedSymbolsJson`/`failuresJson` guardam apenas texto já sanitizado
+// (ticker normalizado + resumo redigido) — nunca a mensagem bruta do
+// Python/upstream, que pode conter path/token/stack trace.
+// ---------------------------------------------------------------------------
+model BackfillRun {
+  backfillRunId      String   @id @default(cuid())
+  requestedBy        String
+  createdAt          DateTime @default(now())
+  status             String // SUCCESS | PARTIAL | FAILED
+  eligibleCount      Int
+  updatedCount       Int
+  failedCount        Int
+  updatedSymbolsJson String // JSON: string[] (tickers normalizados)
+  failuresJson       String // JSON: { ticker: string; reasonSummary: string }[] (já sanitizado)
+
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
 // Fase 6 — Consolidação (repository governado, replay, auditoria). ADITIVO:
 // nenhum modelo anterior foi alterado, inclusive `SpreadOrder` (legado, acima).
 // Ver docs/architecture/phase-6-consolidation.md

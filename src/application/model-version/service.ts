@@ -40,6 +40,12 @@ export class ModelVersionService {
     return Object.freeze(versions.map(assembleModelVersion));
   }
 
+  /** Item B (bloqueador alto 3): paginação server-side para a rota pública de visão ML. */
+  async listByKindPaginated(kind: ModelVersionKind, limit: number, cursor?: string): Promise<readonly ModelVersionReadModelV1[]> {
+    const versions = await this.ports.modelVersionRepository.listByKindPaginated(kind, limit, cursor);
+    return Object.freeze(versions.map(assembleModelVersion));
+  }
+
   async invalidate(modelVersion: string, invalidatedAt: string, reason: string): Promise<ModelVersionReadModelV1> {
     const existing = await this.ports.modelVersionRepository.findById(modelVersion);
     if (!existing) throw new ReadModelError('MODEL_VERSION_NOT_FOUND', `ModelVersion ${modelVersion} não encontrado`);

@@ -42,4 +42,21 @@ export class BacktestCostProfileService {
     }
     return profile;
   }
+
+  /** Leitura pública (qualquer usuário autenticado) — nunca retorna arquivados. */
+  async listActive(limit: number, cursor?: string): Promise<BacktestCostProfile[]> {
+    return this.ports.repository.listActive(limit, cursor);
+  }
+
+  /**
+   * Bloqueador 5 (revisão Guardião): leitura de detalhe por id, SEM checar
+   * `archivedAt` — histórico de BacktestRun pode referenciar um perfil já
+   * arquivado e a leitura precisa funcionar mesmo assim; só a criação/uso em
+   * novo treino é bloqueado para arquivados, via `resolveActiveForTraining`.
+   */
+  async get(id: string): Promise<BacktestCostProfile> {
+    const profile = await this.ports.repository.findById(id);
+    if (!profile) throw new ReadModelError('COST_PROFILE_NOT_FOUND', `BacktestCostProfile ${id} não encontrado`);
+    return profile;
+  }
 }

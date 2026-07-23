@@ -1,13 +1,25 @@
 import { z } from 'zod';
 import { prisma } from '../../../../lib/prisma';
 import { createResearchRunService } from '../../../../application/research-run';
+import { createModelVersionService } from '../../../../application/model-version';
+import { isTrainingEvidenceApproved } from '../../../../application/ml-hybrid/service';
 import { TimestampSchema } from '../../../../adapters/prisma/research-run';
-import { jsonError, jsonSuccess, parseWithSchema } from '../_shared/http';
+import { extractStrictQuery, jsonError, jsonSuccess, parseWithSchema } from '../_shared/http';
 import { ReadModelError } from '../../../../application/read-models-v1';
 import { resolveRequestedBy } from '../agent-runs/_requested-by';
+import { toResearchRunPublicDTO } from './_dto';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Achado médio 7 (auditoria final do Guardião, 2026-07-22): `modelVersionId`
+ * REMOVIDO do corpo aceito por este POST público — vincular um ResearchRun a
+ * uma ModelVersion "aprovada" só pode acontecer pelo caminho interno
+ * `MlHybridService.runTraining` → `linkModelVersion` (após o gate estatístico
+ * aprovar de fato), nunca por um cliente forjando o campo no corpo da
+ * requisição. Sem isso, qualquer chamador autenticado poderia produzir um
+ * `outcome: 'APROVADO'` falso apontando para qualquer ModelVersion existente.
+ */
 const BodySchema = z
   .object({
     name: z.string().min(1).max(200),
@@ -16,7 +28,6 @@ const BodySchema = z
     windowStart: TimestampSchema,
     windowEnd: TimestampSchema,
     paramsJson: z.string().min(1).max(20_000),
-    modelVersionId: z.string().min(1).max(64).nullish(),
   })
   .strict();
 
@@ -43,27 +54,68 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-const ListQuerySchema = z.object({ datasetId: z.string().min(1).max(200) }).strict();
+const ListQuerySchema = z
+  .object({
+    datasetId: z.string().min(1).max(200).optional(),
+    modelVersionId: z.string().min(1).max(64).optional(),
+    name: z.string().min(1).max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z.string().min(1).max(64).optional(),
+  })
+  .strict();
 
+/**
+ * Item B: os três seletores (`datasetId`/`modelVersionId`/`name`) são
+ * mutuamente exclusivos — exigir exatamente um. Todos, incluindo o caminho
+ * legado `datasetId` (revisão final do Guardião, bloqueador 2), devolvem o
+ * DTO público allowlist (bloqueador 3) e paginação `limit+1` (bloqueador 4).
+ */
 export async function GET(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    const allowedKeys = ['datasetId'] as const;
-    const raw: Record<string, string> = {};
-    for (const key of url.searchParams.keys()) {
-      if (!allowedKeys.includes(key as (typeof allowedKeys)[number])) {
-        throw new ReadModelError('INVALID_QUERY', `parâmetro de query desconhecido: ${key}`);
-      }
-    }
-    for (const key of allowedKeys) {
-      const value = url.searchParams.get(key);
-      if (value !== null) raw[key] = value;
-    }
+    const raw = extractStrictQuery(request, ['datasetId', 'modelVersionId', 'name', 'limit', 'cursor'] as const);
     const query = parseWithSchema(ListQuerySchema, raw);
 
+    const selectors = [query.datasetId, query.modelVersionId, query.name].filter((v) => v !== undefined);
+    if (selectors.length !== 1) {
+      throw new ReadModelError('INVALID_QUERY', 'informe exatamente um de: datasetId, modelVersionId ou name');
+    }
+
     const service = createResearchRunService(prisma);
-    const runs = await service.listByDataset(query.datasetId);
-    return jsonSuccess(runs, { count: runs.length });
+
+    const limit = query.limit ?? 20;
+
+    // Revisão final do Guardião (2026-07-22, bloqueador 2): o caminho legado
+    // `datasetId` também é rota pública autenticada — não pode devolver
+    // ResearchRun cru (`paramsJson`, `datasetId`, `createdBy`, `hypothesis`).
+    // Aplica o mesmo DTO público e a mesma paginação `limit+1` dos caminhos
+    // novos; ordenação permanece `createdAt asc` (comportamento pré-existente).
+    const runs = query.datasetId !== undefined
+      ? await service.listByDataset(query.datasetId, limit + 1, query.cursor)
+      : query.modelVersionId !== undefined
+        ? await service.listByModelVersion(query.modelVersionId, limit + 1, query.cursor)
+        : await service.listRecentByName(query.name as string, limit + 1, query.cursor);
+
+    const hasNext = runs.length > limit;
+    const page = hasNext ? runs.slice(0, limit) : runs;
+    const nextCursor = hasNext ? page[page.length - 1].runId : null;
+
+    // Achado médio 7: resolve, para cada modelVersionId REALMENTE linkado
+    // nesta página, se a evidência persistida da ModelVersion tem
+    // `gate.approved === true` — nunca confia em `modelVersionId !== null`
+    // sozinho (ver `_dto.ts`).
+    const modelVersionService = createModelVersionService(prisma);
+    const uniqueModelVersionIds = [...new Set(page.map((r) => r.modelVersionId).filter((id): id is string => id !== null))];
+    const gateApprovedByModelVersionId = new Map<string, boolean>();
+    for (const modelVersionId of uniqueModelVersionIds) {
+      try {
+        const version = await modelVersionService.get(modelVersionId);
+        gateApprovedByModelVersionId.set(modelVersionId, isTrainingEvidenceApproved(version.trainingEvidenceJson));
+      } catch {
+        gateApprovedByModelVersionId.set(modelVersionId, false);
+      }
+    }
+
+    return jsonSuccess(page.map((r) => toResearchRunPublicDTO(r, gateApprovedByModelVersionId)), { count: page.length, nextCursor });
   } catch (error) {
     return jsonError(error);
   }

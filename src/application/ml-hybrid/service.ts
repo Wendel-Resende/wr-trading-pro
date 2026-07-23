@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { PrismaClient } from '@prisma/client';
 import { createResearchRunService } from '../research-run';
 import { createModelVersionService } from '../model-version';
@@ -9,6 +10,7 @@ import { ReadModelError } from '../read-models-v1/errors';
 import { evaluateGate, type GateResult, type TrainingBlock } from './gate';
 import type { BacktestBar, BacktestSignalInput } from '../../domain/v1/models/backtest-run';
 import { b3DailyCloseKnowledgeInstant, emptyB3SessionCalendar, type B3DailySessionCalendar } from '../../domain/v1/time/b3-session';
+import { parseInstant } from '../../domain/v1/time';
 
 /**
  * ML Híbrido v1 — orquestração /api/v1/ml/* (Task 9, plano ML Híbrido v1;
@@ -127,7 +129,76 @@ export interface RunTrainingResult {
 export interface PredictLiveResult {
   readonly signalId: string;
   readonly prediction: PredictResult;
+  /**
+   * Achado alto 4 (auditoria final do Guardião, 2026-07-22): referência
+   * canônica da ModelVersion/dataset REALMENTE usados nesta previsão — a
+   * UI deve exibir só isto, nunca a `activeVersion` que carregou antes (que
+   * pode ter mudado sob concorrência: retreino em andamento, invalidação).
+   */
+  readonly modelVersionId: string;
+  readonly datasetHash: string;
+  readonly artifactHash: string;
 }
+
+/**
+ * Bloqueador 1 (revisão Guardião): nenhuma `ModelVersion` pode gerar
+ * previsão só por label/não-invalidada — o `trainingEvidenceJson` precisa
+ * carregar `gate.approved === true` de fato (parse estrito, qualquer erro
+ * de parse ou shape inesperado é tratado como reprovado).
+ */
+export function isTrainingEvidenceApproved(trainingEvidenceJson: string | null): boolean {
+  if (!trainingEvidenceJson) return false;
+  try {
+    const parsed: unknown = JSON.parse(trainingEvidenceJson);
+    return (parsed as { gate?: { approved?: unknown } } | null)?.gate?.approved === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Item B (correção residual, 2026-07-22): mesmo formato de digest exigido no
+ * DTO público (`_dto.ts`) — validado aqui TAMBÉM, antes de qualquer chamada
+ * ao Python ou persistência de `Signal`. Evidência de dataset/artefato
+ * malformada nunca pode chegar ao upstream nem gerar um `Signal` novo.
+ */
+const HEX_DIGEST_RE = /^[a-f0-9]{64}$/i;
+
+/**
+ * Item B (correção residual, 2026-07-22, bloqueador 2): mesmo shape estrito
+ * do DTO público (`predict/_dto.ts::PredictionSchema`), validado aqui ANTES
+ * de `signalService.generate` — não só na resposta HTTP. Score fora de
+ * [0,1], símbolo/data fora de formato ou `importance` negativa não podem
+ * mais persistir um `Signal` e só falhar depois na serialização do DTO;
+ * upstream adversarial/malformado retorna erro controlado sem efeito.
+ */
+const PREDICT_TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
+const PREDICT_DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/;
+
+const PredictionValidationSchema = z.object({
+  symbol: z.string().regex(PREDICT_TICKER_RE),
+  // Gate do Guardião (fronteira HTTP/data, 2026-07-22): `PREDICT_DATE_RE` só
+  // valida formato — datas impossíveis como `2026-02-31` passam na regex e
+  // só quebrariam depois, na geração do `Signal`. Reaplica a mesma regra
+  // canônica de calendário usada em todo o domínio (`parseInstant`), sobre
+  // o mesmo valor normalizado (`toInstant`) que `predictLive` usa para
+  // `barTime`/`knowledgeTime` — datas impossíveis falham aqui, antes de
+  // `signalService.generate`.
+  date: z.string().regex(PREDICT_DATE_RE).refine((value) => parseInstant(toInstant(value)) !== null, {
+    message: 'data de previsão semanticamente inválida (calendário impossível)',
+  }),
+  direction: z.enum(['BUY', 'SELL', 'HOLD']),
+  score: z.number().finite().min(0).max(1),
+  topFeatures: z
+    .array(
+      z.object({
+        name: z.string().max(200),
+        importance: z.number().finite().min(0),
+      }),
+    )
+    .max(20),
+  sourceMeta: z.record(z.string(), z.unknown()),
+});
 
 const MODEL_LABEL = 'ml-hybrid-swing-v1';
 /** Item A / D8: mesmo horizonte de `python/ml/features.py::target_direction`
@@ -269,7 +340,12 @@ export class MlHybridService {
         gate,
         artifact: trainResult.artifact,
         backtestProxy: trainResult.backtest.metrics,
-        datasetHash: trainResult.datasetHash,
+        // Item B (correção residual, 2026-07-22): `trainResult.datasetHash` é o
+        // identificador SEMÂNTICO prefixado (`sha256:...`, usado só como
+        // `ResearchRun.datasetId`) — nunca o digest 64-hex puro que
+        // `predictLive`/`model-versions/_dto.ts` (achado alto 6) exigem aqui.
+        // O campo correto é `datasetDigest` (D-hash cru do dataset final).
+        datasetHash: trainResult.datasetDigest,
         timesfmVersion: trainResult.timesfmVersion ?? null,
         windowStart: trainResult.windowStart,
         windowEnd: trainResult.windowEnd,
@@ -284,6 +360,13 @@ export class MlHybridService {
         trainingEvidenceJson,
       });
       modelVersionId = modelVersion.modelVersion;
+
+      // Bloqueador 2 (revisão Guardião): o ResearchRun criado no início deste
+      // método precisa ficar de fato linkado à ModelVersion aprovada — sem
+      // isso, `ResearchRun.modelVersionId` fica sempre null mesmo em treinos
+      // aprovados, e a leitura pública (bloqueador 2/3) não teria como provar
+      // aprovação a partir do ResearchRun.
+      await researchRunService.linkModelVersion(researchRun.runId, modelVersionId);
 
       backtests = await this.runRealBacktests(researchRun.runId, modelVersionId, trainResult, costProfile);
     }
@@ -376,26 +459,62 @@ export class MlHybridService {
   async predictLive(symbol: string): Promise<PredictLiveResult> {
     const modelVersionService = createModelVersionService(this.ports.prisma);
     const versions = await modelVersionService.listByKind('ML');
+    // Item B (correção residual, 2026-07-22, bloqueador 3): empate por `asOf`
+    // (duas ModelVersions aprovadas com o mesmo `asOf`) precisa desempatar
+    // deterministicamente por `createdAt desc`, depois `modelVersion desc` —
+    // mesma política já usada pela API/UI de listagem — nunca depender da
+    // ordem de retorno do Prisma.
     const candidates = versions
-      .filter((v) => v.label === MODEL_LABEL && v.invalidatedAt === null)
+      .filter((v) => v.label === MODEL_LABEL && v.invalidatedAt === null && isTrainingEvidenceApproved(v.trainingEvidenceJson))
       .slice()
-      .sort((a, b) => (a.asOf < b.asOf ? 1 : a.asOf > b.asOf ? -1 : 0));
+      .sort((a, b) => {
+        if (a.asOf !== b.asOf) return a.asOf < b.asOf ? 1 : -1;
+        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+        return a.modelVersion < b.modelVersion ? 1 : a.modelVersion > b.modelVersion ? -1 : 0;
+      });
     const modelVersion = candidates[0];
     if (!modelVersion) {
-      throw new ReadModelError('MODEL_VERSION_NOT_FOUND', `Nenhuma ModelVersion válida encontrada para label ${MODEL_LABEL}`);
+      throw new ReadModelError(
+        'MODEL_VERSION_NOT_FOUND',
+        `Nenhuma ModelVersion aprovada no gate encontrada para label ${MODEL_LABEL} (evidência ausente, malformada ou reprovada)`,
+      );
     }
 
     let artifactHash: string;
+    let datasetHash: string;
     try {
       const evidence: unknown = JSON.parse(modelVersion.trainingEvidenceJson ?? '{}');
       const hash = (evidence as { artifact?: { hash?: unknown } }).artifact?.hash;
+      const dataset = (evidence as { datasetHash?: unknown }).datasetHash;
       if (typeof hash !== 'string' || hash.length === 0) throw new Error('artifact.hash ausente');
+      if (typeof dataset !== 'string' || dataset.length === 0) throw new Error('datasetHash ausente');
       artifactHash = hash;
+      datasetHash = dataset;
     } catch {
-      throw new ReadModelError('MODEL_VERSION_NOT_FOUND', `ModelVersion ${modelVersion.modelVersion} sem artifact.hash válido`);
+      throw new ReadModelError('MODEL_VERSION_NOT_FOUND', `ModelVersion ${modelVersion.modelVersion} sem evidência de dataset/artefato válida`);
+    }
+
+    // Item B (correção residual, 2026-07-22): digest fora do formato 64-hex
+    // falha AQUI — antes de chamar o motor Python e antes de persistir
+    // qualquer `Signal`. Sem isto, uma ModelVersion aprovada no gate mas com
+    // evidência corrompida ainda disparava upstream + Signal, e só o DTO
+    // público (fase de resposta) barrava o dado depois do efeito já feito.
+    if (!HEX_DIGEST_RE.test(artifactHash) || !HEX_DIGEST_RE.test(datasetHash)) {
+      throw new ReadModelError(
+        'MODEL_VERSION_NOT_FOUND',
+        `ModelVersion ${modelVersion.modelVersion} com digest de dataset/artefato em formato inválido (esperado 64-hex)`,
+      );
     }
 
     const prediction = await this.ports.mlApi.predict(symbol, artifactHash);
+
+    const predictionValidation = PredictionValidationSchema.safeParse(prediction);
+    if (!predictionValidation.success) {
+      throw new ReadModelError(
+        'UPSTREAM_ERROR',
+        'previsão do motor ML em formato inválido (symbol/data/direction/score/importance) — nenhum Signal foi criado',
+      );
+    }
 
     const signalService = createSignalService(this.ports.prisma);
     const signal = await signalService.generate({
@@ -407,7 +526,11 @@ export class MlHybridService {
       knowledgeTime: toInstant(prediction.date),
     });
 
-    return { signalId: signal.signalId, prediction };
+    // Achado alto 4: modelVersionId/datasetHash/artifactHash devolvidos aqui
+    // são exatamente os resolvidos ACIMA no momento desta chamada — nunca
+    // reaproveitar um `activeVersion` carregado antes pela UI (que poderia
+    // já estar obsoleto sob concorrência: retreino aprovado nesse meio-tempo).
+    return { signalId: signal.signalId, prediction, modelVersionId: modelVersion.modelVersion, datasetHash, artifactHash };
   }
 }
 

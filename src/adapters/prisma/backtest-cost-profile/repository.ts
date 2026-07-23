@@ -35,4 +35,14 @@ export class PrismaBacktestCostProfileRepository implements BacktestCostProfileR
     });
     return toBacktestCostProfile(row);
   }
+
+  async listActive(limit: number, cursor?: string): Promise<BacktestCostProfile[]> {
+    const rows = await this.prisma.backtestCostProfile.findMany({
+      where: { archivedAt: null },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    return rows.map(toBacktestCostProfile);
+  }
 }
