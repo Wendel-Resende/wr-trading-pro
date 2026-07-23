@@ -1,0 +1,1 @@
+export { PrismaMlTrainingRunRepository } from './repository';

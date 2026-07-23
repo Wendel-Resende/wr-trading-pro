@@ -11,6 +11,7 @@ export function assembleModelVersion(model: ModelVersion): ModelVersionReadModel
     trainingEvidenceJson: model.trainingEvidenceJson,
     invalidatedAt: model.invalidatedAt,
     invalidationReason: model.invalidationReason,
+    publishedAt: model.publishedAt,
     createdAt: model.createdAt,
   });
 }

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@/*": ["../../src/*"]
+    }
+  },
+  "include": [
+    "ml-training-run-test.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/domain/v1/**/*.ts",
+    "../../src/application/**/*.ts",
+    "../../src/app/api/v1/_shared/**/*.ts",
+    "../../src/app/api/v1/ml/training-runs/**/*.ts",
+    "../../src/app/api/v1/ml/train/**/*.ts",
+    "../../src/app/api/v1/agent-runs/_requested-by.ts",
+    "../../src/lib/**/*.ts"
+  ]
+}

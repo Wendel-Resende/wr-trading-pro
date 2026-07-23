@@ -52,4 +52,12 @@ export class ModelVersionService {
     const updated = await this.ports.modelVersionRepository.invalidate(modelVersion, invalidatedAt, reason);
     return assembleModelVersion(updated);
   }
+
+  /** LOTE 2 (Item C): publica (ativa) uma ModelVersion DRAFT — ver `ModelVersionRepository.publish`. */
+  async publish(modelVersion: string, publishedAt: string): Promise<ModelVersionReadModelV1> {
+    const existing = await this.ports.modelVersionRepository.findById(modelVersion);
+    if (!existing) throw new ReadModelError('MODEL_VERSION_NOT_FOUND', `ModelVersion ${modelVersion} não encontrado`);
+    const updated = await this.ports.modelVersionRepository.publish(modelVersion, publishedAt);
+    return assembleModelVersion(updated);
+  }
 }

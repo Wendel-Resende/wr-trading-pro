@@ -124,6 +124,17 @@ export interface RunTrainingResult {
   readonly metrics: TrainResult;
   /** `null` quando o gate reprova — não há por que provar economicamente um modelo descartado (D12/desvio #6 original). */
   readonly backtests: RunTrainingBacktests | null;
+  /**
+   * LOTE 2 (Item C, correção da corrida cancel/publicação, 2026-07-23):
+   * `true` quando o gate aprovou mas o claim CAS final (`hooks.
+   * claimAndPublish`) falhou porque o `MlTrainingRun` já não estava mais
+   * `RUNNING` (cancelamento venceu a corrida). Nesse caso `modelVersionId`
+   * continua preenchido (a ModelVersion FOI criada, como DRAFT), mas
+   * `ModelVersion.publishedAt` permanece `null` para sempre — nunca
+   * elegível para `predictLive`/seleção de "modelo ativo". `ResearchRun` e
+   * `BacktestRun`s permanecem para auditoria.
+   */
+  readonly publicationAborted: boolean;
 }
 
 export interface PredictLiveResult {
@@ -316,6 +327,61 @@ export class MlHybridService {
     const costProfile = await costProfileService.resolveActiveForTraining(costProfileId);
 
     const trainResult = await this.ports.mlApi.train(symbols);
+    return this.finalizeTraining(createdBy, costProfile, trainResult);
+  }
+
+  /**
+   * Item C (treino ML assíncrono): mesma orquestração pós-treino de
+   * `runTraining` (gate → ResearchRun → ModelVersion DRAFT → backtests
+   * reais → claim/publish), extraída para ser reaproveitada pelo worker
+   * assíncrono (`src/application/ml-training-run/worker.ts`), que já tem o
+   * `TrainResult` em mãos (obtido via job Python cancelável, nunca via
+   * `mlApi.train()` bloqueante). `costProfile` já deve estar resolvido —
+   * o worker resolve o mesmo `BacktestCostProfileService` antes de chamar.
+   *
+   * LOTE 2 (Item C, correção da corrida cancel/publicação, 2026-07-23): a
+   * `ModelVersion` é SEMPRE criada como DRAFT (`publishedAt: null`) —
+   * nunca elegível para `predictLive` enquanto não publicada. Publicação é
+   * um claim CAS atômico (`hooks.claimAndPublish`) chamado só DEPOIS dos
+   * backtests, nunca antes: o antigo desenho fazia um `UPDATE ... WHERE
+   * status='RUNNING'` que NÃO mudava o status (só `progress`), deixando uma
+   * janela real em que um cancelamento concorrente ainda podia vencer a
+   * corrida contra `updateMany`/`create` da ModelVersion (bloqueadores
+   * 3/17/18). Agora a ModelVersion nasce inerte; só o claim final decide se
+   * ela vira "ativa" — e o claim faz a escrita em `MlTrainingRun` E em
+   * `ModelVersion.publishedAt` na MESMA transação Prisma.
+   */
+  async finalizeTraining(
+    createdBy: string,
+    costProfile: { readonly id: string; readonly version: number; readonly fixedBrokerage: number; readonly emolumentsPct: number; readonly spreadBps: number; readonly slippageBps: number; readonly lotSize: number },
+    trainResult: TrainResult,
+    hooks?: {
+      /**
+       * Checkpoint cooperativo verificado a cada símbolo do loop de
+       * backtests (`runRealBacktests`) — nunca a cada amostra de treino.
+       * Retornar `true` interrompe o loop de backtests imediatamente (sem
+       * processar os símbolos restantes) e pula direto para o claim final,
+       * que vai falhar/abortar de qualquer forma porque o mesmo estado de
+       * cancelamento é o que este hook está lendo. Ausente = nunca
+       * interrompe (fluxo síncrono legado).
+       */
+      readonly checkCancelled?: () => Promise<boolean>;
+      /**
+       * CLAIM CAS atômico: recebe o `modelVersionId` (sempre criado como
+       * DRAFT antes deste ponto) e, em uma ÚNICA transação Prisma, (a) faz
+       * um UPDATE condicional no `MlTrainingRun` dono do treino (só afeta
+       * uma linha se o run ainda estiver `RUNNING`) e (b) SÓ SE esse UPDATE
+       * afetou uma linha, publica a ModelVersion (`publishedAt = now()`)
+       * dentro da MESMA transação. Retorna `true` só quando a publicação
+       * de fato aconteceu; `false` quando o claim falhou (run já não estava
+       * RUNNING — cancelamento venceu a corrida) e a ModelVersion permanece
+       * DRAFT para sempre (órfã, mas auditável via `ResearchRun`). Ausente
+       * (fluxo síncrono legado `/ml/train`, nunca cancelável) publica
+       * imediatamente, sem claim.
+       */
+      readonly claimAndPublish?: (modelVersionId: string) => Promise<boolean>;
+    },
+  ): Promise<RunTrainingResult> {
     const gate = evaluateGate(trainResult.blocks);
 
     const researchRunService = createResearchRunService(this.ports.prisma);
@@ -333,6 +399,8 @@ export class MlHybridService {
 
     let modelVersionId: string | null = null;
     let backtests: RunTrainingBacktests | null = null;
+    let publicationAborted = false;
+
     if (gate.approved) {
       const trainingEvidenceJson = JSON.stringify({
         aggregate: trainResult.aggregate,
@@ -352,6 +420,8 @@ export class MlHybridService {
       });
 
       const modelVersionService = createModelVersionService(this.ports.prisma);
+      // Sempre DRAFT (`publishedAt: null`) — nunca elegível para previsão
+      // até o claim final abaixo publicar de fato.
       const modelVersion = await modelVersionService.submit({
         kind: 'ML',
         label: MODEL_LABEL,
@@ -365,13 +435,23 @@ export class MlHybridService {
       // método precisa ficar de fato linkado à ModelVersion aprovada — sem
       // isso, `ResearchRun.modelVersionId` fica sempre null mesmo em treinos
       // aprovados, e a leitura pública (bloqueador 2/3) não teria como provar
-      // aprovação a partir do ResearchRun.
+      // aprovação a partir do ResearchRun. Linkar é sempre seguro mesmo se a
+      // ModelVersion nunca for publicada — é só proveniência/auditoria.
       await researchRunService.linkModelVersion(researchRun.runId, modelVersionId);
 
-      backtests = await this.runRealBacktests(researchRun.runId, modelVersionId, trainResult, costProfile);
+      backtests = await this.runRealBacktests(researchRun.runId, modelVersionId, trainResult, costProfile, hooks?.checkCancelled);
+
+      if (hooks?.claimAndPublish) {
+        const published = await hooks.claimAndPublish(modelVersionId);
+        if (!published) publicationAborted = true;
+      } else {
+        // Fluxo síncrono legado (`runTraining`, sem worker assíncrono, nunca
+        // cancelável) — publica imediatamente, sem claim.
+        await modelVersionService.publish(modelVersionId, new Date().toISOString());
+      }
     }
 
-    return { researchRunId: researchRun.runId, gate, modelVersionId, metrics: trainResult, backtests };
+    return { researchRunId: researchRun.runId, gate, modelVersionId, metrics: trainResult, backtests, publicationAborted };
   }
 
   /**
@@ -385,6 +465,17 @@ export class MlHybridService {
     modelVersionId: string,
     trainResult: TrainResult,
     costProfile: { readonly id: string; readonly version: number; readonly fixedBrokerage: number; readonly emolumentsPct: number; readonly spreadBps: number; readonly slippageBps: number; readonly lotSize: number },
+    /**
+     * LOTE 2 (Item C): checkpoint cooperativo — verificado ANTES de cada
+     * símbolo (nunca a cada amostra/iteração interna do backtest). Se
+     * retornar `true`, o loop para imediatamente: os símbolos restantes
+     * ficam marcados como `SKIPPED_CANCELLED` (auditável) e a publicação
+     * final nem chega a ser tentada com cobertura completa — o claim final
+     * em `finalizeTraining` decide sozinho se publica ou não, mas parar
+     * aqui evita trabalho (I/O com o motor Python, escrita de BacktestRun)
+     * que seria descartado de qualquer forma.
+     */
+    checkCancelled?: () => Promise<boolean>,
   ): Promise<RunTrainingBacktests> {
     const calendar = this.ports.b3SessionCalendar ?? emptyB3SessionCalendar();
     const backtestRunService = createBacktestRunService(this.ports.prisma);
@@ -394,6 +485,12 @@ export class MlHybridService {
     const skipped: Record<string, string> = {};
 
     for (const symbol of trainResult.universe) {
+      if (checkCancelled && (await checkCancelled())) {
+        for (const remaining of trainResult.universe.slice(trainResult.universe.indexOf(symbol))) {
+          skipped[remaining] = 'SKIPPED_CANCELLED';
+        }
+        break;
+      }
       try {
         const [predictions, rawBars] = await Promise.all([
           fetchAllRows((limit, offset) => this.ports.mlApi.getWalkforwardPredictions(trainResult.artifact.hash, symbol, { limit, offset })),
@@ -465,7 +562,11 @@ export class MlHybridService {
     // mesma política já usada pela API/UI de listagem — nunca depender da
     // ordem de retorno do Prisma.
     const candidates = versions
-      .filter((v) => v.label === MODEL_LABEL && v.invalidatedAt === null && isTrainingEvidenceApproved(v.trainingEvidenceJson))
+      // LOTE 2 (Item C): `publishedAt === null` = DRAFT — nunca elegível,
+      // mesmo com gate aprovado e evidência válida. Só ModelVersion
+      // publicada dentro do claim CAS atômico (`worker.ts`
+      // `claimAndPublish`) pode gerar previsão.
+      .filter((v) => v.label === MODEL_LABEL && v.invalidatedAt === null && v.publishedAt !== null && isTrainingEvidenceApproved(v.trainingEvidenceJson))
       .slice()
       .sort((a, b) => {
         if (a.asOf !== b.asOf) return a.asOf < b.asOf ? 1 : -1;

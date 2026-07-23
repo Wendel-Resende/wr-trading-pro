@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { createHttpMlApiPort, MlHybridService } from '../../../../../application/ml-hybrid';
+import { createBacktestCostProfileService } from '../../../../../application/backtest-cost-profile';
+import { createHttpMlTrainJobPort, createMlTrainingRunService, ensureReconciledOnce, scheduleTrainingRun, toMlTrainingRunPublicDTO } from '../../../../../application/ml-training-run';
 import { ReadModelError } from '../../../../../application/read-models-v1';
 import { prisma } from '../../../../../lib/prisma';
 import { jsonError, jsonSuccess, parseWithSchema } from '../../_shared/http';
@@ -7,9 +8,17 @@ import { resolveRequestedBy } from '../../agent-runs/_requested-by';
 
 export const dynamic = 'force-dynamic';
 
-// G-003 item 1: mesmo formato de ticker validado no Flask (`ml_api.py::_TICKER_RE`)
-// — nunca confiar só na validação do lado Python, já que os símbolos aceitos
-// aqui compõem diretamente o path do snapshot rio abaixo.
+/**
+ * Item C (spec §7): rota legada. A UI NUNCA mais chama este endpoint —
+ * usa `POST /api/v1/ml/training-runs`. Mantido apenas para compatibilidade
+ * de qualquer integrador externo remanescente: em vez de bloquear a
+ * requisição por até 600000ms (o bug documentado na spec — o Flask
+ * continuava computando um treino órfão depois do abort do Node), este
+ * endpoint agora delega ao mesmo fluxo assíncrono/persistido e responde
+ * 202 imediatamente com o `trainingRunId` para acompanhamento via
+ * `GET /api/v1/ml/training-runs/{id}`. Nunca mais volta ao bloqueio
+ * síncrono órfão.
+ */
 const TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
 
 const BodySchema = z
@@ -26,10 +35,7 @@ const BodySchema = z
       .min(1)
       .max(200)
       .optional()
-      // G-003 item 1: deduplica preservando a primeira ocorrência — mesmo
-      // contrato de `ml_api.py::symbols_from` no lado Flask.
       .transform((syms) => (syms ? Array.from(new Set(syms)) : syms)),
-    // Item A / D5: obrigatório — nenhum custo default é aceito no fluxo de backtest real.
     costProfileId: z.string().min(1).max(64),
   })
   .strict();
@@ -42,17 +48,43 @@ async function parseBody(request: Request): Promise<unknown> {
   }
 }
 
+function mlApiBaseUrl(): string {
+  return process.env.WR_ML_API_URL ?? 'http://127.0.0.1:5560';
+}
+
+/**
+ * Bloqueador 4 (revisão Guardião): a rota legada também precisa reconciliar
+ * antes de aceitar um novo pedido — sem isso, um restart do Node deixaria
+ * runs anteriores presos em `RUNNING` mesmo quando acessados só por aqui.
+ */
 export async function POST(request: Request): Promise<Response> {
   try {
+    await ensureReconciledOnce({ prisma, trainJobPort: createHttpMlTrainJobPort(mlApiBaseUrl()), mlApiBaseUrl: mlApiBaseUrl() });
     const raw = await parseBody(request);
     const body = parseWithSchema(BodySchema, raw);
-    const createdBy = await resolveRequestedBy(request);
+    const requestedBy = await resolveRequestedBy(request);
 
-    const mlApi = createHttpMlApiPort(process.env.WR_ML_API_URL ?? 'http://127.0.0.1:5560');
-    const service = new MlHybridService({ mlApi, prisma });
-    const result = await service.runTraining(createdBy, body.costProfileId, body.symbols);
+    const costProfileService = createBacktestCostProfileService(prisma);
+    const costProfile = await costProfileService.resolveActiveForTraining(body.costProfileId);
 
-    return jsonSuccess(result, {}, 201);
+    const service = createMlTrainingRunService(prisma);
+    const run = await service.requestTraining(requestedBy, costProfile.id, costProfile.version, body.symbols ?? null);
+
+    scheduleTrainingRun(run.trainingRunId, {
+      prisma,
+      trainJobPort: createHttpMlTrainJobPort(mlApiBaseUrl()),
+      mlApiBaseUrl: mlApiBaseUrl(),
+    });
+
+    return jsonSuccess(
+      {
+        deprecated: true,
+        message: 'POST /api/v1/ml/train está depreciado — use POST /api/v1/ml/training-runs e acompanhe via GET /api/v1/ml/training-runs/{id}.',
+        ...toMlTrainingRunPublicDTO(run),
+      },
+      {},
+      202,
+    );
   } catch (error) {
     return jsonError(error);
   }

@@ -8,3 +8,4 @@ websockets>=15,<16
 lightgbm
 timesfm
 pyarrow
+psutil>=5.9,<7

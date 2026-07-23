@@ -817,6 +817,17 @@ model ResearchRun {
   @@index([createdBy, createdAt])
 }
 
+// publishedAt (LOTE 2, Item C — correção da corrida cancel/publicação,
+// 2026-07-23): NULL = DRAFT, nunca elegível para `predictLive`/qualquer
+// seleção de "modelo ativo" — só passa a ser candidata depois que
+// `publishedAt` é setado dentro da MESMA transação Prisma que faz o claim
+// CAS condicional em `MlTrainingRun` (ver
+// `src/application/ml-training-run/worker.ts` `claimAndPublish`). Uma
+// ModelVersion criada durante um treino que acaba cancelado permanece
+// DRAFT para sempre — órfã mas auditável (ligada ao ResearchRun), nunca
+// publicada/ativa. ADITIVO: coluna nullable, sem alterar linhas existentes
+// (todas continuam DRAFT após a migration; publicação retroativa não é
+// necessária pois nenhum código antigo lia este campo).
 model ModelVersion {
   modelVersion         String    @id @default(cuid())
   kind                 String // 'ML' | 'RULE'
@@ -826,9 +837,11 @@ model ModelVersion {
   trainingEvidenceJson String? // métricas de fit/validation/test; obrigatório quando kind='ML'
   invalidatedAt        DateTime?
   invalidationReason   String?
+  publishedAt          DateTime? // NULL = DRAFT (nunca elegível para previsão); setado só via claim CAS atômico
   createdAt            DateTime  @default(now())
 
   @@index([kind, asOf])
+  @@index([kind, publishedAt])
 }
 
 model Signal {
@@ -926,6 +939,42 @@ model BackfillRun {
   failuresJson       String // JSON: { ticker: string; reasonSummary: string }[] (já sanitizado)
 
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Item C (treino ML assíncrono, persistido e cancelável, 2026-07-22): a UI
+// síncrona chamava POST /api/v1/ml/train direto, o adapter Next abortava em
+// 600000ms mas o Flask continuava computando (treino órfão, sem
+// ResearchRun/ModelVersion novos). `MlTrainingRun` é o ledger append-only do
+// pedido de treino — entrada e resultado final IMUTÁVEIS; toda transição de
+// status passa por `src/application/ml-training-run` (máquina de estados
+// explícita, nunca terminal -> não-terminal). ADITIVO: nenhum modelo
+// existente foi alterado. Ver
+// docs/architecture/2026-07-22-item-c-async-ml-training.md
+// ---------------------------------------------------------------------------
+model MlTrainingRun {
+  trainingRunId      String    @id @default(cuid())
+  requestedBy        String
+  costProfileId      String
+  costProfileVersion Int
+  symbolsJson        String // JSON: string[] | null (null = universo canônico resolvido pelo Python)
+  status             String // QUEUED | RUNNING | SUCCEEDED | REJECTED | FAILED | CANCEL_REQUESTED | CANCELLED | INTERRUPTED
+  phase              String // QUEUED | SNAPSHOT | DATASET | TRAINING | GATE | BACKTESTS | FINALIZING
+  progress           Int       @default(0)
+  pythonJobId        String? // referência interna ao job Flask/subprocesso — nunca exposta em DTO público
+  researchRunId      String?
+  modelVersionId     String?
+  gateJson           String? // allowlist: {approved, comparisons:[{baseline,accuracyDiff,ciLower,passed}]}
+  metricsJson        String? // allowlist: {nSamples, accuracy, baselines:{...}}
+  errorCode          String?
+  errorSummary       String? // sempre sanitizado — nunca mensagem/stack trace bruto do Python
+  createdAt          DateTime  @default(now())
+  startedAt          DateTime?
+  completedAt        DateTime?
+  cancelRequestedAt  DateTime?
+
+  @@index([status, createdAt])
+  @@index([requestedBy, createdAt])
 }
 
 // ---------------------------------------------------------------------------

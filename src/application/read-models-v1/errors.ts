@@ -45,7 +45,18 @@ export type ReadModelErrorCode =
   | 'SYMBOL_NOT_IN_ARTIFACT'
   | 'INVALID_HASH'
   | 'ARTIFACT_UNREADABLE'
-  | 'SNAPSHOT_NOT_FOUND';
+  | 'SNAPSHOT_NOT_FOUND'
+  // Item C (treino ML assíncrono, persistido e cancelável):
+  | 'TRAINING_RUN_NOT_FOUND'
+  | 'TRAINING_RUN_ALREADY_ACTIVE'
+  | 'TRAINING_RUN_NOT_CANCELABLE'
+  | 'INVALID_TRAINING_RUN_TRANSITION'
+  // Bloqueador 5 (revisão Guardião): payload do motor Python que falha a
+  // validação estrita de runtime em `createHttpMlTrainJobPort`.
+  | 'UPSTREAM_MALFORMED_RESPONSE'
+  // Bloqueador 12 (revisão Guardião): principal não resolvido (sessão
+  // ausente/inválida) tentando criar/listar/cancelar um MlTrainingRun.
+  | 'UNAUTHENTICATED';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   INVALID_QUERY: 400,
@@ -94,6 +105,12 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   INVALID_HASH: 400,
   ARTIFACT_UNREADABLE: 422,
   SNAPSHOT_NOT_FOUND: 422,
+  TRAINING_RUN_NOT_FOUND: 404,
+  TRAINING_RUN_ALREADY_ACTIVE: 409,
+  TRAINING_RUN_NOT_CANCELABLE: 409,
+  INVALID_TRAINING_RUN_TRANSITION: 409,
+  UPSTREAM_MALFORMED_RESPONSE: 502,
+  UNAUTHENTICATED: 401,
 };
 
 /**

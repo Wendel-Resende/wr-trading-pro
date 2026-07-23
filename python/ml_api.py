@@ -4,8 +4,10 @@ Motor de ML da plataforma: backfill D1 (MT5), dataset point-in-time,
 treino walk-forward e inferência. Governança/persistência ficam no Next
 (/api/v1/ml/*). Nunca envia ordem; nunca inventa dado.
 """
+import json
 import os
 import re
+import sys
 import lightgbm as lgb
 import pandas as pd
 from flask import Flask, jsonify, request
@@ -14,6 +16,7 @@ from ml.bars_snapshot import SnapshotNotFoundError, load_snapshot_bars, write_un
 from ml.candles import Mt5DailyClient, backfill_symbols, load_daily_candles
 from ml.dataset import ALL_FEATURES, build_dataset, build_inference_row
 from ml.fundamentals import list_universe
+from ml.job_runner import JobRegistry
 from ml.timesfm_adapter import TimesFmFeatureProvider
 from ml.train import run_training
 
@@ -23,9 +26,14 @@ DEFAULTS = {
     'cvm_db_path': os.path.join(_ROOT, 'data', 'cvm', 'cvm_fundamentos.db'),
     'models_dir': os.path.join(_ROOT, 'data', 'ml', 'models'),
     'bars_snapshot_dir': os.path.join(_ROOT, 'data', 'ml', 'bars_snapshot'),
+    'tfm_cache_dir': os.path.join(_ROOT, 'data', 'ml', 'tfm_cache'),
+    'jobs_dir': os.path.join(_ROOT, 'data', 'ml', 'training_jobs'),
     'tfm_provider': None,  # lazy TimesFmFeatureProvider real
     'mt5_client_factory': Mt5DailyClient,
+    'job_registry_factory': JobRegistry,
 }
+
+_JOB_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 
 # Item A / D7: hash de artefato (64 hex, sem prefixo — D-hash) e símbolo B3
 # validados ANTES de qualquer acesso a filesystem, para eliminar risco de
@@ -105,6 +113,117 @@ def create_app(deps=None):
                 return jsonify({'error': 'INSUFFICIENT_DATA', 'detail': str(exc)}), 422
             raise
         return jsonify(result)
+
+    # -----------------------------------------------------------------
+    # Item C — treino assíncrono, cancelável de verdade. Cada job roda em
+    # PROCESSO SEPARADO (ml/train_worker.py via `job_registry.start`), nunca
+    # em thread do processo Flask: cancelar mata o processo do SO, não
+    # depende de nenhum checkpoint cooperativo dentro de TimesFM/LightGBM.
+    # Governança (ResearchRun/ModelVersion/gate) continua inteiramente no
+    # Next — este endpoint só expõe start/status/cancel do trabalho Python.
+    # -----------------------------------------------------------------
+    os.makedirs(cfg['jobs_dir'], exist_ok=True)
+    job_registry = cfg['job_registry_factory'](jobs_dir=cfg['jobs_dir'])
+    # Reconcilia jobs de uma execucao anterior do processo Flask (restart):
+    # sem isso, um job iniciado antes do restart seria "esquecido" e
+    # reportado como UNKNOWN mesmo que o processo do SO ainda esteja vivo.
+    job_registry.reconcile_from_disk()
+
+    @app.post('/ml/train-jobs')
+    def start_train_job():
+        body = request.get_json(silent=True)
+        try:
+            symbols = symbols_from(body)
+        except InvalidSymbolsError as exc:
+            return jsonify({'error': 'INVALID_SYMBOLS', 'detail': str(exc)}), 400
+
+        # Bloqueador 9/19 (revisão Guardião): o jobId é gerado e persistido
+        # pelo Next ANTES deste POST (no MlTrainingRun), não aqui — elimina
+        # a janela persistência→efeito em que uma resposta perdida deixaria
+        # um processo Python órfão sem ID conhecido do lado Node. `start()`
+        # do JobRegistry é idempotente para este jobId: um retry por timeout
+        # nunca spawna um segundo processo.
+        raw_job_id = (body or {}).get('jobId') if isinstance(body, dict) else None
+        if not isinstance(raw_job_id, str) or not _JOB_ID_RE.match(raw_job_id):
+            return jsonify({'error': 'INVALID_JOB_ID'}), 400
+        job_id = raw_job_id
+
+        os.makedirs(cfg['jobs_dir'], exist_ok=True)
+        worker_cfg = {
+            'dbPath': cfg['db_path'],
+            'cvmDbPath': cfg['cvm_db_path'],
+            'modelsDir': cfg['models_dir'],
+            'barsSnapshotDir': cfg['bars_snapshot_dir'],
+            'tfmCacheDir': cfg['tfm_cache_dir'],
+        }
+        args = [
+            sys.executable, '-u', '-m', 'ml.train_worker',
+            job_id, cfg['jobs_dir'], json.dumps(symbols), json.dumps(worker_cfg),
+        ]
+        job_registry.start(args, job_id=job_id, cwd=os.path.dirname(os.path.abspath(__file__)))
+        return jsonify({'jobId': job_id}), 202
+
+    @app.get('/ml/train-jobs/<job_id>')
+    def get_train_job(job_id: str):
+        if not _JOB_ID_RE.match(job_id):
+            return jsonify({'error': 'INVALID_JOB_ID'}), 400
+
+        job_state = job_registry.status(job_id)
+        progress_path = os.path.join(cfg['jobs_dir'], f'{job_id}.progress.json')
+        result_path = os.path.join(cfg['jobs_dir'], f'{job_id}.result.json')
+        error_path = os.path.join(cfg['jobs_dir'], f'{job_id}.error.json')
+
+        phase, progress = 'SNAPSHOT', 0
+        if os.path.exists(progress_path):
+            try:
+                with open(progress_path, 'r', encoding='utf-8') as f:
+                    snap = json.load(f)
+                phase, progress = snap.get('phase', phase), int(snap.get('progress', progress))
+            except Exception:  # noqa: BLE001 — arquivo de progresso corrompido nunca derruba o status
+                pass
+
+        # Nunca existiu neste registry (nem em disco): distinto de RUNNING,
+        # para que o chamador nao trate um ID desconhecido como em progresso.
+        if job_state == 'UNKNOWN':
+            return jsonify({'state': 'UNKNOWN', 'phase': phase, 'progress': progress}), 404
+
+        if job_state in ('RUNNING', 'ORPHAN_RUNNING'):
+            return jsonify({'state': 'RUNNING', 'phase': phase, 'progress': progress,
+                             'orphan': job_state == 'ORPHAN_RUNNING'})
+
+        if job_registry.is_cancelled(job_id):
+            return jsonify({'state': 'CANCELLED', 'phase': phase, 'progress': progress})
+
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, 'r', encoding='utf-8') as f:
+                    result = json.load(f)
+                return jsonify({'state': 'SUCCEEDED', 'phase': 'TRAINING', 'progress': 100, 'result': result})
+            except Exception:  # noqa: BLE001 — resultado corrompido vira erro sanitizado, nunca stack trace
+                return jsonify({'state': 'FAILED', 'phase': phase, 'progress': progress, 'errorCode': 'TRAINING_ERROR'})
+
+        if os.path.exists(error_path):
+            try:
+                with open(error_path, 'r', encoding='utf-8') as f:
+                    err = json.load(f)
+                code = err.get('code', 'TRAINING_ERROR')
+            except Exception:  # noqa: BLE001
+                code = 'TRAINING_ERROR'
+            return jsonify({'state': 'FAILED', 'phase': phase, 'progress': progress, 'errorCode': code})
+
+        return jsonify({'state': 'FAILED', 'phase': phase, 'progress': progress, 'errorCode': 'TRAINING_ERROR'})
+
+    @app.post('/ml/train-jobs/<job_id>/cancel')
+    def cancel_train_job(job_id: str):
+        if not _JOB_ID_RE.match(job_id):
+            return jsonify({'error': 'INVALID_JOB_ID'}), 400
+        # Bloqueador 17 (revisão Guardião): 'state' só é 'CANCELLED' quando a
+        # árvore de processos foi CONFIRMADAMENTE encerrada. Sem confirmação,
+        # reporta 'RUNNING' (o processo pode continuar vivo) — nunca mente
+        # sobre o estado para o chamador Node.
+        confirmed = job_registry.cancel(job_id)
+        state = 'CANCELLED' if confirmed else 'RUNNING'
+        return jsonify({'state': state, 'processConfirmedTerminated': confirmed}), 200
 
     @app.post('/ml/predict')
     def predict():

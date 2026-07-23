@@ -10,5 +10,6 @@ export const toModelVersion = (row: ModelVersionRow): ModelVersion => ({
   trainingEvidenceJson: row.trainingEvidenceJson,
   invalidatedAt: row.invalidatedAt ? row.invalidatedAt.toISOString() : null,
   invalidationReason: row.invalidationReason,
+  publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
   createdAt: row.createdAt.toISOString(),
 });

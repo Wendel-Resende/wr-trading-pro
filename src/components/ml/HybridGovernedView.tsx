@@ -96,6 +96,35 @@ interface ResearchRunReadModel {
   readonly outcome: 'APROVADO' | 'REPROVADO';
 }
 
+/**
+ * Item C (treino ML assíncrono, persistido e cancelável, 2026-07-22):
+ * espelha `MlTrainingRunPublicDTO` (`src/application/ml-training-run/dto.ts`)
+ * — nunca `pythonJobId` (referência interna de infraestrutura).
+ */
+interface TrainingRunPublicDTO {
+  readonly trainingRunId: string;
+  readonly status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'REJECTED' | 'FAILED' | 'CANCEL_REQUESTED' | 'CANCELLED' | 'INTERRUPTED';
+  readonly phase: 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'BACKTESTS' | 'FINALIZING';
+  readonly progress: number;
+  readonly costProfileId: string;
+  readonly costProfileVersion: number;
+  readonly symbols: readonly string[] | null;
+  readonly researchRunId: string | null;
+  readonly modelVersionId: string | null;
+  readonly gate: { readonly approved: boolean; readonly comparisons: readonly GateComparison[] } | null;
+  readonly metrics: {
+    readonly nSamples: number;
+    readonly accuracy: number;
+    readonly baselines: { readonly alwaysUp: number; readonly timesfmOnly: number; readonly fundamentalOnly: number; readonly priceOnlyLgbm: number };
+  } | null;
+  readonly errorCode: string | null;
+  readonly errorSummary: string | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly cancelRequestedAt: string | null;
+}
+
 interface ApiEnvelopeSuccess<T> {
   success: true;
   data: T;
@@ -258,6 +287,93 @@ export default function HybridGovernedView() {
   const [backfillError, setBackfillError] = useState<ClassifiedError | null>(null);
   const [failuresOffset, setFailuresOffset] = useState(0);
   const FAILURES_PAGE_SIZE = 10;
+
+  // Item C (treino ML assíncrono, persistido e cancelável, 2026-07-22):
+  // estado hidratado de `GET /api/v1/ml/training-runs` — nunca `useState`
+  // isolado nem `localStorage`. Reload recupera o mesmo run em andamento
+  // (ou o mais recente do histórico) direto do servidor.
+  const [trainingRun, setTrainingRun] = useState<TrainingRunPublicDTO | null>(null);
+  const [trainingHistory, setTrainingHistory] = useState<readonly TrainingRunPublicDTO[]>([]);
+  const [loadingTrainingRuns, setLoadingTrainingRuns] = useState(true);
+  const [trainingRunsError, setTrainingRunsError] = useState<ClassifiedError | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  const loadTrainingRuns = useCallback(async () => {
+    setLoadingTrainingRuns(true);
+    setTrainingRunsError(null);
+    try {
+      const res = await fetch('/api/v1/ml/training-runs?limit=20');
+      const json = (await res.json()) as ApiEnvelope<TrainingRunPublicDTO[]>;
+      if (!json.success) {
+        toast.error(`${json.error.code}: ${json.error.message}`);
+        setTrainingRunsError(classifyNetworkError(`${json.error.code}: ${json.error.message}`));
+        return;
+      }
+      setTrainingHistory(json.data);
+      const active = json.data.find((r) => r.status === 'QUEUED' || r.status === 'RUNNING' || r.status === 'CANCEL_REQUESTED');
+      setTrainingRun(active ?? json.data[0] ?? null);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      toast.error(message);
+      setTrainingRunsError(classifyNetworkError(message));
+    } finally {
+      setLoadingTrainingRuns(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    void loadTrainingRuns();
+  }, [loadTrainingRuns]);
+
+  // Polling limitado (3s) enquanto o run estiver ativo — nunca depende só
+  // do `fetch` original, e sempre com cleanup no unmount/troca de id.
+  useEffect(() => {
+    if (!trainingRun) return;
+    if (trainingRun.status !== 'QUEUED' && trainingRun.status !== 'RUNNING' && trainingRun.status !== 'CANCEL_REQUESTED') return;
+
+    let cancelled = false;
+    const interval = setInterval(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/v1/ml/training-runs/${trainingRun.trainingRunId}`);
+          const json = (await res.json()) as ApiEnvelope<TrainingRunPublicDTO>;
+          if (cancelled || !json.success) return;
+          setTrainingRun(json.data);
+          setTrainingHistory((prev) => prev.map((r) => (r.trainingRunId === json.data.trainingRunId ? json.data : r)));
+          if (json.data.status === 'SUCCEEDED') {
+            await loadActiveVersion();
+          }
+        } catch {
+          // falha transitória de polling — próximo tick tenta de novo, nunca derruba a UI.
+        }
+      })();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trainingRun?.trainingRunId, trainingRun?.status]);
+
+  const handleCancelTrain = useCallback(async () => {
+    if (!trainingRun) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/v1/ml/training-runs/${trainingRun.trainingRunId}/cancel`, { method: 'POST' });
+      const json = (await res.json()) as ApiEnvelope<TrainingRunPublicDTO>;
+      if (!json.success) {
+        toast.error(`${json.error.code}: ${json.error.message}`);
+        return;
+      }
+      setTrainingRun(json.data);
+      toast.success('Cancelamento solicitado — o motor Python será encerrado.');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCancelling(false);
+    }
+  }, [trainingRun, toast]);
 
   const loadActiveVersion = useCallback(async () => {
     setLoadingVersions(true);
@@ -574,28 +690,28 @@ export default function HybridGovernedView() {
     }
     setTraining(true);
     try {
-      const res = await fetch('/api/v1/ml/train', {
+      // Item C: cria um run assíncrono e retorna 202 imediatamente — o
+      // acompanhamento (fase/progresso/gate) acontece via polling do
+      // read-model persistido, nunca bloqueando este `fetch` por minutos.
+      const res = await fetch('/api/v1/ml/training-runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ costProfileId: selectedCostProfileId }),
       });
-      const json = (await res.json()) as ApiEnvelope<{ gate: { approved: boolean }; modelVersionId: string | null }>;
+      const json = (await res.json()) as ApiEnvelope<TrainingRunPublicDTO>;
       if (!json.success) {
         toast.error(`${json.error.code}: ${json.error.message}`);
         return;
       }
-      if (json.data.gate.approved && json.data.modelVersionId) {
-        toast.success('Treino concluído — modelo aprovado no gate.');
-      } else {
-        toast.warning('Treino concluído — gate reprovou o modelo (nenhuma versão nova ativada).');
-      }
-      await loadActiveVersion();
+      setTrainingRun(json.data);
+      setTrainingHistory((prev) => [json.data, ...prev]);
+      toast.success('Treino iniciado — acompanhe o progresso abaixo.');
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setTraining(false);
     }
-  }, [toast, loadActiveVersion, selectedCostProfileId]);
+  }, [toast, selectedCostProfileId]);
 
   const handlePredict = useCallback(async () => {
     const upper = ticker.trim().toUpperCase();
@@ -638,7 +754,104 @@ export default function HybridGovernedView() {
     }
   }, [ticker, toast]);
 
-  const trainDisabled = training || !selectedCostProfileId || (!loadingCostProfiles && costProfiles.length === 0);
+  const trainingRunActive = trainingRun !== null && (trainingRun.status === 'QUEUED' || trainingRun.status === 'RUNNING' || trainingRun.status === 'CANCEL_REQUESTED');
+  const trainDisabled = training || trainingRunActive || !selectedCostProfileId || (!loadingCostProfiles && costProfiles.length === 0);
+
+  const PHASE_LABELS: Record<TrainingRunPublicDTO['phase'], string> = {
+    QUEUED: 'Na fila',
+    SNAPSHOT: 'Congelando snapshot D1',
+    DATASET: 'Montando dataset',
+    TRAINING: 'Treinando (TimesFM + LightGBM)',
+    GATE: 'Avaliando gate estatístico',
+    BACKTESTS: 'Rodando backtests reais',
+    FINALIZING: 'Finalizando',
+  };
+
+  const trainingRunPanel = trainingRun && (
+    <div className="border-t border-yellow-500/20 pt-3 space-y-2">
+      <p className="text-xs font-semibold text-gray-300">Treino atual/mais recente</p>
+      <div className="bg-gray-900/50 rounded p-3 text-xs space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-mono text-gray-400">{trainingRun.trainingRunId}</span>
+          <span
+            className={
+              trainingRun.status === 'SUCCEEDED'
+                ? 'text-green-400 text-[10px] font-mono px-1.5 py-0.5 rounded bg-green-500/10 border border-green-500/30'
+                : trainingRun.status === 'REJECTED' || trainingRun.status === 'FAILED'
+                  ? 'text-red-400 text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/30'
+                  : trainingRun.status === 'CANCELLED' || trainingRun.status === 'INTERRUPTED'
+                    ? 'text-gray-400 text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-500/10 border border-gray-500/30'
+                    : 'text-blue-400 text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/30'
+            }
+          >
+            {trainingRun.status}
+          </span>
+          {trainingRunActive && <span className="text-gray-500">{PHASE_LABELS[trainingRun.phase]} — {trainingRun.progress}%</span>}
+        </div>
+
+        {trainingRunActive && (
+          <div className="w-full bg-gray-800 rounded h-1.5 overflow-hidden">
+            <div className="bg-blue-500 h-1.5 transition-all" style={{ width: `${trainingRun.progress}%` }} />
+          </div>
+        )}
+
+        {trainingRun.status === 'REJECTED' && trainingRun.gate && (
+          <div className="space-y-1">
+            <p className="text-red-400">Gate reprovado — nenhuma ModelVersion nova criada.</p>
+            <div className="grid grid-cols-2 gap-1 font-mono text-gray-400">
+              {trainingRun.gate.comparisons.map((c) => (
+                <div key={c.baseline} className={c.passed ? 'text-green-400' : 'text-red-400'}>
+                  {c.baseline}: diff={c.accuracyDiff.toFixed(4)} ciLower={c.ciLower.toFixed(4)} {c.passed ? 'OK' : 'ciLower<=0'}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {trainingRun.status === 'FAILED' && (
+          <p className="text-red-400">
+            Falha ({trainingRun.errorCode}): {trainingRun.errorSummary}
+          </p>
+        )}
+
+        {(trainingRun.status === 'CANCELLED' || trainingRun.status === 'INTERRUPTED') && (
+          <p className="text-gray-400">{trainingRun.status === 'CANCELLED' ? 'Cancelado pelo usuário.' : 'Interrompido (reinício da plataforma).'}</p>
+        )}
+
+        {trainingRun.status === 'SUCCEEDED' && trainingRun.modelVersionId && (
+          <p className="text-green-400">Modelo aprovado — versão {trainingRun.modelVersionId}.</p>
+        )}
+
+        <p className="text-gray-500 font-mono">
+          criado em {trainingRun.createdAt}
+          {trainingRun.completedAt ? ` · concluído em ${trainingRun.completedAt}` : ''}
+        </p>
+
+        {(trainingRun.status === 'QUEUED' || trainingRun.status === 'RUNNING') && (
+          <button
+            onClick={handleCancelTrain}
+            disabled={cancelling}
+            className="bg-red-700 hover:bg-red-600 disabled:opacity-50 rounded px-3 py-1 text-xs font-semibold"
+          >
+            {cancelling ? 'Cancelando...' : 'Cancelar treino'}
+          </button>
+        )}
+      </div>
+
+      {trainingHistory.length > 1 && (
+        <details className="text-xs">
+          <summary className="text-gray-400 cursor-pointer">Histórico de treinos ({trainingHistory.length})</summary>
+          <div className="mt-2 space-y-1">
+            {trainingHistory.map((r) => (
+              <div key={r.trainingRunId} className="font-mono text-gray-500">
+                {r.trainingRunId} · {r.status} · {r.createdAt}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
 
   const costProfileSelector = (
     <div className="space-y-2">
@@ -837,9 +1050,16 @@ export default function HybridGovernedView() {
               disabled={trainDisabled}
               className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded px-4 py-2 text-sm font-semibold"
             >
-              {training ? 'Treinando (pode levar minutos)...' : 'Treinar (walk-forward)'}
+              {training ? 'Enviando pedido de treino...' : trainingRunActive ? 'Treino em andamento...' : 'Treinar (walk-forward)'}
             </button>
           </div>
+          {loadingTrainingRuns && <p className="text-xs text-gray-500">Carregando histórico de treinos...</p>}
+          {!loadingTrainingRuns && trainingRunsError && (
+            <p className="text-xs text-red-400">
+              {errorHeadline(trainingRunsError)} — falha ao consultar treinos ({trainingRunsError.code}): {trainingRunsError.message}
+            </p>
+          )}
+          {trainingRunPanel}
         </div>
       )}
 
@@ -1040,9 +1260,10 @@ export default function HybridGovernedView() {
               disabled={trainDisabled}
               className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded px-4 py-2 text-sm font-semibold"
             >
-              {training ? 'Treinando (pode levar minutos)...' : 'Retreinar (walk-forward)'}
+              {training ? 'Enviando pedido de treino...' : trainingRunActive ? 'Treino em andamento...' : 'Retreinar (walk-forward)'}
             </button>
           </div>
+          {trainingRunPanel}
         </div>
       )}
 

@@ -54,4 +54,14 @@ export class PrismaModelVersionRepository implements ModelVersionRepository {
     });
     return toModelVersion(row);
   }
+
+  async publish(modelVersion: string, publishedAt: string): Promise<ModelVersion> {
+    const existing = await this.prisma.modelVersion.findUnique({ where: { modelVersion } });
+    if (!existing) throw new ModelVersionNotFoundError(`ModelVersion ${modelVersion} não encontrado`);
+    const row = await this.prisma.modelVersion.update({
+      where: { modelVersion },
+      data: { publishedAt: new Date(publishedAt) },
+    });
+    return toModelVersion(row);
+  }
 }

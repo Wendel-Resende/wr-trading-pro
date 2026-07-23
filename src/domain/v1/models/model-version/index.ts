@@ -19,6 +19,13 @@ export interface ModelVersion {
   readonly trainingEvidenceJson: string | null;
   readonly invalidatedAt: string | null;
   readonly invalidationReason: string | null;
+  /**
+   * LOTE 2 (Item C, correção da corrida cancel/publicação, 2026-07-23):
+   * `null` = DRAFT, nunca elegível para `predictLive`/seleção de "modelo
+   * ativo" (ver `isModelVersionEligible`). Só é setado dentro da mesma
+   * transação Prisma que faz o claim CAS condicional em `MlTrainingRun`.
+   */
+  readonly publishedAt: string | null;
   readonly createdAt: string;
 }
 
