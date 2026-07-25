@@ -39,6 +39,14 @@ export const DirectionalMetricsSchema = z.object({
   baselineAllUp: Probability,
   baselineOnSignals: Probability.nullable(),
   baselineDelta: FiniteNumber.min(-1).max(1).nullable(),
+  // Evidência da calibração (2026-07-25). `brierRaw`/`nHighConfidenceRaw` são
+  // as MESMAS métricas medidas sobre a probabilidade ANTES do mapa de
+  // calibração — é o que torna o ganho (ou a ausência dele) auditável em vez
+  // de apenas afirmado. Opcionais: artefatos treinados antes desta mudança
+  // não os têm.
+  calibrated: z.boolean().optional(),
+  brierRaw: FiniteNumber.min(0).max(1).nullable().optional(),
+  nHighConfidenceRaw: z.number().int().nonnegative().nullable().optional(),
   confusionMatrix: z.object({
     truePositive: z.number().int().nonnegative(),
     falsePositive: z.number().int().nonnegative(),

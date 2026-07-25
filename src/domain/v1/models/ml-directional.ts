@@ -76,6 +76,12 @@ export interface DirectionalMetrics {
   readonly baselineAllUp: number;
   readonly baselineOnSignals: number | null;
   readonly baselineDelta: number | null;
+  /** `true` quando o mapa de calibração foi ajustado em TODOS os folds. */
+  readonly calibrated?: boolean;
+  /** Brier da probabilidade CRUA (antes da calibração), nas mesmas amostras. */
+  readonly brierRaw?: number | null;
+  /** Sinais de alta confiança que a probabilidade crua teria emitido. */
+  readonly nHighConfidenceRaw?: number | null;
   readonly confusionMatrix: DirectionalConfusionMatrix;
   readonly reliability: readonly DirectionalReliabilityBin[];
   readonly byFold: readonly DirectionalFoldMetrics[];

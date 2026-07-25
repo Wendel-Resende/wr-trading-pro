@@ -41,6 +41,34 @@ SIGNAL_NEUTRAL = 'NEUTRO'
 #: Pesos da votação (§4.1). Somam 1.0 — validado em `DirectionalEnsemble`.
 ENSEMBLE_WEIGHTS = {'lightgbm': 0.40, 'xgboost': 0.40, 'logistic': 0.20}
 
+#: Calibração de probabilidade (decisão de arquitetura 3 da spec).
+#:
+#: O ensemble cru é grosseiramente SUPERCONFIANTE: no primeiro treino sobre
+#: dados reais (2026-07-25) o Brier deu 0,329 — pior que um preditor constante
+#: de 0,5 (~0,25). Um modelo que diz "95% de alta" e acerta 54% das vezes não é
+#: só impreciso: ele mente sobre a própria confiança, e é justamente a
+#: confiança que o gate de 90% usa para decidir se emite sinal.
+#:
+#: A calibração aprende, num conjunto SEPARADO e ANTERIOR ao teste, o mapa
+#: entre a probabilidade que o ensemble diz e a frequência realmente observada.
+#: 'isotonic' é não-paramétrica (só exige monotonicidade); 'sigmoid' (Platt) é
+#: mais estável com poucas amostras, ao custo de assumir forma logística.
+#:
+#: DEFAULT = 'sigmoid', por honestidade. Medido sobre os dados reais depois da
+#: correção da rotulagem (2026-07-25): a isotônica preserva 43 sinais de alta
+#: confiança cuja acurácia é de 39,5% — ou seja, ANTI-preditivos, fruto de
+#: degraus locais ajustados a poucas amostras; o Platt, sendo monótono e suave,
+#: não deixa NENHUMA probabilidade passar do gate de 90%. Zero sinais é a
+#: resposta correta quando o modelo não tem confiança genuína para oferecer.
+CALIBRATION_METHOD = 'sigmoid'
+#: Fração FINAL (mais recente) do treino reservada para calibrar — nunca usada
+#: para ajustar os modelos-base, senão o mapa seria aprendido sobre previsões
+#: in-sample (otimistas) e não corrigiria nada.
+CALIBRATION_FRACTION = 0.25
+#: Abaixo disto não há amostra suficiente para um mapa confiável: sem
+#: calibração, e o modelo reporta isso explicitamente em vez de fingir.
+_MIN_CALIBRATION_ROWS = 100
+
 HYPERPARAMETERS = {
     'lightgbm': {'max_depth': 6, 'num_leaves': 63, 'learning_rate': 0.05,
                  'n_estimators': 400, 'random_state': 42},
@@ -50,10 +78,28 @@ HYPERPARAMETERS = {
     'weights': ENSEMBLE_WEIGHTS,
     'horizon': HORIZON_TRADING_DAYS,
     'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
+    'calibration': {'method': CALIBRATION_METHOD, 'fraction': CALIBRATION_FRACTION},
 }
 
 _MIN_TRAIN_ROWS = 200
 _MIN_TEST_ROWS = 20
+
+#: Defasagem máxima, em dias corridos, entre o carimbo de conhecimento e a
+#: barra de entrada.
+#:
+#: BUG REAL corrigido em 2026-07-25: `searchsorted` devolve o índice 0 quando o
+#: carimbo é ANTERIOR à primeira barra disponível, o que fazia um trimestre de
+#: 2011 ser "operado" na primeira barra existente (2021) e fechado 60 pregões
+#: depois. Como `HistoricalCandle` só tem barras desde 2021-07-26, 62% das
+#: linhas (3.770 de 6.124) recebiam o rótulo de uma janela de preço a até 10
+#: ANOS de distância do fundamento que a originou — mediana de 620 dias de
+#: defasagem. Eram rótulos fabricados, e treinavam o modelo.
+#:
+#: Regra honesta: a decisão é tomada no primeiro pregão após a publicação. Se
+#: não existe barra nessa janela, não existe operação — a linha é descartada,
+#: nunca deslocada para um preço de outro regime. 15 dias cobre feriados
+#: prolongados sem admitir salto de trimestre.
+MAX_ENTRY_LAG_DAYS = 15
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +140,16 @@ def label_panel(panel: pd.DataFrame, bars_for, horizon: int = HORIZON_TRADING_DA
         entry_idx = np.asarray(entry_idx, dtype=np.int64)
         exit_idx = entry_idx + horizon
 
-        valid = (entry_idx < len(times)) & (exit_idx < len(times))
+        # Entrada precisa existir (barra >= carimbo), a saída precisa existir
+        # (60 pregões depois) E a entrada precisa acontecer LOGO após a
+        # publicação — ver `MAX_ENTRY_LAG_DAYS`. Sem isso, um carimbo anterior
+        # à primeira barra disponível era silenciosamente deslocado para o
+        # início da série, fabricando o rótulo.
+        in_range = entry_idx < len(times)
+        safe_entry_idx = np.where(in_range, entry_idx, 0)
+        entry_times = times.iloc[safe_entry_idx].to_numpy()
+        lag_days = (entry_times - pd.to_datetime(group['knowledge_date']).to_numpy()) / np.timedelta64(1, 'D')
+        valid = in_range & (exit_idx < len(times)) & (lag_days >= 0) & (lag_days <= MAX_ENTRY_LAG_DAYS)
         if not valid.any():
             continue
 
@@ -160,6 +215,9 @@ class DirectionalEnsemble:
             raise ValueError(f'PESOS_INVALIDOS: soma dos pesos do ensemble = {total}, esperado 1.0')
         self._models: dict[str, object] = {}
         self._logistic_pipeline = None
+        #: Mapa de calibração (probabilidade dita → frequência observada).
+        #: `None` = ensemble cru, e `is_calibrated` reporta isso honestamente.
+        self._calibrator = None
 
     # -- treino ------------------------------------------------------------
     def fit(self, X: pd.DataFrame, y: pd.Series) -> 'DirectionalEnsemble':
@@ -186,6 +244,53 @@ class DirectionalEnsemble:
         self._models['logistic'] = self._logistic_pipeline
         return self
 
+    # -- calibração --------------------------------------------------------
+    @property
+    def is_calibrated(self) -> bool:
+        return self._calibrator is not None
+
+    def calibrate(self, X: pd.DataFrame, y: pd.Series, method: str | None = None) -> 'DirectionalEnsemble':
+        """Aprende o mapa probabilidade-dita → frequência-observada.
+
+        `X`/`y` PRECISAM ser dados que os modelos-base nunca viram e que são
+        anteriores ao período de teste — caso contrário o mapa é aprendido
+        sobre previsões in-sample (otimistas) e não corrige a superconfiança,
+        ou pior, vaza o futuro para dentro da confiança reportada.
+
+        Abaixo de `_MIN_CALIBRATION_ROWS` o mapa não é ajustado: o ensemble
+        segue cru e `is_calibrated` devolve False, para que a métrica reportada
+        diga a verdade sobre o que foi feito.
+        """
+        from sklearn.isotonic import IsotonicRegression
+        from sklearn.linear_model import LogisticRegression
+
+        chosen = method or self.hyperparameters.get('calibration', {}).get('method', CALIBRATION_METHOD)
+        raw = self._raw_proba(X)
+        yf = np.asarray(y, dtype=float)
+
+        # Um conjunto de calibração com uma classe só não define mapa nenhum.
+        if len(raw) < _MIN_CALIBRATION_ROWS or len(np.unique(yf)) < 2:
+            self._calibrator = None
+            return self
+
+        if chosen == 'sigmoid':
+            platt = LogisticRegression(C=1e10, solver='lbfgs')
+            platt.fit(raw.reshape(-1, 1), yf)
+            self._calibrator = ('sigmoid', platt)
+        else:
+            iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+            iso.fit(raw, yf)
+            self._calibrator = ('isotonic', iso)
+        return self
+
+    def _apply_calibration(self, raw: np.ndarray) -> np.ndarray:
+        if self._calibrator is None:
+            return raw
+        kind, model = self._calibrator
+        if kind == 'sigmoid':
+            return np.asarray(model.predict_proba(raw.reshape(-1, 1)))[:, 1]
+        return np.clip(np.asarray(model.predict(raw)), 0.0, 1.0)
+
     # -- inferência --------------------------------------------------------
     def predict_proba_by_model(self, X: pd.DataFrame) -> dict[str, np.ndarray]:
         if not self._models:
@@ -193,10 +298,19 @@ class DirectionalEnsemble:
         Xf = X[self.features]
         return {name: np.asarray(model.predict_proba(Xf))[:, 1] for name, model in self._models.items()}
 
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Média ponderada das probabilidades dos 3 modelos (§4.1)."""
+    def _raw_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Média ponderada dos 3 modelos, ANTES da calibração (§4.1)."""
         by_model = self.predict_proba_by_model(X)
         return sum(self.weights[name] * probs for name, probs in by_model.items())
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Probabilidade final: votação ponderada + calibração (se houver).
+
+        É esta — a calibrada — que alimenta o gate de confiança. Usar a crua
+        faria o gate de 90% disparar sobre uma confiança que o próprio modelo
+        não sustenta.
+        """
+        return self._apply_calibration(self._raw_proba(X))
 
     def predict_signals(self, X: pd.DataFrame) -> pd.DataFrame:
         probs = self.predict_proba(X)
@@ -218,7 +332,8 @@ class DirectionalEnsemble:
     def save(self, path: str) -> None:
         with open(path, 'wb') as fh:
             pickle.dump({'features': self.features, 'hyperparameters': self.hyperparameters,
-                         'weights': self.weights, 'models': self._models}, fh)
+                         'weights': self.weights, 'models': self._models,
+                         'calibrator': self._calibrator}, fh)
 
     @classmethod
     def load(cls, path: str) -> 'DirectionalEnsemble':
@@ -228,6 +343,8 @@ class DirectionalEnsemble:
         obj.weights = blob['weights']
         obj._models = blob['models']
         obj._logistic_pipeline = blob['models'].get('logistic')
+        # Artefato antigo (pré-calibração) carrega sem o campo — segue cru.
+        obj._calibrator = blob.get('calibrator')
         return obj
 
 
@@ -259,6 +376,38 @@ def yearly_splits(knowledge_dates: pd.Series, min_train_years: int = 2) -> list[
     return splits
 
 
+def calibration_split(train: pd.DataFrame, fraction: float = CALIBRATION_FRACTION) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Separa o treino em (ajuste, calibração) por ORDEM TEMPORAL.
+
+    A fatia de calibração é a MAIS RECENTE — nunca uma amostra aleatória: o
+    mapa precisa refletir o regime mais próximo do período que será previsto.
+
+    O mesmo embargo do alvo usado entre treino e teste vale aqui: linhas de
+    ajuste cuja janela de 60 pregões invadiria o período de calibração são
+    removidas, senão os modelos-base teriam visto o preço que define o rótulo
+    das linhas usadas para medir a própria confiança.
+
+    Devolve `(train, empty)` quando não há linhas suficientes para as duas
+    partes — o chamador segue sem calibrar, explicitamente.
+    """
+    if train.empty:
+        return train, train.iloc[0:0]
+
+    ordered = train.sort_values('knowledge_date').reset_index(drop=True)
+    cut = int(len(ordered) * (1.0 - fraction))
+    if cut <= 0 or cut >= len(ordered):
+        return ordered, ordered.iloc[0:0]
+
+    calib = ordered.iloc[cut:]
+    calib_start = pd.to_datetime(calib['knowledge_date']).min()
+    fit = ordered.iloc[:cut]
+    fit = fit[pd.to_datetime(fit['exit_date']) < calib_start]
+
+    if len(fit) < _MIN_TRAIN_ROWS or len(calib) < _MIN_CALIBRATION_ROWS:
+        return ordered, ordered.iloc[0:0]
+    return fit, calib
+
+
 def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
                      hyperparameters: dict | None = None) -> pd.DataFrame:
     """Previsões out-of-sample: para cada ano de teste, treina só no passado.
@@ -278,7 +427,15 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
         if len(train) < _MIN_TRAIN_ROWS:
             continue
 
-        model = DirectionalEnsemble(features, hyperparameters).fit(train[features], train['y'])
+        # Ajuste e calibração usam fatias DISJUNTAS do treino, ambas anteriores
+        # ao teste — o mapa de calibração nunca vê previsão in-sample.
+        fit_rows, calib_rows = calibration_split(
+            train, (hyperparameters or HYPERPARAMETERS).get('calibration', {}).get('fraction', CALIBRATION_FRACTION))
+        model = DirectionalEnsemble(features, hyperparameters).fit(fit_rows[features], fit_rows['y'])
+        if not calib_rows.empty:
+            model.calibrate(calib_rows[features], calib_rows['y'])
+
+        raw = model._raw_proba(test[features])
         probs = model.predict_proba(test[features])
         classified = [classify_signal(p) for p in probs]
         out.append(pd.DataFrame({
@@ -289,8 +446,13 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
             'knowledgeDate': pd.to_datetime(test['knowledge_date']).dt.strftime('%Y-%m-%d').to_numpy(),
             'foldId': split['fold_id'],
             'testYear': split['test_year'],
-            'trainRows': int(len(train)),
+            'trainRows': int(len(fit_rows)),
+            'calibRows': int(len(calib_rows)),
+            'calibrated': bool(model.is_calibrated),
             'prob': probs,
+            # Probabilidade ANTES da calibração — mantida para que o ganho
+            # (ou a ausência dele) seja auditável, nunca só afirmado.
+            'probRaw': raw,
             'signal': [c[0] for c in classified],
             'confidence': [c[1] for c in classified],
             'yTrue': test['y'].to_numpy(),
@@ -383,6 +545,14 @@ def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
         'baselineAllUp': float((wf['yTrue'] == 1.0).mean()),
         'baselineOnSignals': baseline_on_signals,
         'baselineDelta': (accuracy - baseline_on_signals) if len(high) else None,
+        # Antes/depois da calibração — o ganho tem de ser auditável, não
+        # apenas afirmado. `brierRaw` é o Brier da probabilidade CRUA sobre as
+        # MESMAS amostras; `nHighConfidenceRaw` mostra o custo em cobertura
+        # (uma calibração honesta costuma reduzir sinais, porque desinfla
+        # confianças que o modelo não sustentava).
+        'calibrated': bool(wf['calibrated'].all()) if 'calibrated' in wf else False,
+        'brierRaw': (brier_score(wf['probRaw'], wf['yTrue']) if 'probRaw' in wf else None),
+        'nHighConfidenceRaw': (int(is_high_confidence(wf['probRaw']).sum()) if 'probRaw' in wf else None),
         'confusionMatrix': {'truePositive': tp, 'falsePositive': fp,
                             'trueNegative': tn, 'falseNegative': fn},
         'reliability': reliability_bins(wf['prob'], wf['yTrue']),
@@ -462,8 +632,15 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
     dataset_digest = compute_dataset_digest(labeled, FEATURE_COLUMNS)
     model_version = compute_model_version(HYPERPARAMETERS, FEATURE_COLUMNS, universe, dataset_digest)
 
+    # Modelo publicável: ajustado na maior parte da história e calibrado na
+    # fatia mais recente — mesma disciplina de cada fold do walk-forward, para
+    # que a confiança que ele reporta ao vivo tenha o mesmo significado da que
+    # foi medida na avaliação.
+    fit_rows, calib_rows = calibration_split(labeled)
     final_model = DirectionalEnsemble(FEATURE_COLUMNS, HYPERPARAMETERS).fit(
-        labeled[FEATURE_COLUMNS], labeled['y'])
+        fit_rows[FEATURE_COLUMNS], fit_rows['y'])
+    if not calib_rows.empty:
+        final_model.calibrate(calib_rows[FEATURE_COLUMNS], calib_rows['y'])
 
     result = {
         'modelVersion': model_version,
@@ -476,6 +653,7 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
         'windowEnd': pd.to_datetime(labeled['knowledge_date']).max().strftime('%Y-%m-%d'),
         'hyperparameters': HYPERPARAMETERS,
         'features': list(FEATURE_COLUMNS),
+        'calibrated': bool(final_model.is_calibrated),
         'metrics': metrics,
         'artifactPath': os.path.join(models_dir, model_version, 'model.pkl'),
     }

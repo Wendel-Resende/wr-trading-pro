@@ -38,6 +38,9 @@ interface DirectionalMetrics {
   readonly baselineAllUp: number;
   readonly baselineOnSignals: number | null;
   readonly baselineDelta: number | null;
+  readonly calibrated?: boolean;
+  readonly brierRaw?: number | null;
+  readonly nHighConfidenceRaw?: number | null;
   readonly confusionMatrix: {
     readonly truePositive: number;
     readonly falsePositive: number;
@@ -724,6 +727,22 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
           </div>
         ))}
       </div>
+
+      {m.brierRaw !== null && m.brierRaw !== undefined && (
+        <div className="text-[11px] text-gray-500 bg-gray-900/40 border border-gray-800 rounded p-2 space-y-0.5">
+          <p className="text-gray-400 font-semibold">Calibração de probabilidade</p>
+          <p className="font-mono">
+            Brier: {num(m.brierRaw)} (cru) → <span className="text-gray-300">{num(m.brier)}</span> (calibrado)
+            {' · '}sinais: {m.nHighConfidenceRaw ?? '—'} → <span className="text-gray-300">{m.nHighConfidence}</span>
+          </p>
+          <p className="text-gray-600">
+            {m.calibrated
+              ? 'O mapa foi ajustado em todos os folds, sobre a fatia mais recente do treino (nunca vista pelos modelos-base).'
+              : 'Nem todos os folds tiveram amostra suficiente para calibrar — a métrica reporta o que de fato foi feito.'}
+            {' '}Menos sinais depois de calibrar não é perda: é confiança que o modelo não sustentava sendo removida.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[11px] font-mono text-gray-500">
         <span>amostras: {m.nSamples}</span>

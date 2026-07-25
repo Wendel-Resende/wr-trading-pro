@@ -17,10 +17,10 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from ml.directional_classifier import (  # noqa: E402
-    HORIZON_TRADING_DAYS, LOWER_GATE, SIGNAL_BUY, SIGNAL_NEUTRAL, SIGNAL_SELL, UPPER_GATE,
-    DirectionalEnsemble, brier_score, classify_signal, compute_model_version,
-    evaluate_walk_forward, label_panel, predict_latest, run_directional_training,
-    run_walk_forward, yearly_splits,
+    HORIZON_TRADING_DAYS, LOWER_GATE, MAX_ENTRY_LAG_DAYS, SIGNAL_BUY, SIGNAL_NEUTRAL,
+    SIGNAL_SELL, UPPER_GATE, DirectionalEnsemble, brier_score, calibration_split,
+    classify_signal, compute_model_version, evaluate_walk_forward, label_panel,
+    predict_latest, run_directional_training, run_walk_forward, yearly_splits,
 )
 from ml.directional_features import (  # noqa: E402
     FEATURE_COLUMNS, build_feature_panel, knowledge_date, load_directional_panel,
@@ -354,6 +354,114 @@ def test_feature_panel_from_sqlite():
     print('  test_feature_panel_from_sqlite: OK')
 
 
+def test_entry_lag_guard_discards_stale_labels():
+    """REGRESSÃO (bug real, 2026-07-25): carimbo anterior à primeira barra.
+
+    `searchsorted` devolve o índice 0 quando o carimbo de conhecimento é
+    ANTERIOR a toda a série de preços — o que fazia um trimestre de 2011 ser
+    "operado" na primeira barra existente (2021) e fechado 60 pregões depois.
+    Nos dados reais isso fabricava 62% dos rótulos (3.770 de 6.124), com
+    mediana de 620 dias entre o fundamento e o preço que o rotulava.
+    """
+    panel = _synthetic_panel()
+    # Barras que só começam em 2020: nada antes disso tem entrada válida.
+    days = pd.bdate_range('2020-01-02', '2027-06-30')
+    close = 100.0 * np.cumprod(1.0 + np.full(len(days), 0.001))
+    tardias = {t: pd.DataFrame({'time': days, 'close': close}) for t in _TICKERS}
+
+    labeled = label_panel(panel, _bars_for(tardias))
+
+    lag = (pd.to_datetime(labeled['entry_date']) - pd.to_datetime(labeled['knowledge_date'])).dt.days
+    assert lag.max() <= MAX_ENTRY_LAG_DAYS, f'entrada defasada em {lag.max()} dias — rotulo fabricado'
+    assert (lag >= 0).all(), 'entrada nunca pode anteceder o carimbo de conhecimento'
+    assert pd.to_datetime(labeled['knowledge_date']).min() >= pd.Timestamp('2019-12-01')
+    assert len(labeled) > 100, 'o painel inteiro nao pode ser descartado por engano'
+    print(f'  test_entry_lag_guard_discards_stale_labels: OK (defasagem max {int(lag.max())}d)')
+
+
+def test_calibration_split_is_temporal_and_embargoed():
+    """A fatia de calibração é a MAIS RECENTE e não compartilha alvo com o ajuste."""
+    panel = _synthetic_panel()
+    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
+
+    fit, calib = calibration_split(train, fraction=0.25)
+    assert len(calib) > 0 and len(fit) > 0
+
+    calib_start = pd.to_datetime(calib['knowledge_date']).min()
+    assert pd.to_datetime(fit['knowledge_date']).max() <= pd.to_datetime(calib['knowledge_date']).max()
+    assert (pd.to_datetime(fit['exit_date']) < calib_start).all(), 'alvo do ajuste invade a calibracao'
+
+    chave = ['ticker', 'ano', 'trimestre']
+    sobreposicao = (set(map(tuple, fit[chave].to_numpy()))
+                    & set(map(tuple, calib[chave].to_numpy())))
+    assert len(sobreposicao) == 0, 'ajuste e calibracao precisam ser disjuntos'
+
+    # Amostra pequena demais: devolve tudo como ajuste, sem calibrar.
+    f2, c2 = calibration_split(train.head(50))
+    assert len(c2) == 0 and len(f2) == 50
+    print('  test_calibration_split_is_temporal_and_embargoed: OK')
+
+
+def test_calibration_maps_confidence_to_observed_frequency():
+    """Calibrar altera a probabilidade sem destruir a qualidade probabilística."""
+    panel = _synthetic_panel()
+    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
+    test = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year == 2024]
+
+    fit, calib = calibration_split(train)
+    model = DirectionalEnsemble().fit(fit[FEATURE_COLUMNS], fit['y'])
+    assert not model.is_calibrated, 'modelo recem-ajustado nao esta calibrado'
+
+    raw = model.predict_proba(test[FEATURE_COLUMNS])
+    model.calibrate(calib[FEATURE_COLUMNS], calib['y'])
+    assert model.is_calibrated
+    cal = model.predict_proba(test[FEATURE_COLUMNS])
+
+    assert not np.array_equal(raw, cal), 'calibracao precisa mudar a probabilidade'
+    assert ((cal >= 0) & (cal <= 1)).all()
+    assert brier_score(pd.Series(cal), test['y']) <= brier_score(pd.Series(raw), test['y']) + 0.02
+
+    # Sem amostra suficiente, NÃO calibra — e diz isso.
+    outro = DirectionalEnsemble().fit(fit[FEATURE_COLUMNS], fit['y'])
+    outro.calibrate(calib.head(10)[FEATURE_COLUMNS], calib.head(10)['y'])
+    assert not outro.is_calibrated, 'amostra minuscula nao pode virar mapa de calibracao'
+    print('  test_calibration_maps_confidence_to_observed_frequency: OK')
+
+
+def test_calibration_survives_serialization():
+    """O calibrador viaja com o artefato — senão o modelo carregado mentiria."""
+    panel = _synthetic_panel()
+    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
+    fit, calib = calibration_split(train)
+    model = (DirectionalEnsemble()
+             .fit(fit[FEATURE_COLUMNS], fit['y'])
+             .calibrate(calib[FEATURE_COLUMNS], calib['y']))
+
+    X = labeled[FEATURE_COLUMNS].head(40)
+    antes = model.predict_proba(X)
+
+    path = os.path.join(tempfile.mkdtemp(), 'model.pkl')
+    model.save(path)
+    recarregado = DirectionalEnsemble.load(path)
+
+    assert recarregado.is_calibrated, 'calibrador perdido no round-trip'
+    assert np.array_equal(antes, recarregado.predict_proba(X))
+    print('  test_calibration_survives_serialization: OK')
+
+
+def test_walk_forward_reports_calibration_evidence():
+    """As métricas carregam o antes/depois — o ganho tem de ser auditável."""
+    metrics = _metrics_cache()
+    assert 'brierRaw' in metrics and 'nHighConfidenceRaw' in metrics
+    assert metrics['brierRaw'] is not None
+    assert isinstance(metrics['calibrated'], bool)
+    print(f"  test_walk_forward_reports_calibration_evidence: OK "
+          f"(brier cru={metrics['brierRaw']:.4f} -> calibrado={metrics['brier']:.4f})")
+
+
 # ---------------------------------------------------------------------------
 _CACHE: dict = {}
 
@@ -379,5 +487,10 @@ if __name__ == '__main__':
     test_coverage_metric()
     test_baseline_comparison()
     test_serialization()
+    test_entry_lag_guard_discards_stale_labels()
+    test_calibration_split_is_temporal_and_embargoed()
+    test_calibration_maps_confidence_to_observed_frequency()
+    test_calibration_survives_serialization()
+    test_walk_forward_reports_calibration_evidence()
     test_training_publishes_artifact()
     print('test_directional_classifier: OK')

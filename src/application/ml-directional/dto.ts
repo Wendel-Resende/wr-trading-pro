@@ -40,6 +40,9 @@ export interface DirectionalModelVersionPublicDTO {
     readonly baselineAllUp: number;
     readonly baselineOnSignals: number | null;
     readonly baselineDelta: number | null;
+    readonly calibrated?: boolean;
+    readonly brierRaw?: number | null;
+    readonly nHighConfidenceRaw?: number | null;
     readonly confusionMatrix: DirectionalModelVersion['metrics']['confusionMatrix'];
     readonly reliability: DirectionalModelVersion['metrics']['reliability'];
     readonly byFold: DirectionalModelVersion['metrics']['byFold'];
