@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@/*": ["../../src/*"]
+    }
+  },
+  "include": [
+    "directional-test.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/domain/v1/**/*.ts",
+    "../../src/application/**/*.ts",
+    "../../src/lib/prisma.ts",
+    "../../src/lib/auth/**/*.ts"
+  ]
+}
