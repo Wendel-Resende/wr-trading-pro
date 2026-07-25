@@ -25,6 +25,57 @@ não fazer commit/push e não criar execução de ordens. Manter MT5/CVM
 point-in-time, `BacktestRun` canônico, entrada t+1, custos explícitos,
 DEMO-only e todos os gates atuais.
 
+## Sessão 2026-07-25 (cont.) — Treino falha após 17min: ticker `B3SA3` fora do regex do resultado (branch `main`)
+
+Depois do fix do `orphan` (build regenerado, app reaberto), o treino
+finalmente passou do primeiro poll, rodou a fase pesada DATASET (~17min,
+TimesFM populando o cache do universo) e **falhou de novo com o mesmo
+sintoma na UI** (`INTERNAL_ERROR: falha não detalhável`), agora ao
+concluir. Causa **diferente** das duas anteriores.
+
+### Causa raiz — ticker real fora do regex do `TrainResultSchema`
+
+O job Python **SUCCEDEU**: escreveu `result.json` (514KB), progresso
+TRAINING 95%, sem `error.json`. A rejeição foi no lado Node, ao validar o
+resultado recebido:
+
+- `TrainResultSchema.universe` (`train-job-port.ts`) validava cada ticker
+  com `^[A-Z]{4}\d{1,2}$` (4 letras + 1-2 dígitos).
+- O universo real (126 tickers, montado do banco com `symbols=null`)
+  inclui **`B3SA3`** — a própria **B3 S.A.**, cuja raiz tem um dígito
+  (`B-3-S-A-3`) e não casa com `[A-Z]{4}`.
+- Um único ticker fora do regex → resultado INTEIRO rejeitado como
+  `UPSTREAM_MALFORMED_RESPONSE` → `INTERNAL_ERROR` + mensagem redigida
+  (contém `/ml/train-jobs/...`). ~17min de treino bem-sucedido descartados.
+
+Evidência: `data/ml/training_jobs/<jobId>.result.json` existia e íntegro;
+validação manual do payload contra o schema apontou só `B3SA3` fora do
+`universe` (todo o resto — hashes, datas ISO, blocks, baselines, artifact
+— OK).
+
+### Correção (mesma classe do `orphan`: contrato estrito demais)
+
+- `train-job-port.ts`: `universe` aceita `^[A-Z0-9]{4}\d{1,2}$` (raiz de 4
+  chars alfanuméricos + 1-2 dígitos; ainda tight). Commit `542b6f4`.
+- `ml-training-run-test.ts`: `fakeTrainResult.universe` ganhou `B3SA3`
+  para exercitar o ticker pelo schema real no caminho SUCCEEDED.
+- `test:ml-training-run` verde; `tsc --noEmit` limpo.
+
+### Follow-up sistêmico registrado (NÃO feito — requer revisão)
+
+O regex `^[A-Z]{4}\d{1,2}$` está **duplicado em ~10 pontos** (Node e
+Python): validação de entrada de treino (`training-runs/route.ts`,
+`train/route.ts`), `predict` DTO (`ml-hybrid/service.ts`,
+`ml/predict/_dto.ts`), extração de ticker do agent-run
+(`agent-run/service.ts`), MCP Pilot (`mcp/pilot/tools/agent-actions.ts`),
+canonicalização (`_shared/sanitize-text.ts` → `B3SA3` vira `DESCONHECIDO`)
+e o **`_TICKER_RE` do `python/ml_api.py`** que guarda acesso a filesystem
+(`/ml/predict`, snapshots — segurança). B3SA3 é silenciosamente
+rejeitado/mishandleiado nesses outros fluxos (ex.: prever B3SA3 ao vivo
+falharia). Fix coordenado desejável — idealmente com o Guardião, por tocar
+guarda de segurança. Padrão B3: raiz de 4 chars (quase sempre letras, mas
+B3SA é a exceção com dígito) + 1-2 dígitos de tipo.
+
 ## Sessão 2026-07-25 — Treino assíncrono (Item C) quebrado: campo `orphan` fora do contrato (branch `main`)
 
 Usuário reportou treino falhando em ~29ms com
