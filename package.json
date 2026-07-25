@@ -51,7 +51,8 @@
     "mcp:pilot:compile": "tsc -p scripts/mcp-pilot/tsconfig.json",
     "mcp:pilot": "npm run mcp:pilot:compile && node scripts/mcp-pilot/dist/src/mcp/pilot/index.js",
     "test:mcp-pilot": "node scripts/mcp-pilot/run-mcp-pilot-tests.cjs",
-    "test:b3-ticker": "node scripts/b3-ticker/run-b3-ticker-tests.cjs"
+    "test:b3-ticker": "node scripts/b3-ticker/run-b3-ticker-tests.cjs",
+    "test:cvm-fundamentals": "node scripts/cvm-fundamentals/run-cvm-fundamentals-tests.cjs"
   },
   "build": {
     "appId": "com.wrtrade.pro",
