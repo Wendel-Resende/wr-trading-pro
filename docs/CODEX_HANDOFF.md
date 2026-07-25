@@ -60,9 +60,11 @@ ml-unified-reads com B3SA3, `test_ml_api.py` OK). Commits `36547ea`, `f7dd4a7`,
 
 ### Follow-ups registrados (não feitos)
 
-- **Sincronia manual Node↔Python:** hoje travada só por comentário cruzado +
-  suítes paralelas. Recomendação do review final: teste que lê `B3_TICKER_PATTERN`
-  (Node) e o corpo do `_TICKER_RE` (Python) e asserta igualdade, p/ pegar drift.
+- ~~**Sincronia manual Node↔Python:** hoje travada só por comentário cruzado +
+  suítes paralelas.~~ **RESOLVIDO** (`27e2cb3`): o suíte `b3-ticker` agora lê o
+  `_TICKER_RE` de `python/ml_api.py` e asserta que o corpo é idêntico ao
+  `B3_TICKER_PATTERN` do Node e que a ancoragem Python é `^…\Z`. Drift entre as
+  duas cópias falha o teste apontando a divergência.
 - **Import misto** `@/lib/b3-ticker` (2 rotas em `src/app`) vs relativo (demais):
   aceitável (cada um segue a convenção/limitação de harness do próprio arquivo).
 - **Falha pré-existente e ambiental** em `test:ml-unified-reads` (`POST /ml/predict
