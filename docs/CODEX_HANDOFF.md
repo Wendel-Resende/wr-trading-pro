@@ -73,7 +73,7 @@ remover a informação do Python, que perderia a distinção ORPHAN_RUNNING):
   registrado no `main()` — trava o gap teste-realidade.
 - Verificação: teste falhava em RED (rejeição do `orphan`), passa em
   GREEN; suíte `test:ml-training-run` inteira verde; `tsc --noEmit` limpo.
-  Commit `771da09`.
+  Commit `f64c32f`.
 
 ### Observação para o futuro
 
