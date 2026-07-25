@@ -51,6 +51,35 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
+## Sessão 2026-07-25 (cont. 7) — Painel Fundamentalista fatia 5: seletor as-of — PAINEL COMPLETO (branch `main`)
+
+Última fatia do roadmap do painel. Decisão do usuário: **as-of por prazo legal
+agora** (o as-of estrito com retificações verdadeiras exige ingestão real no
+modelo canônico `CvmFiling`/`CvmFact`, hoje vazio — registrado como pendência).
+
+- **Backend** (`f102407`): `buildFundamentalSheet(cdCvm, asOf?)` e
+  `sectorRanking(..., asOf?)` — um filtro único no loop cronológico corta períodos
+  cujo carimbo de conhecimento (prazo legal) > corte; séries, DuPont, bandas de
+  valuation, preço-justo e mediana setorial respeitam o corte POR CONSTRUÇÃO
+  (lastPreco/lastEvPeriod só veem períodos conhecidos). DTO ganha `asOf` ecoado.
+- **Rotas:** `?asOf=YYYY-MM-DD` validado (malformado → 400) em
+  `/fundamentals` e `/sector-ranking`. Smoke: ABEV3 asOf 2020-01-01 → 28 períodos
+  (vs 54 na visão completa); inválido → 400.
+- **UI:** input de data "visão em (as of)" + badge amarelo `as of <data>` + botão
+  limpar, na ficha E na view Setorial (estado compartilhado). Limitação declarada.
+- Verificado: `test:cvm-fundamentals` **68 asserts** verdes, `tsc`/`build` OK.
+
+### PAINEL DE ANÁLISE FUNDAMENTALISTA — ROADMAP CONCLUÍDO (5/5)
+
+1. Ficha por empresa (v1) — `cea3385..65164e0`
+2. DuPont/ROIC + fix de escala (fonte única 12M) — `e3dcc7d`
+3. Comparação setorial PIT — `9cad178`/`2db6149`
+4. Valuation por múltiplos + salvaguardas — `4703460`/`eb1c269`
+5. Seletor as-of por prazo legal — `f102407`
+
+Pendência futura registrada: as-of estrito com retificações (requer ingestão real
+CVM no modelo canônico); datas de publicação reais no snapshot.
+
 ## Sessão 2026-07-25 (cont. 6) — Painel Fundamentalista fatia 4: Motor de Valuation v1 (branch `main`)
 
 Decisão do usuário: **múltiplos + `preco_ref` do pipeline** (self-contained,
