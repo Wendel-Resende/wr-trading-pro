@@ -148,10 +148,33 @@ interface DupontPoint {
   knowledgeDate: string;
   estimadoPorPrazoLegal: boolean;
 }
+interface MultipleBandUi {
+  current: number | null;
+  median: number | null;
+  min: number | null;
+  max: number | null;
+  n: number;
+  position: "barato" | "medio" | "caro" | null;
+}
+interface ValuationUi {
+  precoRef: number | null;
+  precoRefPeriod: { ano: number; trimestre: number } | null;
+  bands: { key: string; label: string; band: MultipleBandUi }[];
+  fairPrice: {
+    basis: string;
+    currentMult: number | null;
+    medianMult: number | null;
+    fairPrice: number | null;
+    upsidePct: number | null;
+    note?: string;
+  };
+  sector: { setorCvm: string; medianEvEbitda: number | null; n: number } | null;
+}
 interface FundamentalSheet {
   company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
   series: Record<string, FundamentalPoint[]>;
   dupont: DupontPoint[];
+  valuation: ValuationUi;
   provenance: {
     db: string;
     tables: string[];
@@ -1015,6 +1038,110 @@ export default function CvmFundamentalsTab() {
                       </div>
                     </div>
                   )}
+
+                  {/* Valuation — bandas de múltiplos + preço-justo implícito */}
+                  <div className="border-t border-cyber-border/40 pt-5 space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider">
+                        Valuation por Múltiplos · <span className="text-cyber-cyan">derivado no WR</span>
+                      </p>
+                      {sheet.valuation.precoRef !== null && (
+                        <span className="text-[0.65rem] text-gray-400 font-space">
+                          preço ref. R$ {sheet.valuation.precoRef.toFixed(2)}
+                          {sheet.valuation.precoRefPeriod ? ` (${sheet.valuation.precoRefPeriod.ano}T${sheet.valuation.precoRefPeriod.trimestre})` : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {sheet.valuation.bands.map((b) => (
+                        <div key={b.key} className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                          <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">{b.label}</p>
+                          <div className="flex items-baseline gap-2 mt-1">
+                            <p className="text-lg font-bold text-white font-space">
+                              {b.band.current === null ? "—" : `${b.band.current.toFixed(1)}×`}
+                            </p>
+                            {b.band.position && (
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded border ${
+                                  b.band.position === "barato"
+                                    ? "text-emerald-400 border-emerald-400/40"
+                                    : b.band.position === "caro"
+                                    ? "text-red-400 border-red-400/40"
+                                    : "text-gray-300 border-gray-500/40"
+                                }`}
+                              >
+                                {b.band.position}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-400 font-space mt-1">
+                            {b.band.median === null
+                              ? "sem base na janela"
+                              : `mediana 5a ${b.band.median.toFixed(1)}× · [${b.band.min?.toFixed(1)}–${b.band.max?.toFixed(1)}] · n=${b.band.n}`}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                        <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                          Preço implícito (reversão do EV/EBITDA à mediana)
+                        </p>
+                        {sheet.valuation.fairPrice.fairPrice !== null ? (
+                          <div className="flex items-baseline gap-3 mt-1">
+                            <p className="text-lg font-bold text-cyber-cyan font-space">
+                              R$ {sheet.valuation.fairPrice.fairPrice.toFixed(2)}
+                            </p>
+                            <span
+                              className={`text-sm font-space ${
+                                (sheet.valuation.fairPrice.upsidePct ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"
+                              }`}
+                            >
+                              {(sheet.valuation.fairPrice.upsidePct ?? 0) >= 0 ? "+" : ""}
+                              {sheet.valuation.fairPrice.upsidePct?.toFixed(1)}%
+                            </span>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400 font-space mt-1">
+                            {sheet.valuation.fairPrice.note === "BASE_INSUFICIENTE"
+                              ? "sem base estatística suficiente — não calculado"
+                              : "não calculável para esta empresa"}
+                          </p>
+                        )}
+                        <p className="text-[0.65rem] text-gray-500 font-space mt-1">
+                          não é preço-alvo: apenas o preço coerente com o múltiplo mediano histórico
+                        </p>
+                      </div>
+                      <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                        <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">vs Setor (EV/EBITDA)</p>
+                        {sheet.valuation.sector && sheet.valuation.sector.medianEvEbitda !== null ? (
+                          <>
+                            <p className="text-lg font-bold text-white font-space mt-1">
+                              mediana {sheet.valuation.sector.medianEvEbitda.toFixed(1)}× <span className="text-xs text-gray-400">({sheet.valuation.sector.n} empresas)</span>
+                            </p>
+                            <p className="text-xs text-gray-400 font-space mt-1 truncate">{sheet.valuation.sector.setorCvm}</p>
+                          </>
+                        ) : (
+                          <p className="text-sm text-gray-400 font-space mt-1">sem pares com EV/EBITDA no período</p>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">EV/EBITDA histórico (×)</p>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(1)}×`]} />
+                          {sheet.valuation.bands[0]?.band.median !== null && (
+                            <ReferenceLine y={sheet.valuation.bands[0].band.median} stroke="#a855f7" strokeDasharray="4 4" />
+                          )}
+                          <Line type="monotone" dataKey="evEbitda" name="EV/EBITDA" stroke="#22d3ee" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
 
                   <div className="border-t border-cyber-border/40 pt-3 text-[0.7rem] text-gray-400 font-space space-y-1">
                     <p>
