@@ -91,6 +91,44 @@ interface CostProfile {
   readonly label: string;
 }
 
+/**
+ * Espelha `MlTrainingRunPublicDTO` — nunca `pythonJobId` (infra interna).
+ * O treino é assíncrono (Item C): a UI acompanha por polling e pode cancelar
+ * de verdade, porque o job Python roda em processo separado.
+ */
+interface TrainingRun {
+  readonly trainingRunId: string;
+  readonly status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'REJECTED' | 'FAILED' | 'CANCEL_REQUESTED' | 'CANCELLED' | 'INTERRUPTED';
+  readonly phase: 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'BACKTESTS' | 'FINALIZING';
+  readonly progress: number;
+  readonly researchRunId: string | null;
+  readonly modelVersionId: string | null;
+  readonly gate: { readonly approved: boolean; readonly checks: readonly GateCheck[] } | null;
+  readonly metrics: {
+    readonly nSamples: number;
+    readonly nHighConfidence: number;
+    readonly accuracy: number | null;
+    readonly brier: number;
+    readonly coverage: number;
+    readonly baselineDelta: number | null;
+  } | null;
+  readonly errorCode: string | null;
+  readonly errorSummary: string | null;
+  readonly createdAt: string;
+}
+
+const PHASE_LABELS: Record<TrainingRun['phase'], string> = {
+  QUEUED: 'na fila',
+  SNAPSHOT: 'congelando barras D1',
+  DATASET: 'montando painel fundamentalista',
+  TRAINING: 'treinando ensemble (walk-forward)',
+  GATE: 'aplicando gates',
+  BACKTESTS: 'backtests',
+  FINALIZING: 'finalizando',
+};
+
+const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+
 interface ApiError {
   readonly code: string;
   readonly message: string;
@@ -161,6 +199,7 @@ export default function DirectionalSignalsView(): React.ReactElement {
   const [costProfiles, setCostProfiles] = useState<readonly CostProfile[]>([]);
   const [selectedCostProfileId, setSelectedCostProfileId] = useState('');
   const [training, setTraining] = useState(false);
+  const [trainingRun, setTrainingRun] = useState<TrainingRun | null>(null);
 
   const [signalFilter, setSignalFilter] = useState<'TODOS' | 'ALTA_CONFIANCA'>('ALTA_CONFIANCA');
 
@@ -223,8 +262,40 @@ export default function DirectionalSignalsView(): React.ReactElement {
     }
   }, [toast]);
 
-  useEffect(() => { void loadModels(); void loadCostProfiles(); }, [loadModels, loadCostProfiles]);
+  const loadLatestTrainingRun = useCallback(async () => {
+    try {
+      const { data } = await getJson<TrainingRun[]>('/api/v1/ml/training-runs?limit=1');
+      setTrainingRun(data[0] ?? null);
+    } catch {
+      setTrainingRun(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadModels();
+    void loadCostProfiles();
+    void loadLatestTrainingRun();
+  }, [loadModels, loadCostProfiles, loadLatestTrainingRun]);
+
   useEffect(() => { void loadPredictions(selectedVersion); }, [selectedVersion, loadPredictions]);
+
+  // Polling do treino em andamento — para sozinho ao terminar e recarrega as
+  // versões, para que um modelo recém-aprovado apareça no seletor.
+  useEffect(() => {
+    if (!trainingRun || !ACTIVE_RUN_STATUSES.has(trainingRun.status)) return;
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const { data } = await getJson<TrainingRun>(`/api/v1/ml/training-runs/${trainingRun.trainingRunId}`);
+          setTrainingRun(data);
+          if (!ACTIVE_RUN_STATUSES.has(data.status)) await loadModels();
+        } catch {
+          // Falha pontual de polling não derruba a tela — a próxima iteração tenta de novo.
+        }
+      })();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [trainingRun, loadModels]);
 
   // --- ações -------------------------------------------------------------
   const handleTrain = useCallback(async () => {
@@ -234,24 +305,34 @@ export default function DirectionalSignalsView(): React.ReactElement {
     }
     setTraining(true);
     try {
-      const { data } = await postJson<{ status: string; modelVersion: string; gateFailures: string[] }>(
-        '/api/v1/ml/directional/models',
-        { costProfileId: selectedCostProfileId },
-      );
-      if (data.status === 'ACTIVE') {
-        toast.success(`Modelo aprovado no gate — versão ${shortVersion(data.modelVersion)}.`);
-      } else {
-        toast.warning(
-          `Modelo reprovado no gate (${data.gateFailures.length} de 4 critérios). Registrado para auditoria, não servível.`,
-        );
-      }
-      await loadModels();
+      // Treino é assíncrono: responde 202 na hora e o job Python roda em
+      // processo separado. A UI acompanha por polling — nunca segura a
+      // conexão por minutos.
+      const { data } = await postJson<TrainingRun>('/api/v1/ml/training-runs', {
+        costProfileId: selectedCostProfileId,
+      });
+      setTrainingRun(data);
+      toast.info('Treino iniciado — acompanhe o progresso abaixo.');
     } catch (error) {
-      toast.error(`Falha no treino — ${describeError(error)}`);
+      toast.error(`Falha ao iniciar o treino — ${describeError(error)}`);
     } finally {
       setTraining(false);
     }
-  }, [selectedCostProfileId, toast, loadModels]);
+  }, [selectedCostProfileId, toast]);
+
+  const handleCancelTraining = useCallback(async () => {
+    if (!trainingRun) return;
+    try {
+      const { data } = await postJson<TrainingRun>(
+        `/api/v1/ml/training-runs/${trainingRun.trainingRunId}/cancel`,
+        {},
+      );
+      setTrainingRun(data);
+      toast.info('Cancelamento solicitado — o processo de treino será encerrado.');
+    } catch (error) {
+      toast.error(`Falha ao cancelar — ${describeError(error)}`);
+    }
+  }, [trainingRun, toast]);
 
   const handleGenerate = useCallback(async () => {
     if (!selectedVersion) return;
@@ -274,6 +355,7 @@ export default function DirectionalSignalsView(): React.ReactElement {
   const highConfidence = predictions.filter((p) => p.signal !== 'NEUTRO');
   const visiblePredictions = signalFilter === 'ALTA_CONFIANCA' ? highConfidence : predictions;
   const failedModels = allModels.filter((m) => m.status === 'FAILED');
+  const trainingRunActive = trainingRun !== null && ACTIVE_RUN_STATUSES.has(trainingRun.status);
 
   const reliabilityData = (selectedModel?.metrics.reliability ?? [])
     .filter((b) => b.n > 0 && b.meanPredicted !== null && b.observedRate !== null)
@@ -481,10 +563,10 @@ export default function DirectionalSignalsView(): React.ReactElement {
             </div>
             <button
               onClick={() => void handleTrain()}
-              disabled={training || !selectedCostProfileId}
+              disabled={training || !selectedCostProfileId || trainingRunActive}
               className="bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm font-semibold"
             >
-              {training ? 'Treinando…' : 'Treinar (walk-forward trimestral)'}
+              {training ? 'Iniciando…' : trainingRunActive ? 'Treino em andamento' : 'Treinar (walk-forward trimestral)'}
             </button>
           </div>
         )}
@@ -492,6 +574,77 @@ export default function DirectionalSignalsView(): React.ReactElement {
           O treino roda o walk-forward anual completo e aplica os quatro gates no servidor. Um modelo reprovado é
           persistido para auditoria, mas nunca fica servível.
         </p>
+
+        {trainingRun && (
+          <div className="border-t border-gray-800 pt-3 space-y-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono text-gray-400">{trainingRun.trainingRunId}</span>
+              <span
+                className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                  trainingRun.status === 'SUCCEEDED'
+                    ? 'bg-green-500/10 text-green-400 border-green-500/40'
+                    : trainingRun.status === 'REJECTED'
+                      ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/40'
+                      : trainingRunActive
+                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/40'
+                        : 'bg-red-500/10 text-red-400 border-red-500/40'
+                }`}
+              >
+                {trainingRun.status}
+              </span>
+              {trainingRunActive && (
+                <span className="text-gray-500">
+                  {PHASE_LABELS[trainingRun.phase]} — {trainingRun.progress}%
+                </span>
+              )}
+            </div>
+
+            {trainingRunActive && (
+              <div className="w-full bg-gray-800 rounded h-1.5 overflow-hidden">
+                <div className="bg-blue-500 h-1.5 transition-all" style={{ width: `${trainingRun.progress}%` }} />
+              </div>
+            )}
+
+            {trainingRun.status === 'REJECTED' && (
+              <p className="text-yellow-400">
+                Gate reprovado — nenhuma versão foi ativada. O modelo fica registrado no histórico para auditoria.
+              </p>
+            )}
+            {trainingRun.status === 'SUCCEEDED' && (
+              <p className="text-green-400">
+                Modelo aprovado e ativado
+                {trainingRun.modelVersionId ? ` — versão ${shortVersion(trainingRun.modelVersionId)}.` : '.'}
+              </p>
+            )}
+            {(trainingRun.status === 'FAILED' || trainingRun.status === 'INTERRUPTED') && (
+              <p className="text-red-400">
+                {trainingRun.errorCode}: {trainingRun.errorSummary ?? 'falha no treino'}
+              </p>
+            )}
+            {trainingRun.status === 'CANCELLED' && <p className="text-gray-400">Cancelado.</p>}
+
+            {trainingRun.metrics && (
+              <div className="font-mono text-gray-500 flex gap-3 flex-wrap">
+                <span>amostras: {trainingRun.metrics.nSamples}</span>
+                <span>alta confiança: {trainingRun.metrics.nHighConfidence}</span>
+                <span>acurácia: {pct(trainingRun.metrics.accuracy)}</span>
+                <span>Brier: {num(trainingRun.metrics.brier)}</span>
+                <span>cobertura: {trainingRun.metrics.coverage}</span>
+                <span>vs comprar-tudo: {pct(trainingRun.metrics.baselineDelta)}</span>
+              </div>
+            )}
+
+            {trainingRunActive && (
+              <button
+                onClick={() => void handleCancelTraining()}
+                disabled={trainingRun.status === 'CANCEL_REQUESTED'}
+                className="bg-red-700 hover:bg-red-600 disabled:opacity-50 rounded px-3 py-1 text-xs font-semibold"
+              >
+                {trainingRun.status === 'CANCEL_REQUESTED' ? 'Cancelando…' : 'Cancelar treino'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ---------------- Histórico ---------------- */}

@@ -7,6 +7,7 @@ import type {
   DirectionalPredictionSubmission,
 } from '../../../domain/v1/models/ml-directional';
 import type { DirectionalRepository } from '../../../domain/v1/ports/ml-directional-repository';
+import { DirectionalModelVersionNotFoundError } from './errors';
 import { toDirectionalModelVersion, toDirectionalPrediction } from './mapping';
 import {
   DirectionalModelVersionSubmissionSchema,
@@ -65,6 +66,27 @@ export class PrismaDirectionalRepository implements DirectionalRepository {
       data: { status: 'SUPERSEDED' },
     });
     return result.count;
+  }
+
+  async publish(modelVersion: string): Promise<DirectionalModelVersion> {
+    // UPDATE condicional: só publica quem ainda está DRAFT. Se outra coisa já
+    // mudou o estado (cancelamento, republicação concorrente), não sobrescreve
+    // — falha explícito em vez de "ativar" silenciosamente uma versão que o
+    // fluxo de cancelamento já descartou.
+    const { count } = await this.prisma.directionalModelVersion.updateMany({
+      where: { modelVersion, status: 'DRAFT' },
+      data: { status: 'ACTIVE' },
+    });
+    const row = await this.prisma.directionalModelVersion.findUnique({ where: { modelVersion } });
+    if (!row) {
+      throw new DirectionalModelVersionNotFoundError(`DirectionalModelVersion ${modelVersion} não encontrada`);
+    }
+    if (count === 0 && row.status !== 'ACTIVE') {
+      throw new DirectionalModelVersionNotFoundError(
+        `DirectionalModelVersion ${modelVersion} não estava DRAFT (status ${row.status}) — publicação recusada`,
+      );
+    }
+    return toDirectionalModelVersion(row);
   }
 
   async savePredictions(submissions: readonly DirectionalPredictionSubmission[]): Promise<number> {

@@ -1,15 +1,22 @@
 import { z } from 'zod';
 import { ReadModelError } from '../read-models-v1/errors';
-import type { TrainResult } from '../ml-hybrid';
+import type { DirectionalTrainResponse } from '../ml-directional';
+import { DirectionalMetricsSchema } from '../../adapters/prisma/ml-directional/schemas';
 import { B3_TICKER_EXACT } from '../../lib/b3-ticker';
 
 /**
- * Item C: porta para o job Python assíncrono (`POST /ml/train-jobs`,
- * `GET /ml/train-jobs/<id>`, `POST /ml/train-jobs/<id>/cancel`), distinta
- * de `MlApiPort` (`ml-hybrid/service.ts`) que só conhece o `/ml/train`
- * síncrono legado. Nenhum destes métodos bloqueia por mais que um request
- * HTTP curto — start/cancel retornam de imediato; o worker chama
- * `getStatus` em polling de baixa frequência.
+ * Item C + Item D: porta para o job Python assíncrono (`POST /ml/train-jobs`,
+ * `GET /ml/train-jobs/<id>`, `POST /ml/train-jobs/<id>/cancel`), distinta do
+ * `DirectionalMlApiPort` (`ml-directional/port.ts`), que fala com o
+ * `/ml/directional/train` síncrono. Nenhum destes métodos bloqueia por mais
+ * que um request HTTP curto — start/cancel retornam de imediato; o worker
+ * chama `getStatus` em polling de baixa frequência.
+ *
+ * Item D: o job Python passou a rodar `ml/directional_worker.py` (ensemble
+ * direcional) no lugar do antigo `ml/train_worker.py` (híbrido/TimesFM). O
+ * PROTOCOLO (jobId, arquivos de progresso/resultado/erro, cancelamento por
+ * morte de processo) é idêntico — só o corpo do `result` mudou, e é isso que
+ * o schema abaixo passa a validar.
  */
 // Bloqueador 2 (revisão Guardião): 'UNKNOWN' distingue "jobId nunca existiu
 // (ou não sobreviveu a um restart do motor Python)" de "está RUNNING" — sem
@@ -20,7 +27,7 @@ export interface TrainJobStatus {
   readonly state: TrainJobState;
   readonly phase: string;
   readonly progress: number;
-  readonly result?: TrainResult;
+  readonly result?: DirectionalTrainResponse;
   readonly errorCode?: string;
 }
 
@@ -46,57 +53,33 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB — teto de payload aceito do
 const finiteNumber = z.number().finite();
 const hash64 = z.string().regex(/^[0-9a-f]{64}$/, 'hash 64-hex inválido');
 const jobId32 = z.string().regex(/^[0-9a-f]{32}$/, 'jobId 32-hex inválido');
-// Bloqueador 21 (revisão Guardião): `datasetHash` segue o formato semântico
-// canônico produzido por python/ml/train.py (`sha256:<64-hex>`) — aceitar
-// qualquer string de até 200 chars permitia payloads arbitrários chegarem
-// ao ResearchRun.datasetId.
-const datasetHashCanonical = z.string().regex(/^sha256:[0-9a-f]{64}$/, 'datasetHash fora do formato canônico sha256:<64-hex>');
 // Bloqueador 21: `Date.parse` aceita formatos ambíguos/inválidos de calendário
 // (ex.: "2024-02-30" às vezes é aceito por engines JS). Exige ISO 8601
 // estrito (data ou data-hora) via z.string().datetime()/regex de data.
 const isoDate = z.union([z.string().date(), z.string().datetime({ offset: true })]);
-const accuracyBlock = z.object({ accuracy: finiteNumber.min(0).max(1) }).strict();
 
-const TrainingBlockSchema = z
+/**
+ * Item D: resultado do `ml/directional_worker.py`. Mesmo rigor do schema
+ * anterior — `.strict()`, hashes 64-hex validados, tickers no padrão canônico
+ * B3 e métricas dentro de faixa. Qualquer campo novo emitido pelo Python
+ * PRECISA ser declarado aqui antes de chegar ao gate/persistência: foi
+ * exatamente a omissão de um campo (`orphan`) que quebrou todo o treino
+ * assíncrono do Item C ao vivo (ver CODEX_HANDOFF 2026-07-25).
+ */
+const DirectionalTrainResultSchema = z
   .object({
-    block: z.string().min(1).max(200),
-    n: z.number().int().min(0),
-    hitsModel: z.number().int().min(0),
-    hitsAlwaysUp: z.number().int().min(0),
-    hitsTimesfm: z.number().int().min(0),
-    hitsFundamental: z.number().int().min(0),
-    hitsPriceOnly: z.number().int().min(0),
-  })
-  .strict()
-  // Bloqueador 21: coerência básica — nenhuma contagem de acerto pode
-  // exceder o total de amostras do bloco.
-  .refine(
-    (b) => b.hitsModel <= b.n && b.hitsAlwaysUp <= b.n && b.hitsTimesfm <= b.n && b.hitsFundamental <= b.n && b.hitsPriceOnly <= b.n,
-    'hits* não pode exceder n no bloco',
-  );
-
-const TrainResultSchema = z
-  .object({
-    datasetHash: datasetHashCanonical,
+    modelVersion: hash64,
     datasetDigest: hash64,
     universeBarsDigest: hash64,
     universe: z.array(z.string().regex(B3_TICKER_EXACT)).min(1).max(2_000),
-    timesfmVersion: z.string().max(200).optional(),
+    horizonTradingDays: z.number().int().positive().max(1_000),
+    gate: z.object({ upper: finiteNumber.min(0).max(1), lower: finiteNumber.min(0).max(1) }).strict(),
     windowStart: isoDate,
     windowEnd: isoDate,
     hyperparameters: z.record(z.string(), z.unknown()),
-    aggregate: z.object({ nSamples: z.number().int().min(0), accuracy: finiteNumber.min(0).max(1) }).strict(),
-    baselines: z
-      .object({
-        alwaysUp: accuracyBlock,
-        timesfmOnly: accuracyBlock,
-        fundamentalOnly: accuracyBlock,
-        priceOnlyLgbm: accuracyBlock,
-      })
-      .strict(),
-    blocks: z.array(TrainingBlockSchema).max(100_000),
-    backtest: z.object({ metrics: z.record(z.string(), z.unknown()) }).strict(),
-    artifact: z.object({ hash: hash64, path: z.string().min(1).max(1_000) }).strict(),
+    features: z.array(z.string().max(200)).min(1).max(500),
+    metrics: DirectionalMetricsSchema,
+    artifactPath: z.string().min(1).max(1_000),
   })
   .strict();
 
@@ -107,7 +90,7 @@ const TrainJobStatusSchema = z
     state: TrainJobStateSchema,
     phase: z.string().min(1).max(50),
     progress: z.number().int().min(0).max(100),
-    result: TrainResultSchema.optional(),
+    result: DirectionalTrainResultSchema.optional(),
     errorCode: z.string().max(100).optional(),
     // O `ml_api.py` real emite `orphan: boolean` no ramo RUNNING (distinção
     // ORPHAN_RUNNING, Bloqueador 2 da revisão do Guardião): um processo vivo

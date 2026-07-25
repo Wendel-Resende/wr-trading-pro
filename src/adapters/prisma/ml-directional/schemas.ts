@@ -14,7 +14,7 @@ import { z } from 'zod';
 export const ModelVersionIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const DirectionalSignalSchema = z.enum(['COMPRA', 'VENDA', 'NEUTRO']);
-export const DirectionalModelStatusSchema = z.enum(['ACTIVE', 'FAILED', 'SUPERSEDED']);
+export const DirectionalModelStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'FAILED', 'SUPERSEDED']);
 export const DirectionalGateFailureCodeSchema = z.enum([
   'ACCURACY_BELOW_MIN',
   'BRIER_ABOVE_MAX',

@@ -2,13 +2,13 @@ import type { PrismaClient } from '@prisma/client';
 import type {
   MlTrainingRun,
   MlTrainingRunGate,
-  MlTrainingRunGateComparison,
+  MlTrainingRunGateCheck,
   MlTrainingRunMetrics,
   MlTrainingRunPhase,
   MlTrainingRunStatus,
   MlTrainingRunSubmission,
 } from '../../../domain/v1/models/ml-training-run';
-import { KNOWN_GATE_BASELINE_NAMES } from '../../../domain/v1/models/ml-training-run';
+import { KNOWN_GATE_CHECK_CODES } from '../../../domain/v1/models/ml-training-run';
 import type { CreateIfNoneActiveResult, MlTrainingRunRepository, MlTrainingRunUpdate } from '../../../domain/v1/ports/ml-training-run-repository';
 
 const ACTIVE_STATUSES: MlTrainingRunStatus[] = ['QUEUED', 'RUNNING', 'CANCEL_REQUESTED'];
@@ -50,25 +50,27 @@ function parseSymbols(json: string): readonly string[] | null {
 function parseGate(json: string | null): MlTrainingRunGate | null {
   if (!json) return null;
   try {
-    const parsed = JSON.parse(json) as { approved?: unknown; comparisons?: unknown };
-    if (typeof parsed.approved !== 'boolean' || !Array.isArray(parsed.comparisons)) return null;
-    const comparisons: MlTrainingRunGateComparison[] = parsed.comparisons
-      .filter((c): c is { baseline: unknown; accuracyDiff: unknown; ciLower: unknown; passed: unknown } => typeof c === 'object' && c !== null)
+    const parsed = JSON.parse(json) as { approved?: unknown; checks?: unknown };
+    if (typeof parsed.approved !== 'boolean' || !Array.isArray(parsed.checks)) return null;
+    const checks: MlTrainingRunGateCheck[] = parsed.checks
+      .filter((c): c is { code: unknown; label: unknown; threshold: unknown; observed: unknown; passed: unknown } => typeof c === 'object' && c !== null)
       .filter(
         (c) =>
-          typeof c.baseline === 'string' &&
-          KNOWN_GATE_BASELINE_NAMES.has(c.baseline) &&
-          typeof c.accuracyDiff === 'number' &&
-          typeof c.ciLower === 'number' &&
+          typeof c.code === 'string' &&
+          KNOWN_GATE_CHECK_CODES.has(c.code) &&
+          typeof c.label === 'string' &&
+          typeof c.threshold === 'number' &&
+          (c.observed === null || typeof c.observed === 'number') &&
           typeof c.passed === 'boolean',
       )
       .map((c) => ({
-        baseline: c.baseline as string,
-        accuracyDiff: c.accuracyDiff as number,
-        ciLower: c.ciLower as number,
+        code: c.code as string,
+        label: c.label as string,
+        threshold: c.threshold as number,
+        observed: (c.observed ?? null) as number | null,
         passed: c.passed as boolean,
       }));
-    return { approved: parsed.approved, comparisons: Object.freeze(comparisons) };
+    return { approved: parsed.approved, checks: Object.freeze(checks) };
   } catch {
     return null;
   }
@@ -79,25 +81,33 @@ function parseMetrics(json: string | null): MlTrainingRunMetrics | null {
   try {
     const parsed = JSON.parse(json) as {
       nSamples?: unknown;
+      nHighConfidence?: unknown;
       accuracy?: unknown;
-      baselines?: { alwaysUp?: unknown; timesfmOnly?: unknown; fundamentalOnly?: unknown; priceOnlyLgbm?: unknown };
+      brier?: unknown;
+      coverage?: unknown;
+      baselineDelta?: unknown;
     };
-    const b = parsed.baselines;
+    // `accuracy`/`baselineDelta` são legitimamente `null` quando nenhum sinal
+    // de alta confiança foi emitido — aceitar null aqui é honesto; converter
+    // para 0 fingiria um resultado que não existe.
+    const nullableNumber = (v: unknown): v is number | null => v === null || typeof v === 'number';
     if (
       typeof parsed.nSamples !== 'number' ||
-      typeof parsed.accuracy !== 'number' ||
-      !b ||
-      typeof b.alwaysUp !== 'number' ||
-      typeof b.timesfmOnly !== 'number' ||
-      typeof b.fundamentalOnly !== 'number' ||
-      typeof b.priceOnlyLgbm !== 'number'
+      typeof parsed.nHighConfidence !== 'number' ||
+      typeof parsed.brier !== 'number' ||
+      typeof parsed.coverage !== 'number' ||
+      !nullableNumber(parsed.accuracy) ||
+      !nullableNumber(parsed.baselineDelta)
     ) {
       return null;
     }
     return {
       nSamples: parsed.nSamples,
-      accuracy: parsed.accuracy,
-      baselines: { alwaysUp: b.alwaysUp, timesfmOnly: b.timesfmOnly, fundamentalOnly: b.fundamentalOnly, priceOnlyLgbm: b.priceOnlyLgbm },
+      nHighConfidence: parsed.nHighConfidence,
+      accuracy: parsed.accuracy ?? null,
+      brier: parsed.brier,
+      coverage: parsed.coverage,
+      baselineDelta: parsed.baselineDelta ?? null,
     };
   } catch {
     return null;

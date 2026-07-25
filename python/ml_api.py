@@ -168,12 +168,11 @@ def create_app(deps=None):
         worker_cfg = {
             'dbPath': cfg['db_path'],
             'cvmDbPath': cfg['cvm_db_path'],
-            'modelsDir': cfg['models_dir'],
+            'directionalModelsDir': cfg['directional_models_dir'],
             'barsSnapshotDir': cfg['bars_snapshot_dir'],
-            'tfmCacheDir': cfg['tfm_cache_dir'],
         }
         args = [
-            sys.executable, '-u', '-m', 'ml.train_worker',
+            sys.executable, '-u', '-m', 'ml.directional_worker',
             job_id, cfg['jobs_dir'], json.dumps(symbols), json.dumps(worker_cfg),
         ]
         job_registry.start(args, job_id=job_id, cwd=os.path.dirname(os.path.abspath(__file__)))

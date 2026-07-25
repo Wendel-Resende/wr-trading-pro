@@ -46,29 +46,45 @@ export const ML_TRAINING_RUN_PHASES: readonly MlTrainingRunPhase[] = Object.free
   'FINALIZING',
 ]);
 
-export const KNOWN_GATE_BASELINE_NAMES: ReadonlySet<string> = new Set(['alwaysUp', 'timesfmOnly', 'fundamentalOnly', 'priceOnlyLgbm']);
+/**
+ * Item D: allowlist dos códigos de gate do classificador direcional — mesma
+ * disciplina do allowlist anterior (nomes de baseline do motor híbrido):
+ * qualquer código fora desta lista é descartado na leitura, nunca repassado
+ * como texto livre vindo de um blob persistido.
+ */
+export const KNOWN_GATE_CHECK_CODES: ReadonlySet<string> = new Set([
+  'ACCURACY_BELOW_MIN',
+  'BRIER_ABOVE_MAX',
+  'COVERAGE_BELOW_MIN',
+  'BASELINE_DELTA_BELOW_MIN',
+]);
 
-export interface MlTrainingRunGateComparison {
-  readonly baseline: string;
-  readonly accuracyDiff: number;
-  readonly ciLower: number;
+export interface MlTrainingRunGateCheck {
+  readonly code: string;
+  readonly label: string;
+  readonly threshold: number;
+  /** `null` quando a métrica não existe (ex.: nenhum sinal de alta confiança). */
+  readonly observed: number | null;
   readonly passed: boolean;
 }
 
 export interface MlTrainingRunGate {
   readonly approved: boolean;
-  readonly comparisons: readonly MlTrainingRunGateComparison[];
+  readonly checks: readonly MlTrainingRunGateCheck[];
 }
 
+/**
+ * Resumo das métricas do treino direcional exibido no acompanhamento do run.
+ * É deliberadamente um subconjunto: as métricas completas (matriz de confusão,
+ * confiabilidade, por fold) vivem em `DirectionalModelVersion.metrics`.
+ */
 export interface MlTrainingRunMetrics {
   readonly nSamples: number;
-  readonly accuracy: number;
-  readonly baselines: {
-    readonly alwaysUp: number;
-    readonly timesfmOnly: number;
-    readonly fundamentalOnly: number;
-    readonly priceOnlyLgbm: number;
-  };
+  readonly nHighConfidence: number;
+  readonly accuracy: number | null;
+  readonly brier: number;
+  readonly coverage: number;
+  readonly baselineDelta: number | null;
 }
 
 export interface MlTrainingRun {

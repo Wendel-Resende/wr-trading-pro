@@ -158,56 +158,59 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000, interv
   }
 }
 
-const STRONG_BLOCKS = Array.from({ length: 80 }, (_, i) => ({
-  block: `T${i % 7}:2024-${(i % 12) + 1}`,
-  n: 10,
-  hitsModel: 8,
-  hitsAlwaysUp: 5,
-  hitsTimesfm: 5,
-  hitsFundamental: 5,
-  hitsPriceOnly: 5,
-}));
-const WEAK_BLOCKS = Array.from({ length: 80 }, (_, i) => ({
-  block: `T${i % 7}:2024-${(i % 12) + 1}`,
-  n: 10,
-  hitsModel: 6,
-  hitsAlwaysUp: 6,
-  hitsTimesfm: 6,
-  hitsFundamental: 6,
-  hitsPriceOnly: 6,
-}));
+/**
+ * Item D: métricas que passam/reprovam os 4 gates do classificador direcional
+ * (§4.7). Substituem os antigos blocos de bootstrap do gate híbrido.
+ */
+const STRONG_METRICS = {
+  nSamples: 2000,
+  nHighConfidence: 400,
+  accuracy: 0.92,
+  accuracyAllSamples: 0.7,
+  brier: 0.08,
+  coverage: 45,
+  coveragePeriod: '2025T4',
+  baselineAllUp: 0.5,
+  baselineOnSignals: 0.6,
+  baselineDelta: 0.32,
+  confusionMatrix: { truePositive: 200, falsePositive: 20, trueNegative: 160, falseNegative: 20 },
+  reliability: [{ binStart: 0.9, binEnd: 1, n: 100, meanPredicted: 0.95, observedRate: 0.94 }],
+  byFold: [{ foldId: 0, testYear: 2025, n: 500, nHighConfidence: 100, accuracy: 0.92, brier: 0.08 }],
+};
 
-function fakeTrainResult(blocks: typeof STRONG_BLOCKS) {
+/** Reprova nos 4 gates simultaneamente — números próximos dos reais de 2026-07-25. */
+const WEAK_METRICS = {
+  ...STRONG_METRICS,
+  accuracy: 0.556,
+  brier: 0.329,
+  coverage: 1,
+  baselineOnSignals: 0.433,
+  baselineDelta: 0.123,
+};
+
+function fakeTrainResult(metrics: typeof STRONG_METRICS) {
   return {
-    // Bloqueador 21 (revisão Guardião): datasetHash agora exige o formato
-    // canônico sha256:<64-hex> — não basta um placeholder curto.
-    datasetHash: `sha256:${'a'.repeat(64)}`,
+    // Identidade canônica distinta por cenário: a `modelVersion` é
+    // content-addressed no motor real, e o serviço é idempotente por ela.
+    // Reusar o mesmo hash entre o cenário aprovado e o reprovado faria o
+    // segundo treino reencontrar a versão já ATIVA do primeiro (banco
+    // compartilhado entre os casos da suíte) em vez de criar a sua.
+    modelVersion: metrics === WEAK_METRICS ? 'e'.repeat(64) : 'd'.repeat(64),
     datasetDigest: `${'a'.repeat(63)}b`,
     universeBarsDigest: 'b'.repeat(64),
-    // Bloqueador 15 (revisão Guardião): TrainResultSchema exige universe
-    // não-vazio (.min(1)) — universo vazio fazia o worker rejeitar o
-    // payload como malformado antes de chegar a REJECTED/SUCCEEDED. Falhas
-    // por símbolo em runRealBacktests são capturadas e viram
-    // `skipped[symbol]` (D6), nunca derrubam o teste — a engine falsa nem
-    // serve /ml/predictions.
     // Regressão (2026-07-25): `B3SA3` (raiz com dígito, a própria B3 S.A.)
-    // faz parte do universo real e era rejeitado por `[A-Z]{4}` no
-    // TrainResultSchema.universe, derrubando o resultado inteiro. Fica aqui
-    // para o caminho SUCCEEDED exercitar esse ticker pelo schema real.
+    // faz parte do universo real e era rejeitado por `[A-Z]{4}` no schema do
+    // resultado, derrubando o treino inteiro. Fica aqui para o caminho
+    // SUCCEEDED exercitar esse ticker pelo schema real.
     universe: ['PETR4', 'B3SA3'] as string[],
-    windowStart: '2019-01-05',
-    windowEnd: '2026-07-17',
-    hyperparameters: { max_depth: 6 },
-    aggregate: { nSamples: 800, accuracy: 0.8 },
-    baselines: {
-      alwaysUp: { accuracy: 0.5 },
-      timesfmOnly: { accuracy: 0.5 },
-      fundamentalOnly: { accuracy: 0.5 },
-      priceOnlyLgbm: { accuracy: 0.5 },
-    },
-    blocks,
-    backtest: { metrics: { totalReturn: 0.1 } },
-    artifact: { hash: 'd'.repeat(64), path: 'unused' },
+    horizonTradingDays: 60,
+    gate: { upper: 0.9, lower: 0.1 },
+    windowStart: '2011-08-14',
+    windowEnd: '2026-05-15',
+    hyperparameters: { lightgbm: { max_depth: 6 } },
+    features: ['roe', 'roic'],
+    metrics,
+    artifactPath: 'unused/model.pkl',
   };
 }
 
@@ -319,7 +322,7 @@ async function rejectedTrainingPersistsResearchRunWithoutModelVersion(prisma: Pr
   await withFakeEngine(
     [
       { state: 'RUNNING', phase: 'TRAINING', progress: 60 },
-      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(WEAK_BLOCKS) },
+      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(WEAK_METRICS) },
     ],
     async () => {
       const postRes = await trainingRunsPOST(
@@ -345,7 +348,7 @@ async function rejectedTrainingPersistsResearchRunWithoutModelVersion(prisma: Pr
         status: string;
         modelVersionId: string | null;
         researchRunId: string | null;
-        gate: { approved: boolean; comparisons: unknown[] } | null;
+        gate: { approved: boolean; checks: unknown[] } | null;
         metrics: unknown;
       }>;
       assertLog(finalJson.success && finalJson.data.status === 'REJECTED', 'run termina REJECTED');
@@ -372,7 +375,7 @@ async function approvedTrainingCreatesExactlyOneModelVersion(prisma: PrismaClien
   await withFakeEngine(
     [
       { state: 'RUNNING', phase: 'TRAINING', progress: 60 },
-      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(STRONG_BLOCKS) },
+      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(STRONG_METRICS) },
     ],
     async () => {
       const postRes = await trainingRunsPOST(
@@ -399,15 +402,22 @@ async function approvedTrainingCreatesExactlyOneModelVersion(prisma: PrismaClien
       if (!finalJson.success) return;
       assertLog(finalJson.data.modelVersionId !== null, 'ModelVersion vinculada quando aprovado');
 
-      const modelVersion = await prisma.modelVersion.findUnique({ where: { modelVersion: finalJson.data.modelVersionId! } });
-      assertLog(modelVersion !== null && modelVersion.trainingEvidenceJson !== null, 'ModelVersion persistida no banco com trainingEvidenceJson');
-      const evidence = JSON.parse(modelVersion!.trainingEvidenceJson!) as { gate: { approved: boolean }; artifact: { hash: string }; datasetHash: string };
-      assertLog(evidence.gate.approved === true, 'evidência confirma gate.approved === true');
-      assertLog(evidence.artifact.hash === 'd'.repeat(64), 'hash do artefato corresponde ao resultado do treino');
-      assertLog(evidence.datasetHash === `${'a'.repeat(63)}b`, 'datasetHash corresponde ao digest do treino');
+      // Item D: o artefato governado passou a ser `DirectionalModelVersion`
+      // (métricas do walk-forward + veredito dos 4 gates), não mais a
+      // `ModelVersion` genérica com `trainingEvidenceJson` do motor híbrido.
+      const modelVersion = await prisma.directionalModelVersion.findUnique({
+        where: { modelVersion: finalJson.data.modelVersionId! },
+      });
+      assertLog(modelVersion !== null, 'DirectionalModelVersion persistida no banco');
+      assertLog(modelVersion!.status === 'ACTIVE', 'versão aprovada é ativada pelo claim CAS do worker');
+      assertLog(modelVersion!.gateFailures === null, 'versão aprovada não registra falha de gate');
+      const metrics = JSON.parse(modelVersion!.metrics) as { accuracy: number; brier: number; coverage: number };
+      assertLog(metrics.accuracy === 0.92 && metrics.brier === 0.08 && metrics.coverage === 45,
+        'métricas do walk-forward correspondem ao resultado do treino');
 
       const researchRun = await prisma.researchRun.findUnique({ where: { runId: finalJson.data.researchRunId! } });
-      assertLog(researchRun !== null && researchRun.modelVersionId === modelVersion!.modelVersion, 'ResearchRun linkado à ModelVersion aprovada');
+      assertLog(researchRun !== null && researchRun.modelVersionId === modelVersion!.modelVersion, 'ResearchRun linkado à versão aprovada');
+      assertLog(researchRun!.datasetId === `sha256:${'a'.repeat(63)}b`, 'ResearchRun carrega o digest do dataset treinado');
     },
   );
 }
@@ -620,189 +630,54 @@ function jobRegistrySurvivesRestartAndCanStillCancel(): void {
 }
 
 /**
- * 7) LOTE 2 (Item C, correção da corrida cancel/publicação, 2026-07-23):
- * prova a corrida REAL, com uma barreira de verdade — não apenas
- * `checkCancelled: true` setado antes de entrar em `finalizeTraining`.
+ * Item D (substitui o antigo teste de corrida cancel×backtest, que usava as
+ * chamadas HTTP do loop de backtests do motor híbrido como barreira — esse
+ * loop não existe mais).
  *
- * Sobe um motor Python falso que, além de `/ml/train-jobs*`, também serve
- * `/ml/predictions/:hash` e `/ml/snapshot-bars/:hash` (chamadas reais de
- * `runRealBacktests`) — e essas duas rotas ficam PENDURADAS numa Promise
- * controlada pelo teste até o teste mandar liberar. O fluxo completo passa
- * pelas rotas HTTP reais (`POST /training-runs`, `POST .../cancel`), pelo
- * worker in-process real e por `MlHybridService.finalizeTraining` real —
- * nada é mockado no nível de `finalizeTraining`/`checkCancelled` in-process.
- *
- * Sequência determinística:
- *  1. POST cria o run; engine reporta SUCCEEDED (gate aprova, STRONG_BLOCKS).
- *  2. o worker entra em `runRealBacktests` e dispara GET /ml/predictions e
- *     GET /ml/snapshot-bars para o único símbolo do universo — ambas as
- *     rotas ficam bloqueadas na barreira (prova de que o teste está
- *     genuinamente "no meio do loop de backtests", via I/O real, nunca via
- *     um mock que resolve na hora).
- *  3. só DEPOIS de confirmar (via contador incrementado dentro do handler
- *     HTTP, antes do `await` na barreira) que as duas requisições chegaram,
- *     o teste dispara `POST /training-runs/:id/cancel` CONCORRENTE de
- *     verdade (rota HTTP real, sem esperar o worker).
- *  4. o teste libera a barreira — as respostas HTTP finalmente retornam.
- *  5. asserts: (a) o run termina CANCELLED; (b) nenhuma ModelVersion com
- *     `publishedAt` não-nulo (ativa/elegível para previsão) existe; (c)
- *     ResearchRun (e qualquer BacktestRun eventualmente criado) continuam
- *     no banco para auditoria.
+ * A janela de corrida agora vive inteiramente dentro de
+ * `DirectionalService.finalizeTraining`: a versão aprovada nasce DRAFT e só
+ * vira ACTIVE se o claim CAS confirmar que o `MlTrainingRun` ainda estava
+ * RUNNING. Este teste exercita exatamente esse invariante injetando um claim
+ * que FALHA — o mesmo efeito de um cancelamento vencer a corrida — e prova
+ * que nada servível é publicado.
  */
-async function raceBetweenCancelAndBacktestNeverPublishesActiveModelVersion(prisma: PrismaClient): Promise<void> {
-  const { POST: trainingRunsPOST } = await import('../../src/app/api/v1/ml/training-runs/route');
-  const { GET: trainingRunGET } = await import('../../src/app/api/v1/ml/training-runs/[id]/route');
-  const { POST: cancelPOST } = await import('../../src/app/api/v1/ml/training-runs/[id]/cancel/route');
-  const costProfileId = await createCostProfile(prisma, 'perfil-corrida-cancel-backtest');
+async function lostPublicationClaimNeverActivatesModelVersion(prisma: PrismaClient): Promise<void> {
+  const { DirectionalService } = await import('../../src/application/ml-directional');
+  const costProfileId = await createCostProfile(prisma, 'perfil-claim-perdido');
+  const costProfile = { id: costProfileId, version: 1 };
+  const trainResult = fakeTrainResult(STRONG_METRICS);
 
-  let gateReleased = false;
-  let releaseGate: () => void = () => {};
-  const gate = new Promise<void>((resolve) => {
-    releaseGate = () => {
-      gateReleased = true;
-      resolve();
-    };
-  });
-  let backtestRequestsReceived = 0;
-  const jobIds: string[] = [];
-  const cancelCalls: string[] = [];
-  let getCallIndex = 0;
-  const statuses: readonly FakeJobStatus[] = [
-    { state: 'RUNNING', phase: 'TRAINING', progress: 60 },
-    { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(STRONG_BLOCKS) },
-  ];
-
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const p = url.pathname;
-    if (req.method === 'POST' && p === '/ml/train-jobs') {
-      // Bloqueador 9/19: ecoa o jobId gerado pelo Node (não inventa um) —
-      // consome o corpo antes de responder, como o motor real faria.
-      const chunks: Buffer[] = [];
-      req.on('data', (c: Buffer) => chunks.push(c));
-      req.on('end', () => {
-        let body: { jobId?: unknown } = {};
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-        } catch {
-          body = {};
-        }
-        if (typeof body.jobId !== 'string' || !/^[0-9a-f]{32}$/.test(body.jobId)) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'INVALID_JOB_ID' }));
-          return;
-        }
-        jobIds.push(body.jobId);
-        res.writeHead(202, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ jobId: body.jobId }));
-      });
-      return;
-    }
-    const cancelMatch = /^\/ml\/train-jobs\/([^/]+)\/cancel$/.exec(p);
-    if (req.method === 'POST' && cancelMatch) {
-      cancelCalls.push(cancelMatch[1]);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ state: 'CANCELLED', processConfirmedTerminated: true }));
-      return;
-    }
-    const statusMatch = /^\/ml\/train-jobs\/([^/]+)$/.exec(p);
-    if (req.method === 'GET' && statusMatch) {
-      const idx = Math.min(getCallIndex, statuses.length - 1);
-      getCallIndex += 1;
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(statuses[idx]));
-      return;
-    }
-    // Barreira real: só responde depois que o teste chamar `releaseGate()`.
-    // Incrementa o contador ANTES do `await gate` — prova determinística de
-    // que o worker de fato está bloqueado no meio de `runRealBacktests`.
-    if (req.method === 'GET' && (p.startsWith('/ml/predictions/') || p.startsWith('/ml/snapshot-bars/'))) {
-      backtestRequestsReceived += 1;
-      void gate.then(() => {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ rows: [], total: 0, limit: 100, offset: 0 }));
-      });
-      return;
-    }
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'NOT_FOUND' }));
+  const service = new DirectionalService({
+    prisma,
+    mlApi: { train: async () => trainResult, predict: async () => { throw new Error('não usado'); } },
   });
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const prevUrl = process.env.WR_ML_API_URL;
-  process.env.WR_ML_API_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  try {
-    const postRes = await trainingRunsPOST(
-      authedRequest('http://localhost/api/v1/ml/training-runs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ costProfileId }),
-      }),
-    );
-    const postJson = (await postRes.json()) as ApiEnvelope<{ trainingRunId: string }>;
-    assertLog(postJson.success, `POST cria o run (cenário de corrida cancel/backtest) — status=${postRes.status} body=${JSON.stringify(postJson)}`);
-    if (!postJson.success) return;
-    const id = postJson.data.trainingRunId;
+  // Claim perdido: o cancelamento venceu a corrida.
+  const result = await service.finalizeTraining('test-user', costProfile, trainResult, {
+    claimAndPublish: async () => false,
+  });
 
-    // Barreira real: espera as duas chamadas concorrentes de backtest
-    // (predictions + snapshot-bars) chegarem de fato ao servidor ANTES de
-    // disparar o cancelamento — prova, via I/O real, que estamos no meio
-    // do loop de `runRealBacktests`, nunca um `checkCancelled: true`
-    // setado antes de sequer entrar na função.
-    await waitUntil(async () => backtestRequestsReceived >= 2, 5000, 5);
-    assertLog(!gateReleased, 'a barreira ainda não foi liberada quando o cancelamento concorrente é disparado — prova de bloqueio real no meio do loop');
+  assertLog(result.gate.approved, 'gate aprovou o treino (a corrida só importa quando há o que publicar)');
+  assertLog(result.publicationAborted, 'claim perdido é reportado explicitamente (publicationAborted)');
+  assertLog(result.status === 'DRAFT', 'versão permanece DRAFT quando o claim falha — nunca ACTIVE');
 
-    const cancelRes = await cancelPOST(authedRequest('http://localhost/x', { method: 'POST' }), { params: Promise.resolve({ id }) });
-    const cancelJson = (await cancelRes.json()) as ApiEnvelope<{ status: string }>;
-    assertLog(cancelRes.status === 200 && cancelJson.success, 'POST cancel concorrente (disparado com o worker travado no meio dos backtests) responde 200');
+  const persisted = await prisma.directionalModelVersion.findUnique({ where: { modelVersion: trainResult.modelVersion } });
+  assertLog(persisted !== null && persisted.status === 'DRAFT', 'no banco, a versão continua DRAFT — nunca servível');
 
-    // Libera a barreira SÓ DEPOIS do cancelamento já ter sido persistido —
-    // reproduz exatamente a janela de corrida do bug original (bloqueadores
-    // 3/17/18): CANCEL_REQUESTED chega DURANTE o trabalho de backtest/gate,
-    // antes do claim final de publicação.
-    releaseGate();
+  const activeCount = await prisma.directionalModelVersion.count({ where: { status: 'ACTIVE' } });
+  assertLog(activeCount === 0, 'nenhuma versão ACTIVE existe após a corrida perdida');
 
-    await waitUntil(async () => {
-      const res = await trainingRunGET(authedRequest('http://localhost/x'), { params: Promise.resolve({ id }) });
-      const json = (await res.json()) as ApiEnvelope<{ status: string }>;
-      return json.success && (json.data.status === 'CANCELLED' || json.data.status === 'FAILED');
-    });
+  // ResearchRun permanece para auditoria — mesmo com a versão órfã em DRAFT.
+  const researchRun = await prisma.researchRun.findUnique({ where: { runId: result.researchRunId } });
+  assertLog(researchRun !== null, 'ResearchRun persiste para auditoria mesmo quando a publicação é abortada');
+  assertLog(researchRun!.modelVersionId === null, 'ResearchRun não é linkado a uma versão que nunca foi ativada');
 
-    const finalRes = await trainingRunGET(authedRequest('http://localhost/x'), { params: Promise.resolve({ id }) });
-    const finalJson = (await finalRes.json()) as ApiEnvelope<{
-      status: string;
-      modelVersionId: string | null;
-      researchRunId: string | null;
-    }>;
-    assertLog(finalJson.success && finalJson.data.status === 'CANCELLED', `(a) run termina CANCELLED mesmo com gate aprovado e backtest em andamento (status: ${finalJson.success ? finalJson.data.status : 'erro'})`);
-    if (!finalJson.success) return;
-
-    // (b) nenhuma ModelVersion ATIVA (publishedAt não-nulo) associada a
-    // este run — o claim CAS final falhou porque o run já não estava mais
-    // RUNNING quando `claimAndPublish` rodou (o cancelamento venceu a
-    // corrida real, não uma flag setada de antemão).
-    const activeModelVersionCount = await prisma.modelVersion.count({ where: { publishedAt: { not: null } } });
-    assertLog(activeModelVersionCount === 0, '(b) nenhuma ModelVersion ATIVA (publishedAt preenchido) existe após a corrida — nenhuma versão elegível para previsão foi publicada');
-
-    // (c) ResearchRun permanece para auditoria — mesmo se uma ModelVersion
-    // DRAFT chegou a ser criada (órfã, mas nunca publicada/elegível).
-    assertLog(finalJson.data.researchRunId !== null, '(c) ResearchRun foi criado e persiste para auditoria mesmo com o cancelamento vencendo a corrida');
-    const researchRun = await prisma.researchRun.findUnique({ where: { runId: finalJson.data.researchRunId! } });
-    assertLog(researchRun !== null, '(c) ResearchRun continua existindo no banco (auditável) após o run terminar CANCELLED');
-
-    if (finalJson.data.modelVersionId) {
-      const draftModelVersion = await prisma.modelVersion.findUnique({ where: { modelVersion: finalJson.data.modelVersionId } });
-      assertLog(draftModelVersion !== null && draftModelVersion.publishedAt === null, 'a ModelVersion criada durante o treino cancelado permanece DRAFT (publishedAt null) para sempre — órfã, mas nunca ativa');
-    }
-
-    void cancelCalls;
-    void jobIds;
-  } finally {
-    if (!gateReleased) releaseGate();
-    if (prevUrl === undefined) delete process.env.WR_ML_API_URL;
-    else process.env.WR_ML_API_URL = prevUrl;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  // E o caminho feliz do mesmo hook: claim confirmado publica de fato.
+  const okResult = await service.finalizeTraining('test-user', costProfile, trainResult, {
+    claimAndPublish: async () => true,
+  });
+  assertLog(!okResult.publicationAborted, 'claim confirmado não reporta abortos');
+  assertLog(okResult.status === 'ACTIVE', 'claim confirmado ativa a versão (DRAFT -> ACTIVE)');
 }
 
 /**
@@ -813,10 +688,10 @@ async function raceBetweenCancelAndBacktestNeverPublishesActiveModelVersion(pris
  */
 async function malformedPythonPayloadsAreRejectedAndNeverPersist(prisma: PrismaClient): Promise<void> {
   const cases: { name: string; body: unknown }[] = [
-    { name: 'accuracy NaN', body: { ...fakeTrainResult(STRONG_BLOCKS), aggregate: { nSamples: 10, accuracy: Number.NaN } } },
-    { name: 'accuracy Infinity', body: { ...fakeTrainResult(STRONG_BLOCKS), aggregate: { nSamples: 10, accuracy: Number.POSITIVE_INFINITY } } },
-    { name: 'hash curto', body: { ...fakeTrainResult(STRONG_BLOCKS), artifact: { hash: 'abc123', path: 'x' } } },
-    { name: 'universeBarsDigest não-hex', body: { ...fakeTrainResult(STRONG_BLOCKS), universeBarsDigest: 'Z'.repeat(64) } },
+    { name: 'accuracy NaN', body: { ...fakeTrainResult(STRONG_METRICS), aggregate: { nSamples: 10, accuracy: Number.NaN } } },
+    { name: 'accuracy Infinity', body: { ...fakeTrainResult(STRONG_METRICS), aggregate: { nSamples: 10, accuracy: Number.POSITIVE_INFINITY } } },
+    { name: 'hash curto', body: { ...fakeTrainResult(STRONG_METRICS), artifact: { hash: 'abc123', path: 'x' } } },
+    { name: 'universeBarsDigest não-hex', body: { ...fakeTrainResult(STRONG_METRICS), universeBarsDigest: 'Z'.repeat(64) } },
   ];
 
   for (const testCase of cases) {
@@ -1018,7 +893,7 @@ async function main(): Promise<void> {
       }
     }
     await realRunningPayloadWithOrphanFieldIsAccepted();
-    await raceBetweenCancelAndBacktestNeverPublishesActiveModelVersion(prisma);
+    await lostPublicationClaimNeverActivatesModelVersion(prisma);
     await malformedPythonPayloadsAreRejectedAndNeverPersist(prisma);
     await postReturns202Quickly(prisma);
     await reloadRecoversSameState(prisma);

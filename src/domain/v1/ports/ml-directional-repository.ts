@@ -25,6 +25,13 @@ export interface DirectionalRepository {
   }): Promise<readonly DirectionalModelVersion[]>;
   /** Marca como SUPERSEDED todas as versões ACTIVE exceto `keepModelVersion`. Retorna quantas mudaram. */
   supersedeOthers(keepModelVersion: string): Promise<number>;
+  /**
+   * DRAFT → ACTIVE. Só é chamado DEPOIS de um claim CAS bem-sucedido contra o
+   * `MlTrainingRun` dono do treino (ou no fluxo síncrono, que não é
+   * cancelável). Publicar uma versão que não está DRAFT é erro de programação
+   * e falha explicitamente.
+   */
+  publish(modelVersion: string): Promise<DirectionalModelVersion>;
 
   /**
    * Persiste um lote de previsões de uma mesma geração, atomicamente.

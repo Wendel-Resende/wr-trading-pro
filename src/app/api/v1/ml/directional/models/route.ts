@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import { prisma } from '../../../../../../lib/prisma';
-import { isAdmin } from '../../../../../../lib/auth/admin';
-import { isB3Ticker } from '../../../../../../lib/b3-ticker';
 import {
   createDirectionalService,
   createHttpDirectionalMlApiPort,
@@ -16,10 +14,14 @@ export const dynamic = 'force-dynamic';
 /**
  * Item D (§4.5) — versões do classificador direcional.
  *
- * GET: leitura autenticada (qualquer principal conhecido), paginada
- * server-side. POST: dispara um treino novo — criação, portanto restrita à
- * allowlist de admin (`isAdmin`, fail-closed), mesmo gate já usado por
- * `BacktestCostProfile`.
+ * Somente leitura, autenticada (qualquer principal conhecido) e paginada
+ * server-side.
+ *
+ * NÃO existe POST aqui: treinar é `POST /api/v1/ml/training-runs` (Item C),
+ * que cria um `MlTrainingRun`, responde 202 na hora e roda o job Python em
+ * processo separado — cancelável de verdade. Um POST síncrono nesta rota
+ * seguraria a conexão por minutos e não teria como ser cancelado, que é
+ * exatamente o bug que o Item C existe para não repetir.
  */
 
 const ListQuerySchema = z
@@ -27,25 +29,6 @@ const ListQuerySchema = z
     status: z.enum(['ACTIVE', 'FAILED', 'SUPERSEDED']).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     cursor: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  })
-  .strict();
-
-const TrainBodySchema = z
-  .object({
-    costProfileId: z.string().min(1).max(64),
-    symbols: z
-      .array(
-        z
-          .string()
-          .min(1)
-          .max(20)
-          .transform((s) => s.trim().toUpperCase())
-          .refine(isB3Ticker, { message: 'ticker fora do formato B3' }),
-      )
-      .min(1)
-      .max(1000)
-      .optional()
-      .transform((syms) => (syms ? Array.from(new Set(syms)) : syms)),
   })
   .strict();
 
@@ -78,44 +61,6 @@ export async function GET(request: Request): Promise<Response> {
 
     const dtos = page.map(toDirectionalModelVersionPublicDTO);
     return jsonSuccess(dtos, { count: dtos.length, nextCursor });
-  } catch (error) {
-    return jsonError(error);
-  }
-}
-
-export async function POST(request: Request): Promise<Response> {
-  try {
-    const requestedBy = requireKnownPrincipal(await resolveRequestedBy(request));
-    if (!isAdmin(requestedBy)) {
-      throw new ReadModelError('FORBIDDEN', 'apenas um admin pode treinar um novo modelo direcional');
-    }
-
-    let raw: unknown;
-    try {
-      raw = await request.json();
-    } catch {
-      throw new ReadModelError('INVALID_BODY', 'corpo da requisição não é um JSON válido');
-    }
-    const body = parseWithSchema(TrainBodySchema, raw);
-
-    const service = createDirectionalService({ prisma, mlApi: createHttpDirectionalMlApiPort(mlApiBaseUrl()) });
-    const result = await service.runTraining(requestedBy, body.costProfileId, body.symbols);
-
-    // Um treino reprovado no gate NÃO é um erro de requisição: é um resultado
-    // científico legítimo, devolvido com 200 e o veredito completo para a UI
-    // poder mostrar exatamente qual gate falhou.
-    return jsonSuccess(
-      {
-        researchRunId: result.researchRunId,
-        modelVersion: result.modelVersion,
-        status: result.status,
-        gateApproved: result.gate.approved,
-        gateFailures: result.gate.failures,
-        model: toDirectionalModelVersionPublicDTO(result.model),
-      },
-      {},
-      201,
-    );
   } catch (error) {
     return jsonError(error);
   }

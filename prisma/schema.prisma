@@ -1069,7 +1069,10 @@ model DirectionalModelVersion {
   // JSON: { accuracy, brier, coverage, baselineDelta, confusionMatrix, ... }
   metrics       String
   artifactPath  String
-  // ACTIVE = passou nos 4 gates da §4.7 e pode aparecer na UI.
+  // DRAFT  = aprovado no gate mas ainda NÃO publicado (treino assíncrono):
+  //          só vira ACTIVE dentro do claim CAS atômico contra o MlTrainingRun.
+  //          Cancelamento que vença a corrida deixa a versão DRAFT para sempre.
+  // ACTIVE = publicado; único estado que aparece na UI e emite sinais.
   // FAILED  = reprovado em ao menos um gate; fica persistido para auditoria,
   //           mas nunca é servível (a UI não o oferece no seletor).
   // SUPERSEDED = substituído por uma versão mais nova aprovada.

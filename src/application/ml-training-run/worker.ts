@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { createBacktestCostProfileService } from '../backtest-cost-profile';
-import { createHttpMlApiPort, MlHybridService, type TrainResult } from '../ml-hybrid';
+import { createHttpDirectionalMlApiPort, DirectionalService, type DirectionalTrainResponse } from '../ml-directional';
 import { ReadModelError } from '../read-models-v1/errors';
 import type { MlTrainingRun } from '../../domain/v1/models/ml-training-run';
 import { createMlTrainingRunService } from './compose';
@@ -10,16 +10,15 @@ import type { MlTrainJobPort, TrainJobStatus } from './train-job-port';
 import { sanitizeErrorSummary, toKnownErrorCode } from './sanitize';
 
 /**
- * Item C: worker in-process que substitui a chamada síncrona bloqueante de
- * `POST /api/v1/ml/train`. Roda fora do request HTTP (agendado via
- * `scheduleTrainingRun`, chamado logo após o `POST /api/v1/ml/training-runs`
+ * Item C: worker in-process que roda o treino fora do request HTTP (agendado
+ * via `scheduleTrainingRun`, chamado logo após o `POST /api/v1/ml/training-runs`
  * responder 202) — o processo Node continua vivo entre requests (não é uma
  * function serverless efêmera), então este `void` fire-and-forget é seguro
  * enquanto o processo não reiniciar. Reinício é tratado por
  * `reconcileOnStartup` (spec §5): nada fica "RUNNING" para sempre.
  *
  * Cancelamento real: o job Python roda em PROCESSO SEPARADO
- * (`python/ml/train_worker.py` via `job_runner.JobRegistry`), nunca thread
+ * (`python/ml/directional_worker.py` via `job_runner.JobRegistry`), nunca thread
  * cooperativa — `trainJobPort.cancel(jobId)` mata o processo do SO. Abortar
  * só o `fetch` do Next NUNCA é suficiente (é exatamente o bug documentado
  * na spec) — por isso o cancelamento aqui sempre chama o endpoint Python
@@ -47,8 +46,8 @@ function defaultSleep(ms: number): Promise<void> {
  * LOTE 2 (Item C): sentinela interna usada só para abortar a transação do
  * claim CAS (`claimAndPublish`) sem propagar um erro real — `prisma.
  * $transaction` faz ROLLBACK de qualquer `throw` dentro do callback, então
- * lançar isto garante que nenhuma escrita (nem `progress`, nem
- * `publishedAt`) sobrevive quando o claim falha. Nunca deve escapar de
+ * lançar isto garante que nenhuma escrita (nem `progress`, nem a ativação da
+ * versão) sobrevive quando o claim falha. Nunca deve escapar de
  * `claimAndPublish` — sempre capturada e traduzida para `return false`.
  */
 class PublicationClaimLostError extends Error {}
@@ -278,20 +277,20 @@ async function failRun(service: MlTrainingRunService, trainingRunId: string, _ex
 }
 
 /**
- * Item C / spec §6: reaproveita a orquestração pós-treino do fluxo síncrono
- * (`MlHybridService.finalizeTraining`) — gate → ResearchRun → ModelVersion
- * (só se aprovado) → backtests reais. Antes de publicar, reconsulta o
- * status: se um cancelamento foi solicitado enquanto o Python computava,
- * a publicação NUNCA acontece (spec §5) — o run termina `CANCELLED`, nunca
- * `SUCCEEDED` com uma `ModelVersion` criada depois do pedido de
- * cancelamento.
+ * Item C + Item D: reaproveita a orquestração pós-treino do fluxo síncrono
+ * (`DirectionalService.finalizeTraining`) — gate → ResearchRun →
+ * DirectionalModelVersion (DRAFT se aprovado, FAILED se não) → publicação por
+ * claim CAS. Antes de publicar, reconsulta o status: se um cancelamento foi
+ * solicitado enquanto o Python computava, a publicação NUNCA acontece
+ * (spec §5) — o run termina `CANCELLED`, nunca `SUCCEEDED` com uma versão
+ * ativada depois do pedido de cancelamento.
  */
 async function finalizeSucceeded(
   service: MlTrainingRunService,
   ports: MlTrainingRunWorkerPorts,
   trainingRunId: string,
   queued: MlTrainingRun,
-  trainResult: TrainResult,
+  trainResult: DirectionalTrainResponse,
 ): Promise<void> {
   const preCheck = await service.get(trainingRunId);
   if (preCheck.status === 'CANCEL_REQUESTED') {
@@ -306,28 +305,21 @@ async function finalizeSucceeded(
     const costProfileService = createBacktestCostProfileService(ports.prisma);
     const costProfile = await costProfileService.resolveActiveForTraining(queued.costProfileId);
 
-    const mlApi = createHttpMlApiPort(ports.mlApiBaseUrl);
-    const hybridService = new MlHybridService({ mlApi, prisma: ports.prisma });
+    const mlApi = createHttpDirectionalMlApiPort(ports.mlApiBaseUrl);
+    const directionalService = new DirectionalService({ mlApi, prisma: ports.prisma });
     // LOTE 2 (Item C, correção da corrida cancel/publicação, 2026-07-23):
-    // `checkCancelled` é o checkpoint cooperativo lido pelo loop de
-    // backtests (a cada símbolo, nunca a cada amostra) — só interrompe o
-    // trabalho cedo, NÃO é o que decide a publicação.
-    //
     // `claimAndPublish` é o CLAIM CAS real: uma ÚNICA transação Prisma que
     // (a) só afeta o `MlTrainingRun` se `status='RUNNING'` no exato momento
-    // do UPDATE e (b) SÓ SE essa condição valer, publica a ModelVersion
-    // (`publishedAt = now()`) na MESMA transação. Isso fecha a janela de
-    // corrida do desenho anterior (bloqueadores 3/17/18): o antigo
-    // `claimPublication` fazia um `UPDATE ... WHERE status='RUNNING'` que
-    // só tocava `progress` — nunca mudava `status`, então um cancelamento
-    // concorrente ainda conseguia vencer a corrida entre esse UPDATE e o
-    // `create()` da ModelVersion (que acontecia depois, fora de qualquer
-    // transação). Agora a ModelVersion já nasceu DRAFT antes deste ponto —
-    // se o UPDATE afetar 0 linhas, a transação inteira é abortada (nenhum
-    // `publishedAt` é escrito) e a ModelVersion permanece DRAFT para
-    // sempre, órfã mas auditável via `ResearchRun`.
-    const checkCancelled = async () => (await service.get(trainingRunId)).status === 'CANCEL_REQUESTED';
-    const claimAndPublish = async (modelVersionId: string): Promise<boolean> => {
+    // do UPDATE e (b) SÓ SE essa condição valer, ativa a
+    // `DirectionalModelVersion` (DRAFT → ACTIVE) na MESMA transação. Isso
+    // fecha a janela de corrida do desenho anterior (bloqueadores 3/17/18):
+    // um `UPDATE ... WHERE status='RUNNING'` que só tocasse `progress` deixaria
+    // um cancelamento concorrente vencer a corrida entre esse UPDATE e a
+    // ativação da versão. A versão já nasceu DRAFT antes deste ponto — se o
+    // UPDATE afetar 0 linhas, a transação inteira é abortada (nada é ativado)
+    // e a versão permanece DRAFT para sempre, órfã mas auditável via
+    // `ResearchRun`.
+    const claimAndPublish = async (modelVersion: string): Promise<boolean> => {
       try {
         await ports.prisma.$transaction(async (tx) => {
           const { count } = await tx.mlTrainingRun.updateMany({
@@ -335,7 +327,11 @@ async function finalizeSucceeded(
             data: { progress: 97 },
           });
           if (count === 0) throw new PublicationClaimLostError();
-          await tx.modelVersion.update({ where: { modelVersion: modelVersionId }, data: { publishedAt: new Date() } });
+          const activated = await tx.directionalModelVersion.updateMany({
+            where: { modelVersion, status: 'DRAFT' },
+            data: { status: 'ACTIVE' },
+          });
+          if (activated.count === 0) throw new PublicationClaimLostError();
         });
         return true;
       } catch (error) {
@@ -343,14 +339,13 @@ async function finalizeSucceeded(
         throw error;
       }
     };
-    const result = await hybridService.finalizeTraining(queued.requestedBy, costProfile, trainResult, { checkCancelled, claimAndPublish });
+    const result = await directionalService.finalizeTraining(queued.requestedBy, costProfile, trainResult, { claimAndPublish });
 
     const postCheck = await service.get(trainingRunId);
     const expectedStatus = postCheck.status === 'CANCEL_REQUESTED' ? 'CANCEL_REQUESTED' : 'RUNNING';
     const finalStatus = expectedStatus === 'CANCEL_REQUESTED'
-      // LOTE 2: mesmo se `result.gate.approved` e `result.modelVersionId`
-      // não forem nulos, `result.publicationAborted` garante que a
-      // ModelVersion (se criada) ficou DRAFT para sempre — nunca publicada.
+      // Mesmo com o gate aprovado, `result.publicationAborted` garante que a
+      // versão ficou DRAFT para sempre — nunca ativada depois do cancelamento.
       ? 'CANCELLED'
       : result.gate.approved
         ? 'SUCCEEDED'
@@ -361,17 +356,17 @@ async function finalizeSucceeded(
       phase: 'FINALIZING',
       progress: 100,
       researchRunId: result.researchRunId,
-      modelVersionId: result.modelVersionId,
-      gate: { approved: result.gate.approved, comparisons: result.gate.comparisons },
+      // Só referencia a versão quando ela de fato ficou servível — uma versão
+      // presa em DRAFT (claim perdido) não é apontada como resultado do run.
+      modelVersionId: result.status === 'ACTIVE' ? result.modelVersion : null,
+      gate: { approved: result.gate.approved, checks: result.gate.checks },
       metrics: {
-        nSamples: trainResult.aggregate.nSamples,
-        accuracy: trainResult.aggregate.accuracy,
-        baselines: {
-          alwaysUp: trainResult.baselines.alwaysUp.accuracy,
-          timesfmOnly: trainResult.baselines.timesfmOnly.accuracy,
-          fundamentalOnly: trainResult.baselines.fundamentalOnly.accuracy,
-          priceOnlyLgbm: trainResult.baselines.priceOnlyLgbm.accuracy,
-        },
+        nSamples: trainResult.metrics.nSamples,
+        nHighConfidence: trainResult.metrics.nHighConfidence,
+        accuracy: trainResult.metrics.accuracy,
+        brier: trainResult.metrics.brier,
+        coverage: trainResult.metrics.coverage,
+        baselineDelta: trainResult.metrics.baselineDelta,
       },
       completedAt: new Date(),
     });

@@ -12,11 +12,16 @@
 export type DirectionalSignal = 'COMPRA' | 'VENDA' | 'NEUTRO';
 
 /**
- * ACTIVE — passou nos 4 gates da §4.7; única condição para aparecer na UI.
+ * DRAFT — aprovado no gate, mas AINDA NÃO publicado. Estado intermediário do
+ *   treino assíncrono (Item C): a versão nasce inerte e só vira ACTIVE dentro
+ *   de um claim CAS atômico contra o `MlTrainingRun` dono do treino. Um
+ *   cancelamento que vença a corrida deixa a versão DRAFT para sempre — órfã,
+ *   mas auditável pelo ResearchRun. Nunca aparece na UI nem gera sinais.
+ * ACTIVE — publicado; única condição para aparecer na UI e emitir sinais.
  * FAILED — reprovado em ao menos um gate; persistido para auditoria, jamais servível.
  * SUPERSEDED — substituído por uma versão aprovada mais recente.
  */
-export type DirectionalModelStatus = 'ACTIVE' | 'FAILED' | 'SUPERSEDED';
+export type DirectionalModelStatus = 'DRAFT' | 'ACTIVE' | 'FAILED' | 'SUPERSEDED';
 
 /** Códigos de reprovação — allowlist; nunca texto livre vindo do motor. */
 export type DirectionalGateFailureCode =

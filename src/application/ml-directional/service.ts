@@ -10,7 +10,7 @@ import type {
   DirectionalPrediction,
 } from '../../domain/v1/models/ml-directional';
 import { evaluateDirectionalGate, type DirectionalGateResult } from './gate';
-import type { DirectionalMlApiPort } from './port';
+import type { DirectionalMlApiPort, DirectionalTrainResponse } from './port';
 
 /**
  * Item D — orquestração do classificador direcional.
@@ -35,6 +35,11 @@ export interface RunDirectionalTrainingResult {
   readonly status: DirectionalModelStatus;
   readonly gate: DirectionalGateResult;
   readonly model: DirectionalModelVersion;
+  /**
+   * `true` quando o gate aprovou mas o claim CAS falhou (cancelamento venceu
+   * a corrida): a versão permanece DRAFT para sempre, nunca servível.
+   */
+  readonly publicationAborted: boolean;
 }
 
 export interface GenerateDirectionalPredictionsResult {
@@ -76,7 +81,28 @@ export class DirectionalService {
     const costProfile = await costProfileService.resolveActiveForTraining(costProfileId);
 
     const trainResult = await this.ports.mlApi.train(symbols);
+    return this.finalizeTraining(createdBy, costProfile, trainResult);
+  }
 
+  /**
+   * Orquestração pós-treino, compartilhada entre o fluxo síncrono
+   * (`runTraining`) e o worker assíncrono do Item C
+   * (`src/application/ml-training-run/worker.ts`), que já tem o resultado em
+   * mãos — obtido via job Python cancelável, nunca via chamada bloqueante.
+   *
+   * `hooks.claimAndPublish` é o CLAIM CAS: a versão aprovada nasce **DRAFT**
+   * (inerte, invisível na UI, incapaz de gerar sinal) e só vira ACTIVE se o
+   * claim confirmar, numa única transação, que o `MlTrainingRun` dono do
+   * treino ainda estava RUNNING. Um cancelamento que vença a corrida deixa a
+   * versão DRAFT para sempre. Sem hooks (fluxo síncrono, não cancelável), a
+   * publicação é imediata.
+   */
+  async finalizeTraining(
+    createdBy: string,
+    costProfile: { readonly id: string; readonly version: number },
+    trainResult: DirectionalTrainResponse,
+    hooks?: { readonly claimAndPublish?: (modelVersion: string) => Promise<boolean> },
+  ): Promise<RunDirectionalTrainingResult> {
     const researchRunService = createResearchRunService(this.ports.prisma);
     const researchRun = await researchRunService.submit(
       {
@@ -102,29 +128,53 @@ export class DirectionalService {
 
     // Gate reavaliado no servidor a partir das métricas — o upstream não vota.
     const gate = evaluateDirectionalGate(trainResult.metrics);
-    const status: DirectionalModelStatus = gate.approved ? 'ACTIVE' : 'FAILED';
+    // Aprovado nasce DRAFT quando há claim a fazer (treino cancelável);
+    // reprovado já nasce FAILED — não há o que publicar.
+    const initialStatus: DirectionalModelStatus = gate.approved
+      ? (hooks?.claimAndPublish ? 'DRAFT' : 'ACTIVE')
+      : 'FAILED';
 
     const existing = await this.repository.findModelVersionById(trainResult.modelVersion);
     // Retreino idempotente: a mesma `modelVersion` (mesmos dados, mesma
     // configuração) já registrada não cria uma segunda linha nem reabre o
     // veredito do gate — devolve o que já está persistido.
-    const model =
+    let model =
       existing ??
       (await this.repository.createModelVersion({
         modelVersion: trainResult.modelVersion,
         researchRunId: researchRun.runId,
         metrics: trainResult.metrics,
         artifactPath: trainResult.artifactPath,
-        status,
+        status: initialStatus,
         gateFailures: gate.failures,
       }));
+
+    let publicationAborted = false;
+
+    if (gate.approved && model.status === 'DRAFT' && hooks?.claimAndPublish) {
+      const published = await hooks.claimAndPublish(model.modelVersion);
+      if (published) {
+        model = await this.repository.publish(model.modelVersion);
+      } else {
+        // Claim perdido: cancelamento venceu a corrida. A versão fica DRAFT
+        // para sempre — nunca servível, mas auditável pelo ResearchRun.
+        publicationAborted = true;
+      }
+    }
 
     if (model.status === 'ACTIVE') {
       await researchRunService.linkModelVersion(researchRun.runId, model.modelVersion);
       await this.repository.supersedeOthers(model.modelVersion);
     }
 
-    return { researchRunId: researchRun.runId, modelVersion: model.modelVersion, status: model.status, gate, model };
+    return {
+      researchRunId: researchRun.runId,
+      modelVersion: model.modelVersion,
+      status: model.status,
+      gate,
+      model,
+      publicationAborted,
+    };
   }
 
   /**
