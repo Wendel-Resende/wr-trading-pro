@@ -79,7 +79,15 @@ const TrainResultSchema = z
     datasetHash: datasetHashCanonical,
     datasetDigest: hash64,
     universeBarsDigest: hash64,
-    universe: z.array(z.string().regex(/^[A-Z]{4}\d{1,2}$/)).min(1).max(2_000),
+    // O padrão B3 canônico é 4 chars de raiz + 1-2 dígitos. A raiz é quase
+    // sempre 4 letras, MAS há exceções reais com dígito na raiz — notavelmente
+    // `B3SA3` (a própria B3 S.A.), que aparece no universo montado do banco
+    // quando `symbols=null` (treino do universo inteiro). `[A-Z]{4}` rejeitava
+    // B3SA3 e derrubava TODO o resultado como UPSTREAM_MALFORMED_RESPONSE →
+    // INTERNAL_ERROR, mesmo após ~17min de treino bem-sucedido no Python.
+    // `[A-Z0-9]{4}` aceita a raiz com dígito sem afrouxar nada perigoso
+    // (continua 4-6 chars, só maiúsculas/dígitos, sem separadores).
+    universe: z.array(z.string().regex(/^[A-Z0-9]{4}\d{1,2}$/)).min(1).max(2_000),
     timesfmVersion: z.string().max(200).optional(),
     windowStart: isoDate,
     windowEnd: isoDate,

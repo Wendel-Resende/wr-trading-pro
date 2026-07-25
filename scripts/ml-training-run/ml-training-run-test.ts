@@ -186,11 +186,15 @@ function fakeTrainResult(blocks: typeof STRONG_BLOCKS) {
     universeBarsDigest: 'b'.repeat(64),
     // Bloqueador 15 (revisão Guardião): TrainResultSchema exige universe
     // não-vazio (.min(1)) — universo vazio fazia o worker rejeitar o
-    // payload como malformado antes de chegar a REJECTED/SUCCEEDED. Um
-    // único símbolo aqui não dispara I/O real: falhas por símbolo em
-    // runRealBacktests são capturadas e viram `skipped[symbol]` (D6),
-    // nunca derrubam o teste — a engine falsa nem serve /ml/predictions.
-    universe: ['PETR4'] as string[],
+    // payload como malformado antes de chegar a REJECTED/SUCCEEDED. Falhas
+    // por símbolo em runRealBacktests são capturadas e viram
+    // `skipped[symbol]` (D6), nunca derrubam o teste — a engine falsa nem
+    // serve /ml/predictions.
+    // Regressão (2026-07-25): `B3SA3` (raiz com dígito, a própria B3 S.A.)
+    // faz parte do universo real e era rejeitado por `[A-Z]{4}` no
+    // TrainResultSchema.universe, derrubando o resultado inteiro. Fica aqui
+    // para o caminho SUCCEEDED exercitar esse ticker pelo schema real.
+    universe: ['PETR4', 'B3SA3'] as string[],
     windowStart: '2019-01-05',
     windowEnd: '2026-07-17',
     hyperparameters: { max_depth: 6 },
