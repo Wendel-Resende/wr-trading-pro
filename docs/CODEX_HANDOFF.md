@@ -51,6 +51,37 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
+## Sessão 2026-07-25 (cont. 4) — Painel Fundamentalista fatia 2: Decomposição DuPont/ROIC + correção de escala (branch `main`)
+
+Segunda fatia do Painel de Análise Fundamentalista (roadmap após a ficha v1).
+
+### Entregue
+
+- **DuPont (ROE):** `dupontFactors` (derivado no WR) decompõe `ROE = margem líquida ×
+  giro do ativo × alavancagem financeira (1/pl_ativos)`, com **checagem de identidade**
+  contra o ROE do pipeline (honesta: flag de divergência; `null` sem base de comparação).
+  Bloco `dupont` no `FundamentalSheetV1` + subseção na UI (identidade do último período,
+  tabela dos últimos trimestres, gráfico **ROE vs ROIC** com o gap = efeito da alavancagem).
+- Verificado: a identidade reconstrói o ROE do pipeline em **100%** dos períodos checáveis.
+  Commit `e3dcc7d`.
+
+### Bug do v1 corrigido junto (importante)
+
+A ficha v1 **misturava** a tabela `indicadores` (percentual, trimestral) com
+`fundamental_indicators` (decimal, 12M) — escalas E semântica incompatíveis (ex.: ABEV3
+2025T4 `indicadores.roe`=5,15% [tri] vs `fundamental_indicators.roe`=0,18 [12M]). Isso
+quebrava a identidade DuPont e deixaria os gráficos do v1 errados (ROE ~14 e ROIC ~0,16 no
+mesmo eixo). **Correção:** `fundamental_indicators` passa a ser **fonte única** dos
+indicadores (decimal → ×100 nos percentuais no DTO); `liquidez_corrente` (razão, escala
+segura) segue de `indicadores`; `endividamento`/`divida_pl` (indicadores) trocados por
+`divida_bruta_pl` (fundamental_indicators). Escalas coerentes confirmadas (ABEV3 ROE 17,8%
+/ ROIC 17,8% / margens ~18-25%). `test:cvm-fundamentals` verde, `tsc`/`build` OK.
+
+### Próximas fatias
+
+Comparação setorial point-in-time; motor de valuation (múltiplos + preço justo);
+seletor "as of" estrito.
+
 ## Sessão 2026-07-25 (cont. 3) — Ficha Fundamentalista por Empresa (v1) — CONCLUÍDA (branch `main`)
 
 Primeira fatia do "Painel de Análise Fundamentalista" (foco: usar os dados
