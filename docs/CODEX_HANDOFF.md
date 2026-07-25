@@ -51,6 +51,32 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
+## Sessão 2026-07-25 (cont. 5) — Painel Fundamentalista fatia 3: Comparação Setorial point-in-time (branch `main`)
+
+Ranking de empresas por setor sobre os indicadores 12M do pipeline.
+
+- **Backend:** `cvm-sector-ranking.ts` — `listSectors()` (agrupa por `setor_cvm`, a
+  classificação CVM mais limpa: Bancos 10, Energia 10, Construção 12…) e
+  `sectorRanking(setor, indicator, ano?, tri?)`. Indicadores comparáveis (allowlist,
+  fonte única `fundamental_indicators`): ROE, ROIC, Margem Líq./EBITDA, Dívida
+  Líq./EBITDA, Payout, Giro — com `betterWhen` (direção do ranking) e stats do setor
+  (mediana/p25/p75/média via helpers puros `median`/`percentile` por interpolação
+  linear). **Point-in-time:** período padrão = mais recente cujo carimbo de
+  conhecimento (prazo legal) já passou — não compara período não publicado.
+- **Rotas:** `GET /api/cvm/sectors` (setores + catálogo de indicadores) e
+  `GET /api/cvm/sector-ranking?setor=&indicator=&ano=&trimestre=` (indicator validado
+  por allowlist; setor obrigatório; ano/tri opcionais). Verificado no handler:
+  Construção Civil / ROE / 2026T1 (carimbo 2026-05-15, comparável) → 12 empresas,
+  top CURY3 68,9%, mediana 18,6%; inválidos → 400.
+- **UI:** 3ª view "Setorial" no switcher da aba Fundamentos CVM — seletor de setor +
+  indicador, tabela de ranking com stats, carimbo de conhecimento e nota PIT.
+- Verificado: `test:cvm-fundamentals` verde, `tsc`/`build` OK. Commits `9cad178`, `2db6149`.
+
+### Roadmap do painel — restam
+
+Motor de valuation (múltiplos + preço justo — decisão de fonte de preço pendente);
+seletor "as of" estrito (reconstrução point-in-time com retificações).
+
 ## Sessão 2026-07-25 (cont. 4) — Painel Fundamentalista fatia 2: Decomposição DuPont/ROIC + correção de escala (branch `main`)
 
 Segunda fatia do Painel de Análise Fundamentalista (roadmap após a ficha v1).
