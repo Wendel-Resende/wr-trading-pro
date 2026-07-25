@@ -20,6 +20,27 @@ export function cashConversion(
   return { value: fco / lucroLiquido };
 }
 
+/**
+ * Percentil por interpolação linear (método "linear"/numpy default), ignorando
+ * `null`/não-finito. Retorna `null` para conjunto vazio. Usado nas estatísticas
+ * de setor (mediana, quartis).
+ */
+export function percentile(values: readonly (number | null)[], p: number): number | null {
+  const nums = values.filter((v): v is number => v !== null && Number.isFinite(v)).sort((a, b) => a - b);
+  if (nums.length === 0) return null;
+  if (nums.length === 1) return nums[0];
+  const rank = (p / 100) * (nums.length - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return nums[lo];
+  return nums[lo] + (rank - lo) * (nums[hi] - nums[lo]);
+}
+
+/** Mediana (p50), ignorando `null`. `null` para conjunto vazio. */
+export function median(values: readonly (number | null)[]): number | null {
+  return percentile(values, 50);
+}
+
 export interface DupontFactors {
   /** Lucratividade — margem líquida (passthrough do pipeline). */
   margemLiquida: number | null;

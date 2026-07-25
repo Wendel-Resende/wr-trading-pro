@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors } from '../../src/lib/server/cvm-fundamentals-derive';
+import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors, median, percentile } from '../../src/lib/server/cvm-fundamentals-derive';
 import { buildFundamentalSheet } from '../../src/lib/server/cvm-fundamentals-sheet';
 import { listCompanies } from '../../src/lib/server/cvm-legacy-db';
+import { listSectors, sectorRanking, indicatorCatalog } from '../../src/lib/server/cvm-sector-ranking';
 
 function assertLog(cond: unknown, msg: string): void {
   assert.ok(cond, msg);
@@ -41,6 +42,17 @@ function main(): void {
   assertLog(dupontFactors(0.2, null, 0.5, 0.1).roeReconstruido === null, 'giro ausente → roeReconstruido null');
   assertLog(dupontFactors(null, 0.5, 0.5, null).consistente === null, 'sem ROE do pipeline → consistente null (não checa)');
 
+  // --- estatística de setor (mediana / percentil), ignora null ---
+  assertLog(median([]) === null, 'mediana de vazio → null');
+  assertLog(median([5]) === 5, 'mediana de um elemento');
+  assertLog(median([1, 2, 3, 4]) === 2.5, 'mediana par = média dos centrais');
+  assertLog(median([3, 1, 2]) === 2, 'mediana ímpar (desordenado)');
+  assertLog(median([2, null, 4, null]) === 3, 'mediana ignora null');
+  assertLog(percentile([1, 2, 3, 4], 25) === 1.75, 'p25 por interpolação linear');
+  assertLog(percentile([1, 2, 3, 4], 75) === 3.25, 'p75 por interpolação linear');
+  assertLog(percentile([10], 90) === 10, 'percentil de um elemento');
+  assertLog(percentile([], 50) === null, 'percentil de vazio → null');
+
   // --- smoke read-only do assembler (só se o banco existir no ambiente) ---
   if (existsSync('data/cvm/cvm_fundamentos.db')) {
     const first = listCompanies()[0];
@@ -67,6 +79,24 @@ function main(): void {
         console.log('ok: nenhum período DuPont checável neste ticker (sem os 3 fatores + ROE)');
       }
     }
+
+    // --- smoke da comparação setorial ---
+    assertLog(indicatorCatalog.length >= 5 && indicatorCatalog.some((i) => i.key === 'roe'), 'catálogo de indicadores comparáveis inclui ROE');
+    const sectors = listSectors();
+    assertLog(sectors.length > 0 && sectors[0].n >= sectors[sectors.length - 1].n, 'setores listados, ordenados por n desc');
+    const bigSector = sectors[0].setor;
+    const rk = sectorRanking(bigSector, 'roe');
+    assertLog(rk.setor === bigSector && rk.indicator.key === 'roe', 'ranking do maior setor por ROE');
+    assertLog(rk.period !== null && typeof rk.knowledgeDate === 'string', 'período PIT escolhido + carimbo');
+    assertLog(rk.rows.length > 0, 'ranking retorna empresas do setor');
+    const ranked = rk.rows.filter((r) => r.value !== null);
+    assertLog(ranked.every((r, i) => r.rank === i + 1), 'rank 1..n atribuído aos valores não-nulos, nulos por último');
+    assertLog(ranked.length < 2 || (ranked[0].value ?? 0) >= (ranked[1].value ?? 0), 'ROE (betterWhen higher) ordenado desc');
+    assertLog(rk.stats.n === ranked.length && (rk.stats.median === null || Number.isFinite(rk.stats.median)), 'stats: n bate e mediana é número ou null');
+    // dívida líq/EBITDA: menor é melhor → ordenado asc
+    const rkDl = sectorRanking(bigSector, 'dividaLiquidaEbitda');
+    const rankedDl = rkDl.rows.filter((r) => r.value !== null);
+    assertLog(rankedDl.length < 2 || (rankedDl[0].value ?? 0) <= (rankedDl[1].value ?? 0), 'Dívida Líq./EBITDA (betterWhen lower) ordenado asc');
   } else {
     console.log('ok: smoke da ficha pulado (banco CVM ausente no ambiente)');
   }
