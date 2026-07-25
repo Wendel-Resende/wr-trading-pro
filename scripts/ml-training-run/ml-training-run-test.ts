@@ -50,6 +50,11 @@ interface FakeJobStatus {
   readonly progress: number;
   readonly result?: unknown;
   readonly errorCode?: string;
+  // O `ml_api.py` real emite `orphan` no ramo RUNNING (distinção
+  // ORPHAN_RUNNING, Bloqueador 2). O fake precisa poder reproduzir esse
+  // campo para exercitar o contrato HTTP real — sem ele o schema estrito
+  // do port nunca era testado contra o payload que a engine de fato manda.
+  readonly orphan?: boolean;
 }
 
 /**
@@ -960,6 +965,30 @@ async function dtoAllowlistAndPagination(prisma: PrismaClient): Promise<void> {
   });
 }
 
+/**
+ * Regressão (2026-07-25): o `ml_api.py` real inclui `orphan` no corpo do
+ * status RUNNING (distinção ORPHAN_RUNNING, Bloqueador 2), mas o
+ * `TrainJobStatusSchema` do port era `.strict()` e rejeitava o campo — todo
+ * treino assíncrono falhava no primeiro poll com `UPSTREAM_MALFORMED_RESPONSE`
+ * → mapeado para `INTERNAL_ERROR` + mensagem redigida. Este teste exercita o
+ * contrato HTTP real: o port deve ACEITAR o payload que a engine de fato manda.
+ */
+async function realRunningPayloadWithOrphanFieldIsAccepted(): Promise<void> {
+  await withFakeEngine([{ state: 'RUNNING', phase: 'SNAPSHOT', progress: 0, orphan: false }], async (engine) => {
+    const port = createHttpMlTrainJobPort(engine.baseUrl);
+    const jobId = 'a'.repeat(32);
+    let status: Awaited<ReturnType<typeof port.getStatus>> | null = null;
+    let threw: unknown = null;
+    try {
+      status = await port.getStatus(jobId);
+    } catch (error) {
+      threw = error;
+    }
+    assertLog(threw === null, 'getStatus não lança contra o payload RUNNING real (com campo orphan)');
+    assertLog(status !== null && status.state === 'RUNNING', 'status RUNNING é parseado corretamente apesar do campo orphan');
+  });
+}
+
 async function main(): Promise<void> {
   const sessionSecret = process.env.WR_AUTH_SESSION_SECRET ?? '';
   if (sessionSecret.length < 32) {
@@ -984,6 +1013,7 @@ async function main(): Promise<void> {
         console.warn('Python process tests skipped (PATH issue):', (e as Error).message);
       }
     }
+    await realRunningPayloadWithOrphanFieldIsAccepted();
     await raceBetweenCancelAndBacktestNeverPublishesActiveModelVersion(prisma);
     await malformedPythonPayloadsAreRejectedAndNeverPersist(prisma);
     await postReturns202Quickly(prisma);

@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-20
+Última atualização: 2026-07-25
 
 ## Próxima iniciativa aprovada — infraestrutura de pesquisa governada (referência Vibe-Trading)
 
@@ -24,6 +24,67 @@ contratos/testes da spec. Não editar este `CODEX_HANDOFF.md` durante o item,
 não fazer commit/push e não criar execução de ordens. Manter MT5/CVM
 point-in-time, `BacktestRun` canônico, entrada t+1, custos explícitos,
 DEMO-only e todos os gates atuais.
+
+## Sessão 2026-07-25 — Treino assíncrono (Item C) quebrado: campo `orphan` fora do contrato (branch `main`)
+
+Usuário reportou treino falhando em ~29ms com
+`INTERNAL_ERROR: falha não detalhável (formato restrito)` (job
+`cmrzm8xxg0001i1qk0opk17ci`). Debug sistemático (RED→GREEN).
+
+### Causa raiz — divergência de contrato Python↔Node
+
+O `ml_api.py`, no ramo RUNNING de `GET /ml/train-jobs/<id>`
+(`python/ml_api.py:191`), emite um campo extra `orphan: boolean`
+(distinção `ORPHAN_RUNNING`, Bloqueador 2 da revisão do Guardião). Mas o
+`TrainJobStatusSchema` do port (`src/application/ml-training-run/train-job-port.ts`)
+é `.strict()` e nunca foi atualizado para declarar esse campo. Cadeia da
+falha:
+
+1. RUNNING é o estado normal no **primeiro poll** logo após o start → a
+   engine responde `{state:'RUNNING', phase, progress, orphan:false}`.
+2. `.strict()` rejeita a chave desconhecida `orphan` →
+   `ReadModelError('UPSTREAM_MALFORMED_RESPONSE', '...em /ml/train-jobs/<id>')`.
+3. `UPSTREAM_MALFORMED_RESPONSE` **não está** na allowlist
+   `KNOWN_ERROR_CODES` (`sanitize.ts`) → `toKnownErrorCode` mapeia para
+   `INTERNAL_ERROR`.
+4. A mensagem contém `/ml/train-jobs/...` (path) → `sanitizeErrorSummary`
+   redige para o fallback `falha não detalhável (formato restrito)`.
+
+Efeito: **todo treino assíncrono do Item C falhava em ~30ms**, sempre. O
+happy path nunca funcionou ao vivo. O fake do harness
+(`ml-training-run-test.ts`) emitia status RUNNING **sem** `orphan`, então
+o gap teste-realidade passou despercebido nos testes verdes.
+
+Reproduzido ao vivo capturando o payload cru: `POST /ml/train-jobs` +
+`GET /ml/train-jobs/<id>` no motor real devolveu
+`{"orphan":false,"phase":"SNAPSHOT","progress":0,"state":"RUNNING"}`.
+
+### Correção (causa raiz, não sintoma)
+
+O produtor (Python) emite `orphan` legitimamente; o consumidor (Node)
+estava estrito demais. Fix = o schema Node **aceitar** o campo (não
+remover a informação do Python, que perderia a distinção ORPHAN_RUNNING):
+
+- `train-job-port.ts`: `orphan: z.boolean().optional()` adicionado ao
+  `TrainJobStatusSchema`.
+- `ml-training-run-test.ts`: interface `FakeJobStatus` ganhou `orphan?`;
+  novo teste de regressão `realRunningPayloadWithOrphanFieldIsAccepted`
+  (passa o payload real pelo port real e prova que `getStatus` não lança)
+  registrado no `main()` — trava o gap teste-realidade.
+- Verificação: teste falhava em RED (rejeição do `orphan`), passa em
+  GREEN; suíte `test:ml-training-run` inteira verde; `tsc --noEmit` limpo.
+  Commit `771da09`.
+
+### Observação para o futuro
+
+Sempre que a engine Python adicionar/mudar um campo de resposta, o schema
+Zod correspondente no port precisa acompanhar — o fake do harness deve
+espelhar o payload REAL (byte a byte), senão testes verdes escondem
+divergências de contrato que só aparecem ao vivo. Padrão de erro:
+`INTERNAL_ERROR: falha não detalhável` = código fora da allowlist de
+`sanitize.ts` (provável `UPSTREAM_MALFORMED_RESPONSE`) + mensagem com
+path/token redigida; para ver a causa, capturar o corpo cru do endpoint
+Python direto via `curl`.
 
 ## Sessão 2026-07-20 (cont. 2) — UPSTREAM_ERROR: 500 ao Treinar (branch `main`)
 

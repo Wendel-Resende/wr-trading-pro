@@ -108,6 +108,13 @@ const TrainJobStatusSchema = z
     progress: z.number().int().min(0).max(100),
     result: TrainResultSchema.optional(),
     errorCode: z.string().max(100).optional(),
+    // O `ml_api.py` real emite `orphan: boolean` no ramo RUNNING (distinção
+    // ORPHAN_RUNNING, Bloqueador 2 da revisão do Guardião): um processo vivo
+    // herdado de uma geração anterior do registry. O schema é `.strict()`, então
+    // este campo PRECISA ser declarado — sem ele, todo status RUNNING (o estado
+    // normal logo após o start) virava UPSTREAM_MALFORMED_RESPONSE →
+    // INTERNAL_ERROR, quebrando o happy path inteiro do treino assíncrono.
+    orphan: z.boolean().optional(),
   })
   .strict();
 
