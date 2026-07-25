@@ -51,6 +51,37 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
+## Sessão 2026-07-25 (cont. 6) — Painel Fundamentalista fatia 4: Motor de Valuation v1 (branch `main`)
+
+Decisão do usuário: **múltiplos + `preco_ref` do pipeline** (self-contained,
+determinístico) — não MT5 ao vivo, não DCF (premissas inventadas).
+
+### Entregue
+
+- **Helpers puros** (`multipleBand`, `impliedFairPrice`): banda histórica do múltiplo
+  (atual/mediana/min/max/n + posição barato/médio/caro vs mediana ±10%) e preço-justo
+  implícito por **reversão à mediana** (`preco × mediana/atual`) — explicitamente NÃO
+  é preço-alvo. Commit `4703460`.
+- **Salvaguardas de honestidade (motivadas por caso real):** a série de ALOS3 tinha
+  EV/EBITDA de até **649×** (EBITDA quase-zero) que gerava mediana 93× e "upside
+  +318%" enganoso. Regras documentadas: (1) banda em **janela de 20 trimestres**;
+  (2) **teto de plausibilidade** `MULTIPLE_PLAUSIBILITY_CAP=100×` (denominador
+  deprimido → não-informativo, descartado); (3) fairPrice exige **n≥8** períodos
+  válidos, senão `null`+`BASE_INSUFICIENTE`. Depois: ALOS3 mediana 22,7×, posição
+  "médio", upside +1,7% (plausível); ABEV3 sem EV/EBITDA → BASE_INSUFICIENTE.
+- **Assembler:** bloco `valuation` no `FundamentalSheetV1` — bandas de EV/EBITDA,
+  P/EBITDA, EV/EBIT; preço ref. + período; mediana setorial de EV/EBITDA
+  (`setor_cvm`, mesmo período); séries `evEbitda/pEbitda/evEbit` no `series`.
+- **UI** (`eb1c269`): subseção "Valuation por Múltiplos" na ficha — cards por múltiplo
+  com posição colorida, preço implícito com upside e a nota "não é preço-alvo",
+  vs setor, e gráfico EV/EBITDA histórico com linha da mediana.
+- Verificado: `test:cvm-fundamentals` verde, `tsc`/`build` OK.
+
+### Roadmap do painel — resta
+
+Seletor "as of" estrito (reconstrução point-in-time com retificações) — decisão de
+design pendente com o usuário.
+
 ## Sessão 2026-07-25 (cont. 5) — Painel Fundamentalista fatia 3: Comparação Setorial point-in-time (branch `main`)
 
 Ranking de empresas por setor sobre os indicadores 12M do pipeline.
