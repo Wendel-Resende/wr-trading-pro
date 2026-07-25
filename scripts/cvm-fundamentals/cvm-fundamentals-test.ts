@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors, median, percentile } from '../../src/lib/server/cvm-fundamentals-derive';
+import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors, median, percentile, multipleBand, impliedFairPrice } from '../../src/lib/server/cvm-fundamentals-derive';
 import { buildFundamentalSheet } from '../../src/lib/server/cvm-fundamentals-sheet';
 import { listCompanies } from '../../src/lib/server/cvm-legacy-db';
 import { listSectors, sectorRanking, indicatorCatalog } from '../../src/lib/server/cvm-sector-ranking';
@@ -53,6 +53,23 @@ function main(): void {
   assertLog(percentile([10], 90) === 10, 'percentil de um elemento');
   assertLog(percentile([], 50) === null, 'percentil de vazio → null');
 
+  // --- valuation: banda histórica do múltiplo + preço-justo por reversão à mediana ---
+  const band = multipleBand([8, 10, 12, null, 6]); // mediana 9, atual 6 (< mediana → barato)
+  assertLog(band.current === 6 && band.median === 9 && band.min === 6 && band.max === 12, 'banda: atual/mediana/min/max sobre não-nulos positivos');
+  assertLog(band.position === 'barato', 'atual < mediana (com folga) → barato');
+  assertLog(multipleBand([10, 10, 10.3]).position === 'medio', 'atual ~ mediana (±10%) → medio');
+  assertLog(multipleBand([5, 6, 9]).position === 'caro', 'atual > mediana (com folga) → caro');
+  assertLog(multipleBand([]).current === null && multipleBand([]).position === null, 'banda vazia → null');
+  assertLog(multipleBand([-5, 8, 10]).min === 8, 'múltiplos não-positivos ignorados na banda (sem sentido p/ valuation)');
+  const capped = multipleBand([8, 649, 10]);
+  assertLog(capped.max === 10 && capped.n === 2, 'múltiplo >100× (EBITDA deprimido) descartado como não-informativo');
+  assertLog(multipleBand([8, 10, 12, null, 6]).n === 4, 'banda expõe n de períodos válidos');
+  // preço-justo: se EV/EBITDA atual (12) revertesse à mediana (9), a partir de preço 24 → 24*(9/12)=18 (downside)
+  const fv = impliedFairPrice(24, 12, 9);
+  assertLog(fv.fairPrice === 18 && fv.upsidePct !== null && Math.abs(fv.upsidePct - -25) < 1e-9, 'preço-justo por reversão à mediana: 24*(9/12)=18, upside -25%');
+  assertLog(impliedFairPrice(null, 12, 9).fairPrice === null, 'sem preço → null');
+  assertLog(impliedFairPrice(24, 0, 9).fairPrice === null, 'múltiplo atual não-positivo → null (não divide)');
+
   // --- smoke read-only do assembler (só se o banco existir no ambiente) ---
   if (existsSync('data/cvm/cvm_fundamentos.db')) {
     const first = listCompanies()[0];
@@ -93,6 +110,25 @@ function main(): void {
     assertLog(ranked.every((r, i) => r.rank === i + 1), 'rank 1..n atribuído aos valores não-nulos, nulos por último');
     assertLog(ranked.length < 2 || (ranked[0].value ?? 0) >= (ranked[1].value ?? 0), 'ROE (betterWhen higher) ordenado desc');
     assertLog(rk.stats.n === ranked.length && (rk.stats.median === null || Number.isFinite(rk.stats.median)), 'stats: n bate e mediana é número ou null');
+    // --- smoke do bloco valuation ---
+    if (sheet) {
+      assertLog(Array.isArray(sheet.valuation.bands) && sheet.valuation.bands.length === 3, 'valuation: 3 bandas (EV/EBITDA, P/EBITDA, EV/EBIT)');
+      assertLog(sheet.valuation.bands.every((b) => b.band.current === null || b.band.current > 0), 'bandas só com múltiplos positivos (ou null)');
+      const fpB = sheet.valuation.fairPrice;
+      assertLog(fpB.basis === 'evEbitda', 'preço-justo baseado em EV/EBITDA');
+      if (fpB.fairPrice !== null) {
+        assertLog(fpB.upsidePct !== null && sheet.valuation.precoRef !== null, 'fairPrice implica upside e preço de referência presentes');
+      } else {
+        console.log('ok: fairPrice null (sem EV/EBITDA ou preço válido p/ este ticker — nunca fabricado)');
+      }
+      if (sheet.valuation.sector) {
+        assertLog(sheet.valuation.sector.n >= 1, 'mediana setorial de EV/EBITDA computada sobre >= 1 par');
+      } else {
+        console.log('ok: bloco setorial null (sem setor_cvm ou sem EV/EBITDA no período)');
+      }
+      assertLog(Array.isArray(sheet.series.evEbitda) && sheet.series.evEbitda.length > 0, 'série evEbitda presente na ficha');
+    }
+
     // dívida líq/EBITDA: menor é melhor → ordenado asc
     const rkDl = sectorRanking(bigSector, 'dividaLiquidaEbitda');
     const rankedDl = rkDl.rows.filter((r) => r.value !== null);

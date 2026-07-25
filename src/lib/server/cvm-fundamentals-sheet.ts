@@ -12,7 +12,16 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { getCompany, getQuarters, CVM_LEGACY_PROVENANCE } from './cvm-legacy-db';
-import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors } from './cvm-fundamentals-derive';
+import {
+  cashConversion,
+  knowledgeDateFor,
+  LEGAL_LAG_RULE,
+  dupontFactors,
+  multipleBand,
+  impliedFairPrice,
+  median,
+  type MultipleBand,
+} from './cvm-fundamentals-derive';
 
 export type Unit = 'percent' | 'ratio' | 'multiple';
 
@@ -39,11 +48,34 @@ export interface DupontPointV1 {
   estimadoPorPrazoLegal: boolean;
 }
 
+export interface ValuationV1 {
+  /** Último preço de referência do pipeline e o período dele. */
+  precoRef: number | null;
+  precoRefPeriod: { ano: number; trimestre: number } | null;
+  /** Banda histórica por múltiplo (atual = último válido da série). */
+  bands: { key: 'evEbitda' | 'pEbitda' | 'evEbit'; label: string; band: MultipleBand }[];
+  /** Preço-justo implícito por reversão do EV/EBITDA à mediana histórica —
+   *  NÃO é preço-alvo; nota obrigatória na UI. */
+  fairPrice: {
+    basis: 'evEbitda';
+    currentMult: number | null;
+    medianMult: number | null;
+    fairPrice: number | null;
+    upsidePct: number | null;
+    /** 'BASE_INSUFICIENTE' quando a janela não tem períodos válidos suficientes. */
+    note?: string;
+  };
+  /** Mediana do EV/EBITDA do setor (setor_cvm) no período do múltiplo atual. */
+  sector: { setorCvm: string; medianEvEbitda: number | null; n: number } | null;
+}
+
 export interface FundamentalSheetV1 {
   company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
   series: Record<string, FundamentalPointV1[]>;
   /** Decomposição DuPont do ROE por período (derivado no WR sobre fatores do pipeline). */
   dupont: DupontPointV1[];
+  /** Valuation por múltiplos do pipeline + derivadas no WR (bandas, preço-justo implícito). */
+  valuation: ValuationV1;
   provenance: {
     db: string;
     tables: string[];
@@ -87,13 +119,17 @@ interface FiRow {
   dividaBrutaPl: number | null;
   dividaLiquidaEbitda: number | null;
   payoutRatio: number | null;
+  precoRef: number | null;
+  pEbitda: number | null;
+  evEbitda: number | null;
+  evEbit: number | null;
 }
 
 function getFundamentalIndicators(cdCvm: string): FiRow[] {
   return (
     getDb()
       .prepare(
-        'SELECT ano, trimestre, data_ref, margem_bruta, margem_ebitda, margem_liquida, roe, roa, roic, giro_ativos, pl_ativos, divida_bruta_pl, divida_liquida_ebitda, payout_ratio FROM fundamental_indicators WHERE cd_cvm = ?',
+        'SELECT ano, trimestre, data_ref, margem_bruta, margem_ebitda, margem_liquida, roe, roa, roic, giro_ativos, pl_ativos, divida_bruta_pl, divida_liquida_ebitda, payout_ratio, preco_ref, p_ebitda, ev_ebitda, ev_ebit FROM fundamental_indicators WHERE cd_cvm = ?',
       )
       .all(cdCvm) as Record<string, unknown>[]
   ).map((r) => ({
@@ -111,6 +147,10 @@ function getFundamentalIndicators(cdCvm: string): FiRow[] {
     dividaBrutaPl: num(r.divida_bruta_pl),
     dividaLiquidaEbitda: num(r.divida_liquida_ebitda),
     payoutRatio: num(r.payout_ratio),
+    precoRef: num(r.preco_ref),
+    pEbitda: num(r.p_ebitda),
+    evEbitda: num(r.ev_ebitda),
+    evEbit: num(r.ev_ebit),
   }));
 }
 
@@ -169,7 +209,19 @@ export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null 
     liquidezCorrente: [],
     payoutRatio: [],
     conversaoCaixa: [],
+    evEbitda: [],
+    pEbitda: [],
+    evEbit: [],
   };
+
+  // Acumuladores de valuation (ordem cronológica das keys).
+  const multSeq: Record<'evEbitda' | 'pEbitda' | 'evEbit', (number | null)[]> = {
+    evEbitda: [],
+    pEbitda: [],
+    evEbit: [],
+  };
+  let lastPreco: { v: number; ano: number; trimestre: number } | null = null;
+  let lastEvPeriod: { ano: number; trimestre: number } | null = null;
 
   for (const key of keys) {
     const f = fiMap.get(key) ?? null;
@@ -193,6 +245,20 @@ export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null 
     const cc = cashConversion(q?.fco ?? null, q?.lucroLiquido ?? null);
     series.conversaoCaixa.push(point(ano, trimestre, dr, cc.value, 'ratio', 'derivado-wr', cc.note));
 
+    // Múltiplos de valuation (pipeline, decimal — exibidos como múltiplo mesmo).
+    series.evEbitda.push(point(ano, trimestre, dr, f?.evEbitda ?? null, 'multiple', 'pipeline-cvm'));
+    series.pEbitda.push(point(ano, trimestre, dr, f?.pEbitda ?? null, 'multiple', 'pipeline-cvm'));
+    series.evEbit.push(point(ano, trimestre, dr, f?.evEbit ?? null, 'multiple', 'pipeline-cvm'));
+    multSeq.evEbitda.push(f?.evEbitda ?? null);
+    multSeq.pEbitda.push(f?.pEbitda ?? null);
+    multSeq.evEbit.push(f?.evEbit ?? null);
+    if (f?.precoRef !== null && f?.precoRef !== undefined && f.precoRef > 0) {
+      lastPreco = { v: f.precoRef, ano, trimestre };
+    }
+    if (f?.evEbitda !== null && f?.evEbitda !== undefined && f.evEbitda > 0) {
+      lastEvPeriod = { ano, trimestre };
+    }
+
     // DuPont (identidade em decimal dentro de `fundamental_indicators`);
     // margem/ROE exibidos em percentual (×100), giro e alavancagem como estão.
     const df = dupontFactors(f?.margemLiquida ?? null, f?.giroAtivos ?? null, f?.plAtivos ?? null, f?.roe ?? null);
@@ -210,10 +276,64 @@ export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null 
     });
   }
 
+  // --- valuation: bandas históricas + preço-justo implícito + mediana do setor ---
+  // Janela recente (últimos 20 trimestres ≈ 5 anos): banda de valuation clássica,
+  // menos sujeita a regimes antigos irrelevantes. O teto de plausibilidade
+  // (>100× descartado) vive em multipleBand — documentado lá.
+  const BAND_WINDOW = 20;
+  const bandEv = multipleBand(multSeq.evEbitda.slice(-BAND_WINDOW));
+  const bandPe = multipleBand(multSeq.pEbitda.slice(-BAND_WINDOW));
+  const bandEvbit = multipleBand(multSeq.evEbit.slice(-BAND_WINDOW));
+  // Preço-justo só com base estatística mínima (>= 8 períodos válidos na
+  // janela) — mediana sobre poucos pontos seria um número enganoso, não
+  // informação. Sem base → null com nota, nunca fabricado.
+  const FAIR_PRICE_MIN_N = 8;
+  const fp =
+    bandEv.n >= FAIR_PRICE_MIN_N
+      ? impliedFairPrice(lastPreco?.v ?? null, bandEv.current, bandEv.median)
+      : { fairPrice: null, upsidePct: null };
+  const fpNote = bandEv.n >= FAIR_PRICE_MIN_N ? undefined : 'BASE_INSUFICIENTE';
+
+  let sector: ValuationV1['sector'] = null;
+  const setorRow = getDb().prepare('SELECT setor_cvm FROM empresas WHERE cd_cvm = ?').get(cdCvm) as
+    | Record<string, unknown>
+    | undefined;
+  const setorCvm = typeof setorRow?.setor_cvm === 'string' && setorRow.setor_cvm.length > 0 ? setorRow.setor_cvm : null;
+  if (setorCvm && lastEvPeriod) {
+    const peers = (
+      getDb()
+        .prepare(
+          'SELECT fi.ev_ebitda AS v FROM empresas e JOIN fundamental_indicators fi ON fi.cd_cvm = e.cd_cvm WHERE e.setor_cvm = ? AND fi.ano = ? AND fi.trimestre = ? AND fi.ev_ebitda IS NOT NULL AND fi.ev_ebitda > 0',
+        )
+        .all(setorCvm, lastEvPeriod.ano, lastEvPeriod.trimestre) as Record<string, unknown>[]
+    ).map((r) => num(r.v));
+    sector = { setorCvm, medianEvEbitda: median(peers), n: peers.filter((v) => v !== null).length };
+  }
+
+  const valuation: ValuationV1 = {
+    precoRef: lastPreco?.v ?? null,
+    precoRefPeriod: lastPreco ? { ano: lastPreco.ano, trimestre: lastPreco.trimestre } : null,
+    bands: [
+      { key: 'evEbitda', label: 'EV/EBITDA', band: bandEv },
+      { key: 'pEbitda', label: 'P/EBITDA', band: bandPe },
+      { key: 'evEbit', label: 'EV/EBIT', band: bandEvbit },
+    ],
+    fairPrice: {
+      basis: 'evEbitda',
+      currentMult: bandEv.current,
+      medianMult: bandEv.median,
+      fairPrice: fp.fairPrice,
+      upsidePct: fp.upsidePct,
+      ...(fpNote ? { note: fpNote } : {}),
+    },
+    sector,
+  };
+
   return {
     company: { cdCvm: company.cdCvm, ticker: company.ticker, nome: company.nome, setor: company.setor },
     series,
     dupont,
+    valuation,
     provenance: {
       db: 'data/cvm/cvm_fundamentos.db',
       tables: ['fundamental_indicators', 'indicadores', 'dre_trimestral', 'dfc_trimestral', 'empresas'],

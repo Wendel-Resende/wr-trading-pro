@@ -41,6 +41,66 @@ export function median(values: readonly (number | null)[]): number | null {
   return percentile(values, 50);
 }
 
+/** Teto de plausibilidade: múltiplo acima disso indica denominador deprimido
+ *  (EBITDA/EBIT quase-zero) — não tem leitura de valuation e distorceria a
+ *  banda/mediana. Descartado como não-informativo, com a regra documentada. */
+export const MULTIPLE_PLAUSIBILITY_CAP = 100;
+
+export interface MultipleBand {
+  /** Último valor válido da série (o múltiplo "atual"). */
+  current: number | null;
+  median: number | null;
+  min: number | null;
+  max: number | null;
+  /** Quantos períodos válidos (0 < v <= teto) sustentam a banda. */
+  n: number;
+  /** Posição do atual vs mediana histórica: barato (<90% da mediana),
+   *  medio (±10%), caro (>110%). `null` sem base. */
+  position: 'barato' | 'medio' | 'caro' | null;
+}
+
+/**
+ * Banda histórica de um múltiplo de valuation. Considera apenas valores
+ * dentro de `0 < v <= MULTIPLE_PLAUSIBILITY_CAP` (negativo = sem leitura;
+ * acima do teto = denominador deprimido, não-informativo — descartado, nunca
+ * "corrigido"). O "atual" é o último valor válido da série em ordem
+ * cronológica.
+ */
+export function multipleBand(series: readonly (number | null)[]): MultipleBand {
+  const valid = series.filter(
+    (v): v is number => v !== null && Number.isFinite(v) && v > 0 && v <= MULTIPLE_PLAUSIBILITY_CAP,
+  );
+  if (valid.length === 0) return { current: null, median: null, min: null, max: null, n: 0, position: null };
+  const current = valid[valid.length - 1];
+  const med = median(valid);
+  const min = Math.min(...valid);
+  const max = Math.max(...valid);
+  let position: MultipleBand['position'] = null;
+  if (med !== null && med > 0) {
+    position = current < med * 0.9 ? 'barato' : current > med * 1.1 ? 'caro' : 'medio';
+  }
+  return { current, median: med, min, max, n: valid.length, position };
+}
+
+/**
+ * Preço-justo implícito por reversão à mediana histórica do múltiplo:
+ * `preco × (medianaMult / atualMult)`. NÃO é um preço-alvo — é apenas o preço
+ * coerente com o múltiplo mediano histórico, dado o mesmo fundamento. Nunca
+ * fabrica: qualquer insumo ausente/não-positivo → null.
+ */
+export function impliedFairPrice(
+  preco: number | null,
+  atualMult: number | null,
+  medianaMult: number | null,
+): { fairPrice: number | null; upsidePct: number | null } {
+  if (preco === null || preco <= 0 || atualMult === null || atualMult <= 0 || medianaMult === null || medianaMult <= 0) {
+    return { fairPrice: null, upsidePct: null };
+  }
+  const fairPrice = preco * (medianaMult / atualMult);
+  const upsidePct = (fairPrice / preco - 1) * 100;
+  return { fairPrice, upsidePct };
+}
+
 export interface DupontFactors {
   /** Lucratividade — margem líquida (passthrough do pipeline). */
   margemLiquida: number | null;
