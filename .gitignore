@@ -53,6 +53,8 @@ next-env.d.ts
 # prisma local db
 prisma/dev.db
 prisma/dev.db-journal
+prisma/dev.db-shm
+prisma/dev.db-wal
 prisma/dev.db.backup-*
 
 # python
@@ -85,6 +87,10 @@ codex_ws_check.py
 # local runtime data lives inside the repo boundary, but generated DB files stay out of git
 data/**/*.db
 data/**/*.db-journal
+data/**/*.db-shm
+data/**/*.db-wal
+data/**/*.db.backup-*
+data/**/*.db.pending-*
 data/cvm/exports/
 data/**/*.sqlite
 data/**/*.sqlite-journal
