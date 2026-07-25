@@ -127,12 +127,35 @@ const fmtBRL = (v: number | null): string => {
 
 const fmtPct = (v: number | null): string => (v === null ? "—" : `${v.toFixed(2)}%`);
 
+interface FundamentalPoint {
+  period: { ano: number; trimestre: number };
+  value: number | null;
+  unit: "percent" | "ratio" | "multiple";
+  source: "pipeline-cvm" | "derivado-wr";
+  dataRef: string | null;
+  knowledgeDate: string;
+  estimadoPorPrazoLegal: boolean;
+  note?: string;
+}
+interface FundamentalSheet {
+  company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
+  series: Record<string, FundamentalPoint[]>;
+  provenance: {
+    db: string;
+    tables: string[];
+    legalLagRule: string;
+    base: { source: string; pointInTime: boolean; note: string };
+    generatedAt: string;
+  };
+}
+
 export default function CvmFundamentalsTab() {
   const [view, setView] = useState<"empresas" | "dividendos">("empresas");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
+  const [sheet, setSheet] = useState<FundamentalSheet | null>(null);
   const [dividends, setDividends] = useState<DividendsData | null>(null);
   const [rankSearch, setRankSearch] = useState("");
   const [loadingList, setLoadingList] = useState(true);
@@ -162,6 +185,22 @@ export default function CvmFundamentalsTab() {
       .then((data) => setDetail(data))
       .catch(() => setError("Não foi possível carregar os fundamentos desta empresa."))
       .finally(() => setLoadingDetail(false));
+  }, [selected]);
+
+  // Ficha fundamentalista: série do pipeline CVM + conversão de caixa derivada
+  useEffect(() => {
+    if (!selected) {
+      setSheet(null);
+      return;
+    }
+    setSheet(null);
+    fetch(`/api/cvm/companies/${selected}/fundamentals`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => setSheet(data))
+      .catch(() => setError("Não foi possível carregar a ficha fundamentalista."));
   }, [selected]);
 
   // Ranking de dividendos: carregado na primeira visita à visão
@@ -210,6 +249,22 @@ export default function CvmFundamentalsTab() {
       })),
     [quarters]
   );
+
+  // Zip das séries da ficha por período (todas alinhadas por construção no assembler).
+  // value === null é preservado como lacuna (connectNulls no gráfico), nunca vira 0.
+  const sheetChart = useMemo(() => {
+    if (!sheet) return [] as Record<string, number | string | null>[];
+    const keys = Object.keys(sheet.series);
+    const ref = keys.length ? sheet.series[keys[0]] : [];
+    return ref.slice(-20).map((_, idxFromTail) => {
+      const i = ref.length - Math.min(ref.length, 20) + idxFromTail;
+      const p = ref[i].period;
+      const row: Record<string, number | string | null> = { periodo: `${p.ano}T${p.trimestre}` };
+      for (const k of keys) row[k] = sheet.series[k][i]?.value ?? null;
+      return row;
+    });
+  }, [sheet]);
+  const sheetStamp = sheet?.series.roe?.[sheet.series.roe.length - 1] ?? null;
 
   return (
     <div className="space-y-6">
@@ -642,6 +697,93 @@ export default function CvmFundamentalsTab() {
                       />
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* Ficha Fundamentalista — série do pipeline CVM + conversão de caixa derivada */}
+              {sheet && (
+                <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-5 space-y-6">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider">
+                      Ficha Fundamentalista
+                    </h3>
+                    {sheetStamp && (
+                      <span className="text-[0.65rem] text-gray-400 font-space">
+                        conhecimento estimado (prazo legal) — último: {sheetStamp.knowledgeDate}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Retornos — ROE / ROA / ROIC (%)</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}%`]} />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#475569" />
+                          <Line type="monotone" dataKey="roe" name="ROE" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="roa" name="ROA" stroke="#22d3ee" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="roic" name="ROIC" stroke="#a855f7" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Alavancagem — Dívida/PL & Dívida Líq./EBITDA (x)</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}x`]} />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#475569" />
+                          <Line type="monotone" dataKey="dividaPl" name="Dívida/PL" stroke="#f59e0b" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="dividaLiquidaEbitda" name="Dív. Líq./EBITDA" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">
+                        Conversão de caixa — FCO / Lucro (x) · <span className="text-cyber-cyan">derivado no WR</span>
+                      </p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}x`]} />
+                          <ReferenceLine y={1} stroke="#475569" strokeDasharray="4 4" />
+                          <Line type="monotone" dataKey="conversaoCaixa" name="FCO/Lucro" stroke="#34d399" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Payout (%)</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(1)}%`]} />
+                          <ReferenceLine y={0} stroke="#475569" />
+                          <Line type="monotone" dataKey="payoutRatio" name="Payout" stroke="#a855f7" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-cyber-border/40 pt-3 text-[0.7rem] text-gray-400 font-space space-y-1">
+                    <p>
+                      <span className="text-cyber-cyan uppercase tracking-wider">Proveniência:</span>{" "}
+                      indicadores da fonte <span className="text-gray-300">pipeline CVM</span> (fundamental_indicators/indicadores); conversão de caixa <span className="text-gray-300">derivada no WR</span> (FCO/Lucro). Dados ausentes aparecem como lacuna, nunca zero.
+                    </p>
+                    <p>{sheet.provenance.legalLagRule}</p>
+                    <p className="text-gray-500">{sheet.provenance.base.note}</p>
+                  </div>
                 </div>
               )}
             </>
