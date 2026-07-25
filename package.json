@@ -44,8 +44,6 @@
     "test:b3-session": "node scripts/b3-session/run-b3-session-tests.cjs",
     "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
     "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
-    "test:ml-hybrid": "node scripts/ml-hybrid/run-ml-hybrid-tests.cjs",
-    "test:ml-unified-reads": "node scripts/ml-unified-reads/run-ml-unified-reads-tests.cjs",
     "test:ml-training-run": "node scripts/ml-training-run/run-ml-training-run-tests.cjs",
     "mcp:start": "tsc -p scripts/mcp/tsconfig.json && node scripts/mcp/.dist/src/mcp/index.js",
     "mcp:pilot:compile": "tsc -p scripts/mcp-pilot/tsconfig.json",

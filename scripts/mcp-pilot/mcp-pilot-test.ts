@@ -14,7 +14,6 @@ import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
 import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
 import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
 import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
-import { buildMlTools } from '../../src/mcp/pilot/tools/ml';
 import { buildTradeTools } from '../../src/mcp/pilot/tools/trade';
 import { Mt5DemoBroker } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createBridgeSnapshot } from '../../src/mcp/pilot/execution/bridge-snapshot';
@@ -336,42 +335,6 @@ async function marketLiveMt5DisconnectedTests(): Promise<void> {
     assert.match(result.content[0].text, /MT5 não disponível\/conectado/);
     console.log('market.scan_options sem MT5: OK (503 MT5_DISCONNECTED vira isError UPSTREAM_ERROR)');
   } finally { stub.close(); }
-}
-
-/** Gera candles sintéticos com tendência de alta suave para os testes de ML. */
-function syntheticCandles(count: number): Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> {
-  const candles = [];
-  let price = 10;
-  for (let i = 0; i < count; i++) {
-    price += 0.05 + (i % 3 === 0 ? 0.02 : 0);
-    candles.push({ time: 1700000000 + i * 3600, open: price - 0.02, high: price + 0.03, low: price - 0.05, close: price, volume: 1000 + i });
-  }
-  return candles;
-}
-
-async function mlToolsTests(): Promise<void> {
-  const stubBridge = {
-    request: async (_type: string, _data?: Record<string, unknown>) => ({ candles: syntheticCandles(100) }),
-  };
-  const tools = buildMlTools(stubBridge);
-  assert.ok(tools.every((t) => t.privilege === 'free'));
-
-  const predict = tools.find((t) => t.name === 'ml.run_prediction')!;
-  const result = await predict.handler({ symbol: 'PETR4', timeframe: 'H1', model: 'ma_crossover' });
-  assert.equal(result.isError, undefined);
-  const parsed = JSON.parse(result.content[0].text) as { signal?: string; confidence?: number };
-  assert.ok(['BUY', 'SELL', 'HOLD'].includes(parsed.signal ?? ''), 'motor real deve devolver signal válido');
-  assert.equal(typeof parsed.confidence, 'number');
-  console.log('ml.run_prediction: OK (100 candles sintéticos -> signal/confidence do motor real)');
-
-  const shortBridge = { request: async () => ({ candles: syntheticCandles(5) }) };
-  const shortTools = buildMlTools(shortBridge);
-  const shortPredict = shortTools.find((t) => t.name === 'ml.run_prediction')!;
-  const shortResult = await shortPredict.handler({ symbol: 'PETR4', timeframe: 'H1', model: 'ma_crossover' });
-  assert.equal(shortResult.isError, true);
-  assert.match(shortResult.content[0].text, /INSUFFICIENT_DATA/);
-  assert.match(shortResult.content[0].text, /obtidos 5, necess[aá]rios 60/);
-  console.log('ml.run_prediction com 5 candles: OK (INSUFFICIENT_DATA com contagens obtidas/necessárias)');
 }
 
 /** Broker fake — grava toda chamada; nunca deve ser acionado em caminho de falha do gate. */
@@ -894,7 +857,6 @@ async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
     ...buildAgentActionTools(createHttpJson('http://127.0.0.1:1')),
     ...buildPortfolioTools(stubBridge),
     ...buildMarketLiveTools(createHttpJson('http://127.0.0.1:1'), createHttpJson('http://127.0.0.1:1')),
-    ...buildMlTools(stubBridge),
     ...buildTradeTools(tradeService),
   ];
   const handle = await startPilotServer(prisma, cfg, extraTools);
@@ -927,7 +889,6 @@ async function main(): Promise<void> {
   await marketLiveToolsTests();
   await marketFindSpreadPairsTests();
   await marketLiveMt5DisconnectedTests();
-  await mlToolsTests();
   await tradeToolsTests();
   await mt5DemoBrokerTests();
   await bridgeSnapshotTests();

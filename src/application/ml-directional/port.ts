@@ -88,7 +88,22 @@ export interface DirectionalPredictResponse {
   readonly predictions: readonly DirectionalPredictionRow[];
 }
 
+export const BackfillResponseSchema = z
+  .object({
+    ok: z.array(z.string().max(20)).max(2000),
+    failed: z.record(z.string(), z.string().max(500)),
+  })
+  .strict();
+
+export type BackfillResponse = z.infer<typeof BackfillResponseSchema>;
+
 export interface DirectionalMlApiPort {
+  /**
+   * Backfill das barras D1 (MT5 → HistoricalCandle). Vive nesta porta porque
+   * o motor ML é um só processo Flask: separar em outra porta duplicaria toda
+   * a plumbing de erro/timeout sem ganho nenhum.
+   */
+  backfill(symbols?: readonly string[]): Promise<BackfillResponse>;
   train(symbols?: readonly string[]): Promise<DirectionalTrainResponse>;
   predict(modelVersion: string, symbols?: readonly string[]): Promise<DirectionalPredictResponse>;
 }
@@ -101,6 +116,7 @@ export interface DirectionalMlApiPort {
  */
 const TRAIN_TIMEOUT_MS = 600_000;
 const PREDICT_TIMEOUT_MS = 120_000;
+const BACKFILL_TIMEOUT_MS = 300_000;
 
 async function callPython<T>(
   baseUrl: string,
@@ -165,6 +181,8 @@ export function createHttpDirectionalMlApiPort(
   fetchImpl: typeof fetch = fetch,
 ): DirectionalMlApiPort {
   return {
+    backfill: (symbols) =>
+      callPython(baseUrl, '/ml/backfill', symbols ? { symbols } : {}, BACKFILL_TIMEOUT_MS, BackfillResponseSchema, fetchImpl),
     train: (symbols) =>
       callPython(baseUrl, '/ml/directional/train', symbols ? { symbols } : {}, TRAIN_TIMEOUT_MS, DirectionalTrainResponseSchema, fetchImpl),
     predict: (modelVersion, symbols) =>

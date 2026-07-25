@@ -649,7 +649,11 @@ async function lostPublicationClaimNeverActivatesModelVersion(prisma: PrismaClie
 
   const service = new DirectionalService({
     prisma,
-    mlApi: { train: async () => trainResult, predict: async () => { throw new Error('não usado'); } },
+    mlApi: {
+      backfill: async () => ({ ok: [], failed: {} }),
+      train: async () => trainResult,
+      predict: async () => { throw new Error('não usado'); },
+    },
   });
 
   // Claim perdido: o cancelamento venceu a corrida.

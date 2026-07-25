@@ -6,6 +6,7 @@ pandas_ta
 pydantic>=2.12,<3
 websockets>=15,<16
 lightgbm
-timesfm
 pyarrow
 psutil>=5.9,<7
+xgboost
+scikit-learn

@@ -37,7 +37,7 @@ export interface BacktestRunReadModelV1 {
 
 /**
  * Item A (revisão 3/4, D10): formato versionado de `BacktestRun.metricsJson`
- * usado pelo fluxo ML Híbrido (`runForMlHybrid`). O formato legado (rota
+ * usado pelo fluxo ML governado (`runGoverned`). O formato legado (rota
  * genérica `/api/v1/backtests`) continua sendo apenas `{ metrics, trades }`,
  * sem `envelopeVersion` — o assembler distingue os dois pela presença de
  * `metricsSchemaVersion` na linha persistida, nunca por heurística sobre o
@@ -71,12 +71,12 @@ export interface BacktestMetricsEnvelopeV1 {
 }
 
 /**
- * Contrato estrito exigido por `runForMlHybrid()` (D10): os seis campos que
+ * Contrato estrito exigido por `runGoverned()` (D10): os seis campos que
  * são nullable no banco (compatibilidade com BacktestRun legado) são
  * OBRIGATÓRIOS aqui — a obrigatoriedade é imposta pelo tipo TS/validação
  * Zod na fronteira, nunca pela constraint do banco.
  */
-export interface MlHybridBacktestRunRequestV1 extends BacktestRunRequestV1 {
+export interface GovernedBacktestRunRequestV1 extends BacktestRunRequestV1 {
   readonly costProfileId: string;
   readonly costProfileVersion: number;
   readonly predictionHorizonBars: number;
@@ -90,9 +90,9 @@ export interface MlHybridBacktestRunRequestV1 extends BacktestRunRequestV1 {
   readonly signalCoverage: BacktestMetricsEnvelopeV1['signalCoverage'];
 }
 
-export type MlHybridBacktestRunStatus = 'CREATED' | 'ALREADY_EXISTS';
+export type GovernedBacktestRunStatus = 'CREATED' | 'ALREADY_EXISTS';
 
-export interface MlHybridBacktestRunResult {
-  readonly status: MlHybridBacktestRunStatus;
+export interface GovernedBacktestRunResult {
+  readonly status: GovernedBacktestRunStatus;
   readonly run: BacktestRunReadModelV1;
 }

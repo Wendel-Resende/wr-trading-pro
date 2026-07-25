@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { prisma } from '../../../../lib/prisma';
 import { createResearchRunService } from '../../../../application/research-run';
-import { createModelVersionService } from '../../../../application/model-version';
-import { isTrainingEvidenceApproved } from '../../../../application/ml-hybrid/service';
+import { createModelVersionService, isTrainingEvidenceApproved } from '../../../../application/model-version';
+import { PrismaDirectionalRepository } from '../../../../adapters/prisma/ml-directional';
 import { TimestampSchema } from '../../../../adapters/prisma/research-run';
 import { extractStrictQuery, jsonError, jsonSuccess, parseWithSchema } from '../_shared/http';
 import { ReadModelError } from '../../../../application/read-models-v1';
@@ -14,8 +14,8 @@ export const dynamic = 'force-dynamic';
 /**
  * Achado médio 7 (auditoria final do Guardião, 2026-07-22): `modelVersionId`
  * REMOVIDO do corpo aceito por este POST público — vincular um ResearchRun a
- * uma ModelVersion "aprovada" só pode acontecer pelo caminho interno
- * `MlHybridService.runTraining` → `linkModelVersion` (após o gate estatístico
+ * uma versão "aprovada" só pode acontecer pelo caminho interno
+ * `DirectionalService.finalizeTraining` → `linkModelVersion` (após o gate
  * aprovar de fato), nunca por um cliente forjando o campo no corpo da
  * requisição. Sem isso, qualquer chamador autenticado poderia produzir um
  * `outcome: 'APROVADO'` falso apontando para qualquer ModelVersion existente.
@@ -106,7 +106,17 @@ export async function GET(request: Request): Promise<Response> {
     const modelVersionService = createModelVersionService(prisma);
     const uniqueModelVersionIds = [...new Set(page.map((r) => r.modelVersionId).filter((id): id is string => id !== null))];
     const gateApprovedByModelVersionId = new Map<string, boolean>();
+    // Item D: um ResearchRun pode apontar para uma `DirectionalModelVersion`
+    // (motor atual) ou para uma `ModelVersion` histórica (motor híbrido,
+    // removido — mas as linhas seguem no banco e precisam continuar legíveis).
+    // Consulta o direcional primeiro; só cai no legado se não encontrar.
+    const directionalRepository = new PrismaDirectionalRepository(prisma);
     for (const modelVersionId of uniqueModelVersionIds) {
+      const directional = await directionalRepository.findModelVersionById(modelVersionId).catch(() => null);
+      if (directional) {
+        gateApprovedByModelVersionId.set(modelVersionId, directional.status === 'ACTIVE');
+        continue;
+      }
       try {
         const version = await modelVersionService.get(modelVersionId);
         gateApprovedByModelVersionId.set(modelVersionId, isTrainingEvidenceApproved(version.trainingEvidenceJson));

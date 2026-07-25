@@ -10,7 +10,7 @@ import {
 import { insertResearchRunForTest } from '../../src/adapters/prisma/research-run';
 import { insertModelVersionForTest } from '../../src/adapters/prisma/model-version';
 import { createBacktestRunService } from '../../src/application/backtest-run';
-import type { MlHybridBacktestRunRequestV1 } from '../../src/application/backtest-run';
+import type { GovernedBacktestRunRequestV1 } from '../../src/application/backtest-run';
 import { insertBacktestRunForTest } from '../../src/adapters/prisma/backtest-run';
 import { createBacktestCostProfileService } from '../../src/application/backtest-cost-profile';
 import { ReadModelError } from '../../src/application/read-models-v1';
@@ -199,7 +199,7 @@ async function mlHybridIdempotencyAndEnvelopeTest(prisma: PrismaClient): Promise
     trainingEvidenceJson: '{"gate":{"approved":true}}',
   });
 
-  const baseRequest: MlHybridBacktestRunRequestV1 = {
+  const baseRequest: GovernedBacktestRunRequestV1 = {
     researchRunId,
     modelVersionId,
     instrumentId: 'WEGE3',
@@ -222,7 +222,7 @@ async function mlHybridIdempotencyAndEnvelopeTest(prisma: PrismaClient): Promise
 
   const service = createBacktestRunService(prisma);
 
-  const first = await service.runForMlHybrid(baseRequest, '1d');
+  const first = await service.runGoverned(baseRequest, '1d');
   assert.equal(first.status, 'CREATED');
   assert.equal(first.run.entryRule, 'open_next_bar');
   assert.deepEqual(first.run.signalCoverage, { totalSignalsInWindow: 1, acceptedSignals: 1, skippedOverlapping: 0, skippedMissingBar: 0 });
@@ -232,7 +232,7 @@ async function mlHybridIdempotencyAndEnvelopeTest(prisma: PrismaClient): Promise
   assert.deepEqual(first.run.costProfileRef, { id: 'cost-profile-test', version: 1 });
 
   // D10: mesma chave (modelVersion/artifact/instrument/costProfile/exitRule) -> ALREADY_EXISTS, sem nova linha.
-  const second = await service.runForMlHybrid(baseRequest, '1d');
+  const second = await service.runGoverned(baseRequest, '1d');
   assert.equal(second.status, 'ALREADY_EXISTS');
   assert.equal(second.run.backtestId, first.run.backtestId);
 
@@ -240,7 +240,7 @@ async function mlHybridIdempotencyAndEnvelopeTest(prisma: PrismaClient): Promise
   assert.equal(runsForModel.length, 1, 'idempotência não pode gerar uma segunda linha');
 
   // Mudar um componente da chave (costProfileVersion) -> nova linha legítima.
-  const differentProfile = await service.runForMlHybrid({ ...baseRequest, costProfileVersion: 2 }, '1d');
+  const differentProfile = await service.runGoverned({ ...baseRequest, costProfileVersion: 2 }, '1d');
   assert.equal(differentProfile.status, 'CREATED');
   assert.notEqual(differentProfile.run.backtestId, first.run.backtestId);
 
@@ -254,9 +254,9 @@ async function mlHybridIdempotencyAndEnvelopeTest(prisma: PrismaClient): Promise
   // genérico; exatamente uma resolve CREATED, as demais ALREADY_EXISTS,
   // todas apontando para o mesmo backtestId.
   const concurrentProfileVersion = 99;
-  const concurrentRequest: MlHybridBacktestRunRequestV1 = { ...baseRequest, costProfileVersion: concurrentProfileVersion };
+  const concurrentRequest: GovernedBacktestRunRequestV1 = { ...baseRequest, costProfileVersion: concurrentProfileVersion };
   const concurrentResults = await Promise.all(
-    Array.from({ length: 8 }, () => service.runForMlHybrid(concurrentRequest, '1d')),
+    Array.from({ length: 8 }, () => service.runGoverned(concurrentRequest, '1d')),
   );
   const createdCount = concurrentResults.filter((r) => r.status === 'CREATED').length;
   const alreadyExistsCount = concurrentResults.filter((r) => r.status === 'ALREADY_EXISTS').length;

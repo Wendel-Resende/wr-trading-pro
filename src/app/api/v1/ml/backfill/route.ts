@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createHttpMlApiPort } from '../../../../../application/ml-hybrid';
+import { createHttpDirectionalMlApiPort } from '../../../../../application/ml-directional';
 import { createBackfillRunService } from '../../../../../application/backfill-run';
 import type { BackfillFailureEntry, BackfillRunStatus } from '../../../../../domain/v1/models/backfill-run';
 import { ReadModelError } from '../../../../../application/read-models-v1';
@@ -37,7 +37,7 @@ export async function POST(request: Request): Promise<Response> {
     const body = parseWithSchema(BodySchema, raw);
     const requestedBy = await resolveRequestedBy(request);
 
-    const mlApi = createHttpMlApiPort(process.env.WR_ML_API_URL ?? 'http://127.0.0.1:5560');
+    const mlApi = createHttpDirectionalMlApiPort(process.env.WR_ML_API_URL ?? 'http://127.0.0.1:5560');
     const result = await mlApi.backfill(body.symbols);
 
     // Bloqueador crítico 1 (auditoria final do Guardião, 2026-07-22): o

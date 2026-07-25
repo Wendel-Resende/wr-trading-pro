@@ -9,8 +9,8 @@ import type {
   BacktestMetricsEnvelopeV1,
   BacktestRunReadModelV1,
   BacktestRunRequestV1,
-  MlHybridBacktestRunRequestV1,
-  MlHybridBacktestRunResult,
+  GovernedBacktestRunRequestV1,
+  GovernedBacktestRunResult,
 } from './dto';
 import { periodsPerYearFor } from './periods';
 import type { Timeframe } from '../../domain/v1/models/market-bar';
@@ -25,7 +25,7 @@ export interface BacktestRunServicePorts {
  * G-003 item 5 (D10): violação de unique constraint do Prisma (`P2002`) —
  * checado por duck-typing (`error.code`), sem importar o tipo concreto do
  * driver na camada de aplicação. É exatamente o que duas chamadas
- * concorrentes de `runForMlHybrid` com a MESMA `idempotencyKey` produzem
+ * concorrentes de `runGoverned` com a MESMA `idempotencyKey` produzem
  * quando ambas passam pelo `findByIdempotencyKey` como "não existe" antes
  * de qualquer uma delas commitar o `create`.
  */
@@ -113,7 +113,7 @@ export class BacktestRunService {
    * usada exclusivamente pelo fluxo ML Híbrido. `run()` acima (genérico) não
    * muda de assinatura nem de comportamento — esta função é aditiva.
    */
-  async runForMlHybrid(request: MlHybridBacktestRunRequestV1, timeframe: Timeframe): Promise<MlHybridBacktestRunResult> {
+  async runGoverned(request: GovernedBacktestRunRequestV1, timeframe: Timeframe): Promise<GovernedBacktestRunResult> {
     await this.validateResearchAndModel(request.researchRunId, request.modelVersionId);
 
     const exitRuleKey = computeExitRuleKey(request.entryRule, request.predictionHorizonBars);

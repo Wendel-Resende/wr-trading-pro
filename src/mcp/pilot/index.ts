@@ -13,7 +13,6 @@ import { buildMonitoringTools } from './tools/monitoring';
 import { buildAgentActionTools } from './tools/agent-actions';
 import { buildPortfolioTools } from './tools/portfolio';
 import { buildMarketLiveTools } from './tools/market-live';
-import { buildMlTools } from './tools/ml';
 import { buildTradeTools } from './tools/trade';
 import { createBridgeClient } from './clients/mt5-bridge';
 import { Mt5DemoBroker } from './execution/mt5-demo-broker';
@@ -39,7 +38,6 @@ async function main(): Promise<void> {
     ...buildAgentActionTools(next),
     ...buildPortfolioTools(bridge),
     ...buildMarketLiveTools(spread, volatility),
-    ...buildMlTools(bridge),
     ...buildTradeTools(tradeService),
   ];
   const handle = await startPilotServer(prisma, config, extraTools);

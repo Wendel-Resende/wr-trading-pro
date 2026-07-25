@@ -21,7 +21,7 @@ reconciliação após um restart do processo Flask (ver `reconcile_from_disk`).
 
 Uso interno de `ml_api.py`; também usado diretamente pela suíte de testes do
 Item C para provar ausência de processo órfão sem depender da stack completa
-de TimesFM/LightGBM.
+do LightGBM/XGBoost.
 """
 from __future__ import annotations
 

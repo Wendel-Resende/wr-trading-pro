@@ -7,7 +7,7 @@ mudaria os dados sob os pés de um treino/backtest já em andamento.
 
 Contrato desta v1.1 (revisão 4 da spec):
 - `universeBarsDigest` é calculado SOMENTE sobre OHLCV cru, ANTES de
-  qualquer feature (preço, fundamento ou TimesFM) ser computada. É o ÚNICO
+  qualquer feature (preço ou fundamento) ser computada. É o ÚNICO
   identificador usado para nomear o diretório de snapshot.
 - `datasetDigest`/`datasetHash` (calculados depois, sobre o dataset FINAL
   com features) NUNCA aparecem aqui — isso é responsabilidade de

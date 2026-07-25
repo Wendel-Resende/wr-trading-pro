@@ -103,6 +103,7 @@ function predictResponse(overrides: Partial<DirectionalPredictResponse> = {}): D
 
 function fakePort(train: DirectionalTrainResponse, predict?: DirectionalPredictResponse): DirectionalMlApiPort {
   return {
+    backfill: async () => ({ ok: [], failed: {} }),
     train: async () => train,
     predict: async () => predict ?? predictResponse(),
   };

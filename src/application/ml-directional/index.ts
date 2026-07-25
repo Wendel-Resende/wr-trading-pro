@@ -1,8 +1,10 @@
 export { DIRECTIONAL_GATE_THRESHOLDS, evaluateDirectionalGate, type DirectionalGateResult } from './gate';
 export {
+  BackfillResponseSchema,
   createHttpDirectionalMlApiPort,
   DirectionalPredictResponseSchema,
   DirectionalTrainResponseSchema,
+  type BackfillResponse,
   type DirectionalMlApiPort,
   type DirectionalPredictResponse,
   type DirectionalPredictionRow,

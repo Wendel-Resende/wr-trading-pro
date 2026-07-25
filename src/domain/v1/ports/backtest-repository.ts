@@ -32,7 +32,7 @@ export interface BacktestRunSubmission {
   readonly embargoDays: number;
   // Item A (revisão 4, D10) — opcionais: ausentes na submissão genérica,
   // sempre presentes na submissão idempotente do ML Híbrido (ver
-  // MlHybridBacktestRunRequestV1 em application/backtest-run/dto.ts).
+  // GovernedBacktestRunRequestV1 em application/backtest-run/dto.ts).
   readonly costProfileId?: string;
   readonly costProfileVersion?: number;
   readonly predictionHorizonBars?: number;
