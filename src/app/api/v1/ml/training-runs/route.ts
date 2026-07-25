@@ -12,10 +12,9 @@ import { ReadModelError } from '../../../../../application/read-models-v1';
 import { extractStrictQuery, jsonError, jsonSuccess, parseWithSchema } from '../../_shared/http';
 import { resolveRequestedBy } from '../../agent-runs/_requested-by';
 import { requireKnownPrincipal } from './_authz';
+import { isB3Ticker } from '@/lib/b3-ticker';
 
 export const dynamic = 'force-dynamic';
-
-const TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
 
 const BodySchema = z
   .object({
@@ -26,7 +25,7 @@ const BodySchema = z
           .min(1)
           .max(20)
           .transform((s) => s.trim().toUpperCase())
-          .refine((s) => TICKER_RE.test(s), { message: 'ticker fora do formato B3 (4 letras + 1-2 dígitos)' }),
+          .refine(isB3Ticker, { message: 'ticker fora do formato B3 (raiz de 4 chars + 1-2 dígitos)' }),
       )
       .min(1)
       .max(200)

@@ -11,6 +11,7 @@ import { evaluateGate, type GateResult, type TrainingBlock } from './gate';
 import type { BacktestBar, BacktestSignalInput } from '../../domain/v1/models/backtest-run';
 import { b3DailyCloseKnowledgeInstant, emptyB3SessionCalendar, type B3DailySessionCalendar } from '../../domain/v1/time/b3-session';
 import { parseInstant } from '../../domain/v1/time';
+import { B3_TICKER_EXACT } from '../../lib/b3-ticker';
 
 /**
  * ML Híbrido v1 — orquestração /api/v1/ml/* (Task 9, plano ML Híbrido v1;
@@ -183,11 +184,10 @@ const HEX_DIGEST_RE = /^[a-f0-9]{64}$/i;
  * mais persistir um `Signal` e só falhar depois na serialização do DTO;
  * upstream adversarial/malformado retorna erro controlado sem efeito.
  */
-const PREDICT_TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
 const PREDICT_DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/;
 
 const PredictionValidationSchema = z.object({
-  symbol: z.string().regex(PREDICT_TICKER_RE),
+  symbol: z.string().regex(B3_TICKER_EXACT),
   // Gate do Guardião (fronteira HTTP/data, 2026-07-22): `PREDICT_DATE_RE` só
   // valida formato — datas impossíveis como `2026-02-31` passam na regex e
   // só quebrariam depois, na geração do `Signal`. Reaplica a mesma regra

@@ -12,8 +12,7 @@ import { parseToolArgs, toToolError, type McpToolDefinition } from '../../tools/
 import { ReadModelError } from '../../../application/read-models-v1/errors';
 import type { HttpJson } from '../clients/http-json';
 import { buildSimpleDag, buildCommitteeDag } from './agent-dags';
-
-const TICKER_RE = /^[A-Za-z]{4}\d{1,2}$/;
+import { isB3Ticker } from '../../../lib/b3-ticker';
 
 const submitShape = {
   template: z.enum(['SIMPLES', 'COMITE']),
@@ -40,7 +39,7 @@ export function buildAgentActionTools(next: HttpJson): readonly McpToolDefinitio
           let ticker: string | undefined;
           if (parsed.template === 'COMITE') {
             const candidate = (parsed.ticker ?? '').trim().toUpperCase();
-            if (!TICKER_RE.test(candidate)) {
+            if (!isB3Ticker(candidate)) {
               throw new ReadModelError(
                 'INVALID_QUERY',
                 'o comitê delibera sobre 1 ativo: informe um ticker B3 válido (ex.: WEGE3)',

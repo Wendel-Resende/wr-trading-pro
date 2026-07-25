@@ -128,6 +128,10 @@ async function proxyToolsTests(): Promise<void> {
     const submit = tools.find((t) => t.name === 'agent_run.submit')!;
     const bad = await submit.handler({ template: 'COMITE', kind: 'RESEARCH', question: 'x', ticker: 'INVALIDO!' });
     assert.equal(bad.isError, true, 'comitê sem ticker B3 válido deve falhar antes do HTTP');
+    // B3SA3 (raiz com dígito, a própria B3 S.A.) precisa ser aceito pelo
+    // mesmo validador compartilhado — não pode voltar a lançar INVALID_QUERY.
+    const okB3sa3 = await submit.handler({ template: 'COMITE', kind: 'RESEARCH', question: 'x', ticker: 'b3sa3' });
+    assert.equal(okB3sa3.isError, undefined, 'comitê com ticker B3SA3 deve ser aceito (raiz com dígito)');
     console.log('tools proxy (CVM/monitoramento/agentes): OK');
   } finally { stub.close(); }
 }

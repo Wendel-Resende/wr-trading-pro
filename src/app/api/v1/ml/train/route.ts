@@ -5,6 +5,7 @@ import { ReadModelError } from '../../../../../application/read-models-v1';
 import { prisma } from '../../../../../lib/prisma';
 import { jsonError, jsonSuccess, parseWithSchema } from '../../_shared/http';
 import { resolveRequestedBy } from '../../agent-runs/_requested-by';
+import { isB3Ticker } from '@/lib/b3-ticker';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,8 +20,6 @@ export const dynamic = 'force-dynamic';
  * `GET /api/v1/ml/training-runs/{id}`. Nunca mais volta ao bloqueio
  * síncrono órfão.
  */
-const TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
-
 const BodySchema = z
   .object({
     symbols: z
@@ -30,7 +29,7 @@ const BodySchema = z
           .min(1)
           .max(20)
           .transform((s) => s.trim().toUpperCase())
-          .refine((s) => TICKER_RE.test(s), { message: 'ticker fora do formato B3 (4 letras + 1-2 dígitos)' }),
+          .refine(isB3Ticker, { message: 'ticker fora do formato B3 (raiz de 4 chars + 1-2 dígitos)' }),
       )
       .min(1)
       .max(200)
