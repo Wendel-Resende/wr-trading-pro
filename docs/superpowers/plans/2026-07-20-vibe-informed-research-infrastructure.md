@@ -31,7 +31,7 @@ estatística rigorosa.
 
 ## Fila sequencial
 
-### [ ] A. Backtest econômico real do ML Híbrido — P0
+### [x] A. Backtest econômico real do ML Híbrido — P0 — CONCLUÍDO (commit `9c04dea`, integrado à `main` em 2026-07-21). Próximo pendente: B.
 
 **Problema:** o ML Híbrido v1 persiste proxy direcional em
 `trainingEvidenceJson.backtestProxy`; o `BacktestRun` governado não é criado.

@@ -2,28 +2,54 @@
 
 Última atualização: 2026-07-25
 
-## Próxima iniciativa aprovada — infraestrutura de pesquisa governada (referência Vibe-Trading)
+## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
-O usuário aprovou implementar incrementalmente padrões de engenharia estudados
-no Vibe-Trading, **sem copiar código, pacotes, frontend, assets ou conectores**.
-A referência completa e a fila canônica estão em:
+> **Aviso p/ quem retomar:** existem DOIS esquemas de numeração de "Item" que se
+> sobrepõem nas letras — não confundir. O ponteiro antigo "iniciar pelo Item A"
+> desta seção ficou defasado e já causou confusão; substituído por este mapa real
+> (verificado contra o git em 2026-07-25).
+
+### Trilha ML (itens A/B/C) — TODOS CONCLUÍDOS e na `main`
+
+| Item ML | Escopo | Commit | Estado |
+|---|---|---|---|
+| **A** | Backtest econômico real do ML Híbrido (governado) | `9c04dea` | ✅ na `main` (2026-07-21) |
+| **B** | Previsões ML unificadas/governadas | `9a78f97` | ✅ na `main` |
+| **C** | Treino assíncrono (`MlTrainingRun` job manager) | `2680b0c` | ✅ na `main` |
+
+Specs: `docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md`
+(status "implementada/integrada 2026-07-21"), `.../2026-07-21-item-b-unified-ml-predictions-v1.md`,
+`.../2026-07-23-item-c-async-ml-training.md`. **Nada a iniciar nesta trilha.**
+
+### Fila Vibe (research infra, letras A–F) — só A feito
+
+Iniciativa aprovada: implementar incrementalmente padrões de engenharia do
+Vibe-Trading, **sem copiar código, pacotes, frontend, assets ou conectores**.
+Referência/fila canônica:
 
 - `docs/superpowers/specs/2026-07-20-vibe-informed-research-infrastructure-design.md`
 - `docs/superpowers/plans/2026-07-20-vibe-informed-research-infrastructure.md`
 
-Ordem obrigatória: **A** backtest econômico real do ML Híbrido → **B** Experiment
-Run Card → **C1/C2** hipótese/meta/evidência → **D** eventos/timeline AgentRun →
-**E** preflight operacional → **F** validação estatística. Mandato DEMO temporal
-é apenas estudo futuro e requer nova aprovação.
+Ordem: **A** backtest econômico real → **B** Experiment Run Card → **C1/C2**
+hipótese/meta/evidência → **D** eventos/timeline AgentRun → **E** preflight
+operacional → **F** validação estatística. Mandato DEMO temporal é estudo futuro
+e requer nova aprovação.
 
-Claude Code deve iniciar **somente pelo Item A**. A spec foi concluída e
-**aprovada pelo Guardião** em
-`docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md`
-(revisão 4). Pode implementar somente esse Item em worktree, seguindo todos os
-contratos/testes da spec. Não editar este `CODEX_HANDOFF.md` durante o item,
-não fazer commit/push e não criar execução de ordens. Manter MT5/CVM
-point-in-time, `BacktestRun` canônico, entrada t+1, custos explícitos,
-DEMO-only e todos os gates atuais.
+| Vibe | Escopo | Estado |
+|---|---|---|
+| **A** | Backtest econômico real (é o MESMO do Item ML A) | ✅ feito (`9c04dea`) |
+| **B** | Experiment Run Card v1 | ⬜ pendente — sem modelo/código no schema |
+| **C1** | ResearchHypothesis | ⬜ pendente |
+| **C2** | ResearchGoal + Evidence Ledger | ⬜ pendente |
+| **D** | AgentRunEvent + timeline/SSE | ⬜ pendente |
+| **E** | Preflight operacional read-only | ⬜ pendente |
+| **F** | Validação estatística auditável | ⬜ pendente |
+
+**Próximo pendente real da fila Vibe: B (Experiment Run Card v1).** Diferente do
+Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
+descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
+passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
+até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
 ## Sessão 2026-07-25 (cont. 2) — Regex de ticker B3 unificado (follow-up sistêmico resolvido) (branch `feat/b3-ticker-unification`)
 
