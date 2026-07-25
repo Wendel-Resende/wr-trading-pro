@@ -51,7 +51,7 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
-## Sessão 2026-07-25 (cont. 3) — Ficha Fundamentalista por Empresa (v1) — EM ANDAMENTO (branch `main`)
+## Sessão 2026-07-25 (cont. 3) — Ficha Fundamentalista por Empresa (v1) — CONCLUÍDA (branch `main`)
 
 Primeira fatia do "Painel de Análise Fundamentalista" (foco: usar os dados
 CVM/B3 que já temos). Motivada pela análise dos diagramas archify do Guardião
@@ -85,10 +85,21 @@ nenhum fluxo de ML/backtest/execução nem o schema Prisma. Reaproveita
   o banco real) verde; `tsc --noEmit` limpo; `npm run build` OK (rota compila, `/api/cvm/*`
   existentes intactos).
 
-### Pendente nesta fatia
+### UI CONCLUÍDA
 
-- **UI:** seção "Ficha Fundamentalista" na `CvmFundamentalsTab` (Recharts + proveniência) — próximo passo.
-- Verificação final + nota de conclusão. **Não é push definitivo até a UI fechar.**
+- **`src/components/tabs/CvmFundamentalsTab.tsx`**: seção "Ficha Fundamentalista" no
+  detalhe da empresa (aparece quando uma empresa é selecionada). Busca
+  `/api/cvm/companies/<cd>/fundamentals` e renderiza 4 gráficos Recharts —
+  Retornos (ROE/ROA/ROIC), Alavancagem (dívida/PL & dívida líq./EBITDA), Conversão
+  de caixa (FCO/Lucro, rotulada "derivado no WR") e Payout — com lacuna para dado
+  ausente (`connectNulls`, nunca zero), rodapé de proveniência (fonte pipeline vs
+  derivado WR) e carimbo de conhecimento estimado por prazo legal. Commit `65164e0`.
+- Verificação: `npm run test:cvm-fundamentals` verde, `tsc --noEmit` limpo,
+  `npm run build` OK. Nada de ML/backtest/execução/Prisma tocado.
+
+**Para ver ao vivo:** o app Electron serve o build de produção — precisa de
+`npm run build` (já feito) + reabrir o app; aba **Fundamentos CVM** → selecionar
+uma empresa → rolar até "Ficha Fundamentalista".
 
 ### Fora de escopo (próximas fatias do painel)
 
