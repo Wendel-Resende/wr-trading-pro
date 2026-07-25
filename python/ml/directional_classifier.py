@@ -360,8 +360,12 @@ def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
                     & (high['trimestre'].astype(int) == last_period[1])]
         coverage = int(last['cd_cvm'].nunique())
 
-    accuracy = float(high['_correct'].mean()) if len(high) else float('nan')
-    baseline_on_signals = float((high['yTrue'] == 1.0).mean()) if len(high) else float('nan')
+    # Sem NENHUM sinal de alta confiança não existe acurácia de sinal — o
+    # valor honesto é `None`, nunca 0 (que fingiria "errou tudo") nem NaN
+    # (que o `jsonify` do Flask serializa como o literal `NaN`, JSON inválido
+    # que quebraria o `JSON.parse` do lado Node).
+    accuracy = float(high['_correct'].mean()) if len(high) else None
+    baseline_on_signals = float((high['yTrue'] == 1.0).mean()) if len(high) else None
 
     tp = int(((high['signal'] == SIGNAL_BUY) & (high['yTrue'] == 1.0)).sum()) if len(high) else 0
     fp = int(((high['signal'] == SIGNAL_BUY) & (high['yTrue'] == 0.0)).sum()) if len(high) else 0
@@ -378,7 +382,7 @@ def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
         'coveragePeriod': (f'{last_period[0]}T{last_period[1]}' if last_period else None),
         'baselineAllUp': float((wf['yTrue'] == 1.0).mean()),
         'baselineOnSignals': baseline_on_signals,
-        'baselineDelta': (accuracy - baseline_on_signals) if len(high) else float('nan'),
+        'baselineDelta': (accuracy - baseline_on_signals) if len(high) else None,
         'confusionMatrix': {'truePositive': tp, 'falsePositive': fp,
                             'trueNegative': tn, 'falseNegative': fn},
         'reliability': reliability_bins(wf['prob'], wf['yTrue']),
