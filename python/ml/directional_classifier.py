@@ -69,6 +69,27 @@ CALIBRATION_FRACTION = 0.25
 #: calibração, e o modelo reporta isso explicitamente em vez de fingir.
 _MIN_CALIBRATION_ROWS = 100
 
+#: Definição do alvo.
+#:
+#: 'absolute'        — y = 1 se o retorno de 60 pregões for positivo.
+#: 'sector_relative' — y = 1 se o retorno SUPERAR a mediana dos pares do mesmo
+#:                     setor no MESMO período (excesso > 0).
+#:
+#: DEFAULT = 'sector_relative' desde 2026-07-25. Motivo medido, não estético: o
+#: alvo absoluto embute o movimento do mercado inteiro, que fundamentos
+#: trimestrais não têm como prever — em 60 pregões o beta domina o alfa, e o
+#: modelo passa a tentar adivinhar a direção da bolsa a partir de balanços. O
+#: alvo relativo cancela o fator comum do setor e pergunta o que a análise
+#: fundamentalista de fato responde: "esta empresa vai melhor que suas pares?".
+#:
+#: Efeito colateral desejável: com a mediana como referência, a taxa-base fica
+#: ~50% por construção, então o baseline "comprar tudo" deixa de ser um alvo
+#: móvel e o gate 4 (vantagem >= 15 p.p.) vira um teste real de habilidade.
+TARGET_MODE = 'sector_relative'
+#: Setor/período com menos pares que isto não define mediana confiável — as
+#: linhas ficam SEM rótulo, nunca comparadas contra si mesmas.
+MIN_SECTOR_PEERS = 5
+
 HYPERPARAMETERS = {
     'lightgbm': {'max_depth': 6, 'num_leaves': 63, 'learning_rate': 0.05,
                  'n_estimators': 400, 'random_state': 42},
@@ -79,6 +100,7 @@ HYPERPARAMETERS = {
     'horizon': HORIZON_TRADING_DAYS,
     'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
     'calibration': {'method': CALIBRATION_METHOD, 'fraction': CALIBRATION_FRACTION},
+    'target': {'mode': TARGET_MODE, 'minSectorPeers': MIN_SECTOR_PEERS},
 }
 
 _MIN_TRAIN_ROWS = 200
@@ -102,10 +124,12 @@ _MIN_TEST_ROWS = 20
 MAX_ENTRY_LAG_DAYS = 15
 
 
+
 # ---------------------------------------------------------------------------
 # Rotulagem
 # ---------------------------------------------------------------------------
-def label_panel(panel: pd.DataFrame, bars_for, horizon: int = HORIZON_TRADING_DAYS) -> pd.DataFrame:
+def label_panel(panel: pd.DataFrame, bars_for, horizon: int = HORIZON_TRADING_DAYS,
+                target_mode: str = TARGET_MODE) -> pd.DataFrame:
     """Rotula o painel com a direção do retorno de `horizon` pregões.
 
     `bars_for(ticker)` devolve as barras D1 (colunas `time`/`close`) ou
@@ -169,7 +193,54 @@ def label_panel(panel: pd.DataFrame, bars_for, horizon: int = HORIZON_TRADING_DA
         raise ValueError('INSUFFICIENT_DATA: nenhum ticker com barras suficientes para rotular 60 pregoes')
 
     labeled = pd.concat(parts, ignore_index=True)
+    labeled = _apply_target_mode(labeled, target_mode)
     return labeled.sort_values(['knowledge_date', 'ticker']).reset_index(drop=True)
+
+
+def _apply_target_mode(labeled: pd.DataFrame, target_mode: str) -> pd.DataFrame:
+    """Converte o retorno bruto no alvo escolhido — ver `TARGET_MODE`.
+
+    No modo relativo, a referência é a MEDIANA dos pares do mesmo setor no
+    MESMO período (mesma janela de preço), então o fator comum do setor —
+    inclusive o movimento do mercado — se cancela. Usar a média em vez da
+    mediana deixaria a referência refém de um outlier do grupo.
+
+    Grupos com menos de `MIN_SECTOR_PEERS` pares ficam SEM rótulo e saem: com
+    2 ou 3 empresas a "mediana do setor" é praticamente a própria empresa, e o
+    excesso viraria ruído estrutural.
+
+    Nota: a mediana usa retorno FUTURO, o que é legítimo — é o rótulo, não uma
+    feature. A regra point-in-time vale para o que entra em X, nunca para y.
+    """
+    if target_mode == 'absolute':
+        labeled['ret_excess'] = labeled['ret_fwd']
+        return labeled
+
+    if target_mode != 'sector_relative':
+        raise ValueError(f'TARGET_MODE desconhecido: {target_mode}')
+
+    labeled = labeled.copy()
+    setorial = ['setor', 'ano', 'trimestre']
+    periodo = ['ano', 'trimestre']
+
+    pares = labeled.groupby(setorial)['ret_fwd'].transform('size')
+    mediana_setor = labeled.groupby(setorial)['ret_fwd'].transform('median')
+    mediana_mercado = labeled.groupby(periodo)['ret_fwd'].transform('median')
+
+    # A taxonomia da CVM é fina demais para virar grupo de pares: medido em
+    # 2026-07-25, a mediana é de 2 empresas por (setor, período), com 305
+    # grupos de UMA só — comparar a empresa com "a mediana do setor" seria
+    # compará-la consigo mesma. Por isso a referência primária é o MERCADO
+    # (todas as empresas do período), e o setor só entra quando de fato tem
+    # pares. Em ambos os casos o fator comum — que é o que fundamentos não
+    # preveem — sai da conta.
+    usa_setor = pares >= MIN_SECTOR_PEERS
+    referencia = mediana_setor.where(usa_setor, mediana_mercado)
+
+    labeled['benchmark'] = np.where(usa_setor, 'setor', 'mercado')
+    labeled['ret_excess'] = labeled['ret_fwd'] - referencia
+    labeled['y'] = (labeled['ret_excess'] > 0).astype(float)
+    return labeled
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +528,7 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
             'confidence': [c[1] for c in classified],
             'yTrue': test['y'].to_numpy(),
             'retFwd': test['ret_fwd'].to_numpy(),
+            'retExcess': test['ret_excess'].to_numpy(),
         }))
     if not out:
         raise ValueError('INSUFFICIENT_DATA: nenhum fold walk-forward viavel apos embargo do alvo')
@@ -616,7 +688,8 @@ def compute_model_version(hyperparameters: dict, features: list[str], universe: 
 # ---------------------------------------------------------------------------
 def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
                              universe_bars_digest: str = '',
-                             horizon: int = HORIZON_TRADING_DAYS) -> dict:
+                             horizon: int = HORIZON_TRADING_DAYS,
+                             target_mode: str = TARGET_MODE) -> dict:
     """Rotula, roda o walk-forward, treina o modelo final e publica o artefato.
 
     Retorna o dicionário de resultado consumido pelo Next (nunca persiste nada
@@ -624,7 +697,7 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
     as linhas rotuladas — é ele que serve `/ml/directional/predict`; as métricas
     reportadas vêm exclusivamente do walk-forward out-of-sample.
     """
-    labeled = label_panel(panel, bars_for, horizon=horizon)
+    labeled = label_panel(panel, bars_for, horizon=horizon, target_mode=target_mode)
     wf = run_walk_forward(labeled)
     metrics = evaluate_walk_forward(wf)
 
@@ -648,6 +721,7 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
         'universe': universe,
         'universeBarsDigest': universe_bars_digest,
         'horizonTradingDays': horizon,
+        'targetMode': target_mode,
         'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
         'windowStart': pd.to_datetime(labeled['knowledge_date']).min().strftime('%Y-%m-%d'),
         'windowEnd': pd.to_datetime(labeled['knowledge_date']).max().strftime('%Y-%m-%d'),

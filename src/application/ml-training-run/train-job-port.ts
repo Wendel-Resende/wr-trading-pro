@@ -73,6 +73,7 @@ const DirectionalTrainResultSchema = z
     universeBarsDigest: hash64,
     universe: z.array(z.string().regex(B3_TICKER_EXACT)).min(1).max(2_000),
     horizonTradingDays: z.number().int().positive().max(1_000),
+    targetMode: z.enum(['absolute', 'sector_relative']).optional(),
     gate: z.object({ upper: finiteNumber.min(0).max(1), lower: finiteNumber.min(0).max(1) }).strict(),
     windowStart: isoDate,
     windowEnd: isoDate,

@@ -108,7 +108,9 @@ export class DirectionalService {
       {
         name: MODEL_LABEL,
         hypothesis:
-          'fundamentos CVM point-in-time preveem a direção do retorno de 60 pregões com confiança >90% (spec Item D 2026-07-25)',
+          'fundamentos CVM point-in-time preveem o EXCESSO de retorno sobre os pares em 60 pregões '
+          + '(alvo relativo desde 2026-07-25: o alvo absoluto embutia o movimento de mercado, que '
+          + 'fundamentos trimestrais não preveem)',
         datasetId: `sha256:${trainResult.datasetDigest}`,
         windowStart: toInstant(trainResult.windowStart),
         windowEnd: toInstant(trainResult.windowEnd),
@@ -116,6 +118,7 @@ export class DirectionalService {
           hyperparameters: trainResult.hyperparameters,
           features: trainResult.features,
           horizonTradingDays: trainResult.horizonTradingDays,
+          targetMode: trainResult.targetMode ?? 'absolute',
           gate: trainResult.gate,
           universeBarsDigest: trainResult.universeBarsDigest,
           universeSize: trainResult.universe.length,

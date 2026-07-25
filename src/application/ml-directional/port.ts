@@ -22,6 +22,8 @@ export const DirectionalTrainResponseSchema = z
     universeBarsDigest: z.string().regex(HEX64),
     universe: z.array(z.string().min(1).max(20)).max(1000),
     horizonTradingDays: z.number().int().positive(),
+    /** 'sector_relative' (default) | 'absolute' — ver TARGET_MODE no motor. */
+    targetMode: z.enum(['absolute', 'sector_relative']).optional(),
     gate: z.object({ upper: z.number(), lower: z.number() }),
     windowStart: z.string().min(1).max(64),
     windowEnd: z.string().min(1).max(64),

@@ -109,11 +109,22 @@ def _bars_for(bars: dict[str, pd.DataFrame]):
     return loader
 
 
+def _labeled_absolute(panel: pd.DataFrame) -> pd.DataFrame:
+    """Rotula no modo ABSOLUTO.
+
+    O sinal destes dados sintéticos é plantado em termos absolutos (`roe` alto
+    ⇒ alta), então os testes que conferem o plano precisam pedir esse modo — o
+    default da plataforma é `sector_relative`, que mede excesso sobre os pares
+    e por construção não reproduz um plano absoluto.
+    """
+    return label_panel(panel, _bars_for(_synthetic_bars(panel)), target_mode='absolute')
+
+
 # ---------------------------------------------------------------------------
 def test_directional_target():
     """direcao_60d correta a partir do retorno de 60 pregões."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
 
     assert len(labeled) > 1000, f'esperado painel rotulado substancial, obtido {len(labeled)}'
     # Rótulo bate exatamente com o sinal plantado.
@@ -150,7 +161,7 @@ def test_confidence_gate():
 def test_ensemble_voting():
     """3 modelos, votação ponderada 0.40/0.40/0.20 exata."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
     train = labeled[labeled['ano'] <= 2020]
     model = DirectionalEnsemble().fit(train[FEATURE_COLUMNS], train['y'])
 
@@ -177,7 +188,7 @@ def test_ensemble_voting():
 def test_walk_forward_no_lookahead():
     """knowledgeTime <= decisionTime: nenhum fold treina com alvo dentro do teste."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
 
     for split in yearly_splits(labeled['knowledge_date']):
         test = labeled[split['test_mask']]
@@ -234,7 +245,7 @@ def test_baseline_comparison():
 def test_serialization():
     """Salva e carrega o modelo treinado sem alterar uma única probabilidade."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
     train = labeled[labeled['ano'] <= 2018]
     model = DirectionalEnsemble().fit(train[FEATURE_COLUMNS], train['y'])
 
@@ -270,7 +281,7 @@ def test_training_publishes_artifact():
     models_dir = tempfile.mkdtemp()
 
     result = run_directional_training(panel, _bars_for(bars), models_dir,
-                                      universe_bars_digest='0' * 64)
+                                      universe_bars_digest='0' * 64, target_mode='absolute')
     out_dir = os.path.join(models_dir, result['modelVersion'])
     assert os.path.isfile(os.path.join(out_dir, 'model.pkl'))
     assert os.path.isfile(os.path.join(out_dir, 'metrics.json'))
@@ -280,7 +291,8 @@ def test_training_publishes_artifact():
 
     # Republicar a MESMA versão não sobrescreve o artefato já publicado.
     mtime = os.path.getmtime(os.path.join(out_dir, 'model.pkl'))
-    run_directional_training(panel, _bars_for(bars), models_dir, universe_bars_digest='0' * 64)
+    run_directional_training(panel, _bars_for(bars), models_dir, universe_bars_digest='0' * 64,
+                             target_mode='absolute')
     assert os.path.getmtime(os.path.join(out_dir, 'model.pkl')) == mtime
 
     model = DirectionalEnsemble.load(os.path.join(out_dir, 'model.pkl'))
@@ -379,10 +391,58 @@ def test_entry_lag_guard_discards_stale_labels():
     print(f'  test_entry_lag_guard_discards_stale_labels: OK (defasagem max {int(lag.max())}d)')
 
 
+def test_sector_relative_target_removes_the_common_factor():
+    """Alvo relativo: excesso sobre a mediana dos pares, não direção absoluta.
+
+    Construção do teste: aplica um choque comum de mercado a TODOS os tickers
+    no mesmo período. O alvo absoluto muda (todo mundo sobe); o relativo NÃO,
+    porque o choque entra igualmente na empresa e na sua referência — que é
+    exatamente a propriedade pela qual o alvo relativo foi adotado.
+    """
+    panel = _synthetic_panel()
+    bars = _synthetic_bars(panel)
+
+    absoluto = label_panel(panel, _bars_for(bars), target_mode='absolute')
+    relativo = label_panel(panel, _bars_for(bars), target_mode='sector_relative')
+
+    # Nenhuma linha é perdida: sem pares no setor, a referência é o mercado.
+    assert len(relativo) == len(absoluto), 'alvo relativo nao pode descartar linhas'
+    assert set(relativo['benchmark']) <= {'setor', 'mercado'}
+    assert 'ret_excess' in relativo.columns
+
+    # A taxa-base fica perto de 50% por construção (mediana como referência).
+    assert 0.40 <= relativo['y'].mean() <= 0.60, f"taxa-base {relativo['y'].mean()}"
+
+    # Excesso é coerente com o rótulo.
+    assert ((relativo['ret_excess'] > 0) == (relativo['y'] == 1.0)).all()
+
+    # Choque comum: um "bull market" de 0,5% ao dia aplicado IGUALMENTE a todas
+    # as séries — ~35% por janela de 60 pregões, o suficiente para dominar o
+    # sinal plantado (~12%) e virar praticamente todo rótulo absoluto para alta.
+    chocadas = {}
+    for ticker, b in bars.items():
+        c = b.copy()
+        c['close'] = c['close'] * np.cumprod(np.full(len(c), 1.005))
+        chocadas[ticker] = c
+
+    abs_chocado = label_panel(panel, _bars_for(chocadas), target_mode='absolute')
+    rel_chocado = label_panel(panel, _bars_for(chocadas), target_mode='sector_relative')
+
+    mudou_abs = (abs_chocado['y'].to_numpy() != absoluto['y'].to_numpy()).mean()
+    mudou_rel = (rel_chocado['y'].to_numpy() != relativo['y'].to_numpy()).mean()
+    # O alvo absoluto vira em massa (o choque decide o sinal do retorno);
+    # o relativo é praticamente imune, porque o mesmo choque entra na empresa
+    # E na referência, cancelando-se no excesso.
+    assert mudou_abs > 0.30, f'choque deveria virar a maioria dos rotulos absolutos ({mudou_abs:.3f})'
+    assert mudou_rel < 0.05, f'alvo relativo deveria ser imune ao choque comum ({mudou_rel:.3f})'
+    print(f'  test_sector_relative_target_removes_the_common_factor: OK '
+          f'(choque comum move {mudou_abs:.1%} dos rotulos absolutos vs {mudou_rel:.1%} dos relativos)')
+
+
 def test_calibration_split_is_temporal_and_embargoed():
     """A fatia de calibração é a MAIS RECENTE e não compartilha alvo com o ajuste."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
     train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
 
     fit, calib = calibration_split(train, fraction=0.25)
@@ -406,7 +466,7 @@ def test_calibration_split_is_temporal_and_embargoed():
 def test_calibration_maps_confidence_to_observed_frequency():
     """Calibrar altera a probabilidade sem destruir a qualidade probabilística."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
     train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
     test = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year == 2024]
 
@@ -433,7 +493,7 @@ def test_calibration_maps_confidence_to_observed_frequency():
 def test_calibration_survives_serialization():
     """O calibrador viaja com o artefato — senão o modelo carregado mentiria."""
     panel = _synthetic_panel()
-    labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+    labeled = _labeled_absolute(panel)
     train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
     fit, calib = calibration_split(train)
     model = (DirectionalEnsemble()
@@ -470,7 +530,7 @@ def _metrics_cache() -> dict:
     """Walk-forward completo é caro — roda uma vez e reusa entre os testes."""
     if 'metrics' not in _CACHE:
         panel = _synthetic_panel()
-        labeled = label_panel(panel, _bars_for(_synthetic_bars(panel)))
+        labeled = _labeled_absolute(panel)
         wf = run_walk_forward(labeled)
         _CACHE['metrics'] = evaluate_walk_forward(wf)
     return _CACHE['metrics']
@@ -488,6 +548,7 @@ if __name__ == '__main__':
     test_baseline_comparison()
     test_serialization()
     test_entry_lag_guard_discards_stale_labels()
+    test_sector_relative_target_removes_the_common_factor()
     test_calibration_split_is_temporal_and_embargoed()
     test_calibration_maps_confidence_to_observed_frequency()
     test_calibration_survives_serialization()
