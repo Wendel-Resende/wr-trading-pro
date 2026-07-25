@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25
+Última atualização: 2026-07-25 (Item D — Classificador Direcional)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -9,17 +9,25 @@
 > desta seção ficou defasado e já causou confusão; substituído por este mapa real
 > (verificado contra o git em 2026-07-25).
 
-### Trilha ML (itens A/B/C) — TODOS CONCLUÍDOS e na `main`
+### Trilha ML (itens A/B/C/D) — TODOS CONCLUÍDOS e na `main`
 
 | Item ML | Escopo | Commit | Estado |
 |---|---|---|---|
-| **A** | Backtest econômico real do ML Híbrido (governado) | `9c04dea` | ✅ na `main` (2026-07-21) |
-| **B** | Previsões ML unificadas/governadas | `9a78f97` | ✅ na `main` |
-| **C** | Treino assíncrono (`MlTrainingRun` job manager) | `2680b0c` | ✅ na `main` |
+| **A** | Backtest econômico real do ML Híbrido (governado) | `9c04dea` | ⚠️ na `main`, mas o MOTOR foi removido pelo Item D (ver abaixo) |
+| **B** | Previsões ML unificadas/governadas | `9a78f97` | ⚠️ idem — substituído pelo Item D |
+| **C** | Treino assíncrono (`MlTrainingRun` job manager) | `2680b0c` | ✅ na `main`, RELIGADO ao motor direcional (`775b237`) |
+| **D** | Classificador Direcional com Ensemble Governado | `2f72b7a`..`3d33e3a` | ✅ na `main` (2026-07-25) |
 
-Specs: `docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md`
-(status "implementada/integrada 2026-07-21"), `.../2026-07-21-item-b-unified-ml-predictions-v1.md`,
-`.../2026-07-23-item-c-async-ml-training.md`. **Nada a iniciar nesta trilha.**
+Specs: `docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md`,
+`.../2026-07-21-item-b-unified-ml-predictions-v1.md`,
+`.../2026-07-23-item-c-async-ml-training.md`,
+`.../2026-07-25-item-d-directional-classifier-v1.md`. **Nada a iniciar nesta trilha.**
+
+> **ATENÇÃO p/ quem retomar:** o Item D fez uma **substituição limpa** — o motor
+> híbrido (TimesFM + LightGBM + CVM, D1 10 pregões) dos itens A e B **não existe
+> mais no código**. As specs de A e B seguem válidas como registro histórico do
+> que foi feito e por quê, mas descrevem código removido. O único motor de
+> previsão da plataforma hoje é o classificador direcional (60 pregões).
 
 ### Fila Vibe (research infra, letras A–F) — só A feito
 
@@ -50,6 +58,121 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 8) — Item D: Classificador Direcional (branch `main`)
+
+Substituição limpa do motor de previsão da plataforma. Spec:
+`docs/architecture/2026-07-25-item-d-directional-classifier-v1.md`. Sete commits:
+`2f72b7a` (motor Python) → `853d6c6` (endpoints) → `49c720d` (Prisma) →
+`8c22663` (serviço + rotas) → `29f564d` (UI) → `775b237` (treino async religado)
+→ `3d33e3a` (remoção do legado).
+
+### O que existe agora
+
+| Camada | Onde |
+|---|---|
+| Painel trimestral CVM | `python/ml/directional_features.py` |
+| Ensemble + gate + walk-forward | `python/ml/directional_classifier.py` |
+| Worker cancelável | `python/ml/directional_worker.py` |
+| Endpoints | `POST /ml/directional/{train,predict}`, `/ml/train-jobs*`, `/ml/backfill`, `/ml/health` |
+| Persistência | `DirectionalModelVersion`, `DirectionalPrediction` (migration `20260725194135`) |
+| Governança | `src/application/ml-directional/` (gate no servidor, ResearchRun, claim CAS) |
+| Rotas Next | `GET /api/v1/ml/directional/models`, `.../models/[modelVersion]`, `GET` e `POST` em `.../predictions` |
+| UI | `src/components/ml/DirectionalSignalsView.tsx` |
+| Testes | `npm run test:directional-classifier` (48 asserts), `npm run test:directional:py` (17) |
+
+**Treinar é `POST /api/v1/ml/training-runs`** (assíncrono/cancelável, Item C
+religado). NÃO existe POST em `/api/v1/ml/directional/models` — foi removido de
+propósito: um treino síncrono seguraria a conexão por minutos sem poder ser
+cancelado, o bug que o Item C existe para não repetir.
+
+### O que foi REMOVIDO (não procure, não existe mais)
+
+Python: `timesfm_adapter.py`, `dataset.py`, `features.py`, `train.py`,
+`train_worker.py`, `walkforward.py`; endpoints `/ml/train`, `/ml/predict`,
+`/ml/predictions`, `/ml/snapshot-bars`; dependência `timesfm` (entraram
+`xgboost` e `scikit-learn`).
+Node: `application/ml-hybrid/`, rotas `ml/train`, `ml/predict`,
+`ml/model-versions`; `HybridGovernedView`, `MLModelsTab`,
+`services/{mlModels,mlService,backtesting,backtestAdapter}.ts`; tools MCP
+`ml.run_prediction`/`ml.run_backtest`; suítes `ml-hybrid` e `ml-unified-reads`.
+
+**Tabelas do banco preservadas** (decisão do usuário): nenhuma migration
+destrutiva. `MlTrainingRun`, `ModelVersion`, `Signal` e `BacktestRun` seguem lá,
+com o histórico do híbrido auditável — inclusive o ResearchRun do treino que o
+gate reprovou em 2026-07-18.
+
+### Religações que o legado carregava (armadilhas para quem mexer)
+
+1. **Backfill D1 morava no port do híbrido.** `backfill` entrou em
+   `DirectionalMlApiPort` — o motor ML é um processo Flask só.
+2. **`GET /api/v1/research-runs` marcaria todo run direcional como REPROVADO:**
+   resolvia o veredito lendo `ModelVersion.trainingEvidenceJson`, e a versão
+   direcional não vive nessa tabela. Agora consulta `DirectionalModelVersion`
+   primeiro e só cai no legado para linhas históricas.
+   `isTrainingEvidenceApproved` migrou para `application/model-version`.
+3. **`runForMlHybrid` → `runGoverned`** (e tipos correspondentes). A capacidade
+   de backtest governado continua viva, mas **ninguém a chama** — ver pendências.
+
+### Resultado científico — GATE REPROVOU nos 4 critérios (E2E ao vivo)
+
+126 tickers, 167 mil barras D1, treino em <30s (sem TimesFM ficou barato):
+
+| Gate | Exigido | Obtido |
+|---|---|---|
+| Acurácia (alta confiança) | ≥ 85% | **53,9%** ❌ |
+| Brier score | < 0,15 | **0,329** ❌ |
+| Cobertura último trimestre | ≥ 30 | **6** ❌ |
+| Vantagem vs comprar-tudo | ≥ 15 p.p. | **9,3 p.p.** ❌ |
+
+Nenhuma versão ativada; `ResearchRun` REPROVADO; a UI mostra o estado honesto
+apontando qual gate falhou. Terceiro motor de ML seguido reprovado pelo próprio
+gate (junto com o híbrido de 2026-07-18 e o experimento do Guardião).
+
+**Diagnóstico:** matriz de confusão com **1 verdadeiro positivo contra 206
+falsos negativos** — o ensemble quase só aposta na baixa. Brier 0,329 é pior que
+um preditor constante de 0,5 (~0,25): superconfiança, não só imprecisão.
+Cobertura cai de 243 sinais (2022) para 0 (2026).
+
+**Restrição de dados não prevista na spec:** o painel CVM cobre 2011–2026, mas
+`HistoricalCandle` só tem barras desde 2021 — o walk-forward roda com **5 folds**,
+não os 15 que a spec assumia.
+
+### Divergências conscientes da spec (todas nos commits)
+
+- **`modelVersion` inclui o digest do dataset** (§4.4 definia só
+  hiperparâmetros+features+universo). Sem isso, retreino com dado CVM novo
+  colidiria com a versão antiga e — como a publicação é dedup por versão — seria
+  descartado em silêncio, servindo o modelo velho sob métricas novas.
+- **`researchRunId` é criado pelo Next**, não pelo Python (§4.3 pedia o
+  contrário): o motor nunca escreve no Prisma.
+- **3 colunas além da spec:** `gateFailures` (sem ela um FAILED não é
+  auditável), `prob` (proximidade do corte) e `knowledgeDate` (PIT).
+- **Estado `DRAFT`** no ciclo de vida: versão aprovada nasce inerte e só vira
+  ACTIVE dentro do claim CAS contra o `MlTrainingRun`.
+- **Top features é importância GLOBAL** (ganho do LightGBM), rotulada como tal
+  na UI — o ensemble não produz atribuição por empresa (exigiria SHAP).
+
+### Bugs reais corrigidos no caminho
+
+- `float('nan')` nas métricas virava o literal `NaN` no `jsonify` do Flask —
+  JSON inválido que quebraria o `JSON.parse` do Node. Vira `None` (0 fingiria
+  "errou tudo"; quem reprova esse caso é o gate de cobertura).
+- Fixtures do `test:ml-training-run` reusavam a mesma `modelVersion` entre
+  cenário aprovado e reprovado; a idempotência por identidade canônica fazia o
+  segundo reencontrar a versão ativa do primeiro.
+- `npm run build` type-checa `scripts/`, `tsc --noEmit` não — rodar os dois.
+
+### Pendências registradas (NÃO feitas)
+
+1. **Treino direcional não gera `BacktestRun`.** A infra existe (`runGoverned`)
+   mas ninguém a chama: um modelo aprovado hoje teria prova estatística, não
+   econômica. Próxima fatia natural se algum modelo passar no gate.
+2. **`MlTrainingRun.phase` ainda tem `BACKTESTS`** no vocabulário, agora
+   inalcançável.
+3. **Calibração de probabilidade** (isotônica/Platt) — ataque direto ao Brier;
+   é o caminho nº 1 para o modelo virar utilizável.
+4. **Backfill de barras pré-2021** — triplicaria a janela de walk-forward.
 
 ## Sessão 2026-07-25 (cont. 7) — Painel Fundamentalista fatia 5: seletor as-of — PAINEL COMPLETO (branch `main`)
 
