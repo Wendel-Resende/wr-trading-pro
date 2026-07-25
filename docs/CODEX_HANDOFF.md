@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D — Classificador Direcional)
+Última atualização: 2026-07-25 (Item D + correção de rotulagem/calibração)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,82 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 9) — Rótulos fabricados + calibração (branch `main`)
+
+Commits `34e2978` (este handoff) e `9973f71`. Continuação direta do Item D: o
+usuário pediu a calibração de probabilidade, e ela expôs um defeito bem mais
+grave nos próprios rótulos.
+
+### BUG CRÍTICO — 62% dos rótulos eram fabricados
+
+`searchsorted` devolve índice 0 quando o carimbo de conhecimento antecede toda
+a série de preços. Como `HistoricalCandle` só tem barras desde **2021-07-26**,
+um trimestre de 2011 era "operado" na primeira barra existente (2021) e fechado
+60 pregões depois: **o rótulo de 2011 virava o retorno de fevereiro de 2022**.
+
+| | |
+|---|---|
+| Linhas afetadas | **3.770 de 6.124 (62%)** |
+| Defasagem mediana carimbo→entrada | **620 dias** |
+| Defasagem máxima | 3.753 dias |
+
+O embargo do alvo vinha MASCARANDO o problema: descartava os folds antigos
+porque o `exit_date` fabricado (2022) invadia o teste — na sessão anterior isso
+foi lido como "falta de barras", e a conclusão de que o walk-forward rodava com
+5 folds estava certa pelo motivo errado.
+
+**Correção:** `MAX_ENTRY_LAG_DAYS = 15` em `ml/directional_classifier.py`. Sem
+barra logo após a publicação não existe operação — a linha é descartada, nunca
+deslocada para um preço de outro regime. Painel honesto: 2.353 linhas (todas
+2021+), defasagem mediana 0 dias, máxima 8. Teste de regressão:
+`test_entry_lag_guard_discards_stale_labels`.
+
+### Calibração de probabilidade
+
+`DirectionalEnsemble.calibrate()` aprende o mapa probabilidade-dita →
+frequência-observada numa fatia SEPARADA e ANTERIOR ao teste (25% mais recente
+do treino, com o mesmo embargo de alvo entre ajuste e calibração). O calibrador
+viaja dentro do artefato; sem amostra suficiente o modelo segue cru e reporta
+`calibrated: false` em vez de fingir.
+
+| | cru | calibrado |
+|---|---|---|
+| Brier | 0,306 | **0,291** |
+| Sinais de alta confiança | 160 | **0** |
+
+**Default é 'sigmoid' (Platt), NÃO isotônica.** Medido nos dados reais: a
+isotônica preserva 43 sinais com acurácia de **39,5%** — anti-preditivos, fruto
+de degraus locais ajustados a poucas amostras. O Platt, monótono e suave, não
+deixa nenhuma probabilidade passar do gate de 90%.
+
+Métricas ganharam `brierRaw`/`nHighConfidenceRaw`/`calibrated` (antes×depois),
+propagados até a UI — o efeito precisa ser auditável, não apenas afirmado.
+Campos OPCIONAIS no Zod: artefatos treinados antes desta mudança não os têm.
+
+### Leitura honesta do estado do modelo
+
+Zero sinais não é regressão: é o diagnóstico. A confiança de 95% que o ensemble
+cru reportava **não existia** — era superconfiança que o gate de 90% consumia
+como se fosse informação. O Brier calibrado (0,291) segue pior que um preditor
+constante de 0,5 (~0,25). Com estas features e este horizonte, não há sinal.
+
+Hipóteses restantes, na ordem acordada com o usuário:
+
+1. **Backfill de barras pré-2021** — EM ANDAMENTO. O painel CVM cobre
+   2011–2026, mas os preços só 2021–2026; perdem-se 10 anos de história.
+   Suspeita a verificar: `Mt5DailyClient.get_daily_rates` usa
+   `copy_rates_from_pos(symbol, D1, 0, 5000)`, que devolve o que o terminal já
+   tem em cache — `copy_rates_range` costuma forçar o download de uma janela
+   maior do servidor do broker.
+2. **Alvo relativo ao setor/índice** em vez de direção absoluta (mudança de
+   spec, exige aprovação).
+3. **Features de preço/momentum** junto das contábeis.
+
+### Verificação
+
+16/16 testes do motor (5 novos), `test_directional_api`, `test:ml-training-run`,
+`tsc` e `build` verdes.
 
 ## Sessão 2026-07-25 (cont. 8) — Item D: Classificador Direcional (branch `main`)
 
