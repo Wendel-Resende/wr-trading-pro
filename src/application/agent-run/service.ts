@@ -17,6 +17,7 @@ import { compareInstants, parseInstant } from '../../domain/v1/time';
 import { ReadModelError } from '../read-models-v1/errors';
 import { buildPromptContext, buildSingleTickerContext } from '../../lib/agent-data-context';
 import { buildGestorSystemPrompt, getCommitteeRole, GESTOR_ROLE_KEY } from './committee';
+import { b3TickerGlobal, isB3Ticker } from '../../lib/b3-ticker';
 
 export interface AgentRunServicePorts {
   readonly agentRunRepository: AgentRunRepository;
@@ -202,15 +203,10 @@ function llmPreferences(input: Record<string, unknown>): { provider?: string; mo
   return { provider, model };
 }
 
-/** Padrão de ticker B3: 4 letras + 1-2 dígitos (ex: WEGE3, VIVA3, ENG1, KLBN11) */
-const TICKER_RE = /\b[A-Z]{4}\d{1,2}\b/g;
-/** Mesma forma, ancorada: usada para validar campos explícitos (ticker/symbol) antes de embuti-los no system prompt. */
-const TICKER_EXACT_RE = /^[A-Z]{4}\d{1,2}$/;
-
 function extractTickerFromInput(input: Record<string, unknown>): string | undefined {
   for (const value of Object.values(input)) {
     if (typeof value !== 'string') continue;
-    const matches = value.match(TICKER_RE);
+    const matches = value.match(b3TickerGlobal());
     if (matches) return matches[0];
   }
   return undefined;
@@ -221,7 +217,7 @@ function resolveTicker(input: Record<string, unknown>): string | undefined {
   for (const field of [input.ticker, input.symbol]) {
     if (typeof field !== 'string') continue;
     const candidate = field.trim().toUpperCase();
-    if (TICKER_EXACT_RE.test(candidate)) return candidate;
+    if (isB3Ticker(candidate)) return candidate;
   }
   return extractTickerFromInput(input);
 }

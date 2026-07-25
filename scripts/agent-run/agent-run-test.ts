@@ -646,6 +646,42 @@ async function committeeTickerInjectionTests(prisma: PrismaClient): Promise<void
   console.log('validação de ticker explícito: OK (ticker inválido não vaza para system prompt; cai no fallback genérico)');
 }
 
+async function b3TickerModuleExtractionTests(prisma: PrismaClient): Promise<void> {
+  // Migração para o módulo compartilhado src/lib/b3-ticker: (a) ticker
+  // explícito com raiz alfanumérica (B3SA3) deve resolver e vazar para o
+  // system prompt; (b) extração por texto livre deve pegar B3SA3 e NUNCA um
+  // número puro coexistindo na mesma string (prova que a raiz [A-Z][A-Z0-9]{3}
+  // exige letra líder — [A-Z0-9]{4} ingênuo pegaria dígitos).
+  const stubExplicit = new StubCommitteeLlm();
+  const serviceExplicit = createAgentRunService(prisma, { agentLlm: stubExplicit });
+  const runExplicit = await serviceExplicit.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: COMMITTEE_DAG,
+    input: { ticker: 'B3SA3' },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  const finishedExplicit = await serviceExplicit.advance(runExplicit.runId);
+  assert.equal(finishedExplicit.status, 'SUCCEEDED');
+  assert.match(stubExplicit.calls[0].system, /B3SA3/, 'ticker explícito B3SA3 (raiz alfanumérica) deveria resolver e aparecer no prompt');
+
+  const stubFreeText = new StubCommitteeLlm();
+  const serviceFreeText = createAgentRunService(prisma, { agentLlm: stubFreeText });
+  const runFreeText = await serviceFreeText.submit({
+    requestedBy: 'tester',
+    kind: 'RESEARCH',
+    dag: COMMITTEE_DAG,
+    input: { question: 'analise B3SA3 com lucro 123456' },
+    decisionTime: '2099-01-01T00:00:00.000Z',
+  });
+  const finishedFreeText = await serviceFreeText.advance(runFreeText.runId);
+  assert.equal(finishedFreeText.status, 'SUCCEEDED');
+  assert.match(stubFreeText.calls[0].system, /B3SA3/, 'extração por texto livre deveria achar B3SA3');
+  assert.doesNotMatch(stubFreeText.calls[0].system, /123456/, 'extração por texto livre nunca pode capturar número puro como ticker');
+
+  console.log('extração de ticker (módulo compartilhado): OK (explícito B3SA3 resolve; texto livre extrai B3SA3, nunca 123456)');
+}
+
 async function internalErrorSanitizationTests(): Promise<void> {
   const fakePrismaError = Object.assign(new Error('SELECT * FROM "AgentRun" WHERE ... syntax error near "%^&"'), {
     name: 'PrismaClientKnownRequestError',
@@ -793,6 +829,7 @@ async function main(): Promise<void> {
     await committeeSimulatedTests(prisma);
     await committeeLiveStubTests(prisma);
     await committeeTickerInjectionTests(prisma);
+    await b3TickerModuleExtractionTests(prisma);
     await llmBudgetTimeoutPropagationTests(prisma);
     await orphanReaperTests(prisma);
   } finally {
