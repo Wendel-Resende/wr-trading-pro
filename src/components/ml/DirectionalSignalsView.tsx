@@ -1,0 +1,599 @@
+'use client';
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts';
+import { useToast } from '@/contexts/ToastContext';
+
+/**
+ * Item D (§4.6) — aba Previsões ML.
+ *
+ * Consome exclusivamente os DTOs públicos de `/api/v1/ml/directional/*`
+ * (nunca `artifactPath`, nunca hiperparâmetro bruto). A tela é deliberadamente
+ * honesta: sem modelo aprovado no gate, ela não mostra sinal nenhum — mostra
+ * QUAIS gates reprovaram e com que números, para que o usuário nunca opere um
+ * modelo que a plataforma considera insuficiente.
+ */
+
+const GATE_UPPER = 0.9;
+const GATE_LOWER = 0.1;
+
+interface GateCheck {
+  readonly code: string;
+  readonly label: string;
+  readonly threshold: number;
+  readonly observed: number | null;
+  readonly passed: boolean;
+}
+
+interface DirectionalMetrics {
+  readonly nSamples: number;
+  readonly nHighConfidence: number;
+  readonly accuracy: number | null;
+  readonly accuracyAllSamples: number;
+  readonly brier: number;
+  readonly coverage: number;
+  readonly coveragePeriod: string | null;
+  readonly baselineAllUp: number;
+  readonly baselineOnSignals: number | null;
+  readonly baselineDelta: number | null;
+  readonly confusionMatrix: {
+    readonly truePositive: number;
+    readonly falsePositive: number;
+    readonly trueNegative: number;
+    readonly falseNegative: number;
+  };
+  readonly reliability: readonly {
+    readonly binStart: number;
+    readonly binEnd: number;
+    readonly n: number;
+    readonly meanPredicted: number | null;
+    readonly observedRate: number | null;
+  }[];
+  readonly byFold: readonly {
+    readonly foldId: number;
+    readonly testYear: number;
+    readonly n: number;
+    readonly nHighConfidence: number;
+    readonly accuracy: number | null;
+    readonly brier: number;
+  }[];
+}
+
+interface DirectionalModel {
+  readonly modelVersion: string;
+  readonly createdAt: string;
+  readonly researchRunId: string;
+  readonly status: 'ACTIVE' | 'FAILED' | 'SUPERSEDED';
+  readonly gateApproved: boolean;
+  readonly gateFailures: readonly string[];
+  readonly gateChecks: readonly GateCheck[];
+  readonly metrics: DirectionalMetrics;
+}
+
+interface DirectionalPrediction {
+  readonly ticker: string;
+  readonly cdCvm: string;
+  readonly signal: 'COMPRA' | 'VENDA' | 'NEUTRO';
+  readonly confidence: number;
+  readonly prob: number;
+  readonly knowledgeDate: string;
+  readonly topFeatures: readonly { readonly feature: string; readonly importance: number }[];
+  readonly modelVersion: string;
+  readonly universeDigest: string;
+  readonly generatedAt: string;
+}
+
+interface CostProfile {
+  readonly id: string;
+  readonly version: number;
+  readonly label: string;
+}
+
+interface ApiError {
+  readonly code: string;
+  readonly message: string;
+}
+
+// ---------------------------------------------------------------------------
+async function getJson<T>(url: string): Promise<{ data: T; meta: Record<string, unknown> }> {
+  const res = await fetch(url);
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.success) {
+    const error: ApiError = body?.error ?? { code: String(res.status), message: 'falha na requisição' };
+    throw error;
+  }
+  return { data: body.data as T, meta: (body.meta ?? {}) as Record<string, unknown> };
+}
+
+async function postJson<T>(url: string, payload: unknown): Promise<{ data: T; meta: Record<string, unknown> }> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.success) {
+    const error: ApiError = body?.error ?? { code: String(res.status), message: 'falha na requisição' };
+    throw error;
+  }
+  return { data: body.data as T, meta: (body.meta ?? {}) as Record<string, unknown> };
+}
+
+function isApiError(value: unknown): value is ApiError {
+  return typeof value === 'object' && value !== null && 'code' in value && 'message' in value;
+}
+
+function describeError(error: unknown): string {
+  return isApiError(error) ? `${error.code}: ${error.message}` : 'erro inesperado';
+}
+
+const pct = (value: number | null | undefined, digits = 1): string =>
+  value === null || value === undefined || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(digits)}%`;
+
+const num = (value: number | null | undefined, digits = 3): string =>
+  value === null || value === undefined || !Number.isFinite(value) ? '—' : value.toFixed(digits);
+
+const shortVersion = (v: string): string => `${v.slice(0, 10)}…${v.slice(-6)}`;
+
+// ---------------------------------------------------------------------------
+const SIGNAL_STYLES: Record<DirectionalPrediction['signal'], string> = {
+  COMPRA: 'bg-green-500/10 text-green-400 border-green-500/40',
+  VENDA: 'bg-red-500/10 text-red-400 border-red-500/40',
+  NEUTRO: 'bg-gray-700/30 text-gray-400 border-gray-600/40',
+};
+
+export default function DirectionalSignalsView(): React.ReactElement {
+  const toast = useToast();
+
+  const [activeModels, setActiveModels] = useState<readonly DirectionalModel[]>([]);
+  const [allModels, setAllModels] = useState<readonly DirectionalModel[]>([]);
+  const [modelsError, setModelsError] = useState<ApiError | null>(null);
+  const [loadingModels, setLoadingModels] = useState(true);
+
+  const [selectedVersion, setSelectedVersion] = useState('');
+  const [predictions, setPredictions] = useState<readonly DirectionalPrediction[]>([]);
+  const [predictionsMeta, setPredictionsMeta] = useState<Record<string, unknown>>({});
+  const [loadingPredictions, setLoadingPredictions] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  const [costProfiles, setCostProfiles] = useState<readonly CostProfile[]>([]);
+  const [selectedCostProfileId, setSelectedCostProfileId] = useState('');
+  const [training, setTraining] = useState(false);
+
+  const [signalFilter, setSignalFilter] = useState<'TODOS' | 'ALTA_CONFIANCA'>('ALTA_CONFIANCA');
+
+  const selectedModel = useMemo(
+    () => allModels.find((m) => m.modelVersion === selectedVersion) ?? null,
+    [allModels, selectedVersion],
+  );
+
+  // --- carregamento ------------------------------------------------------
+  const loadModels = useCallback(async () => {
+    setLoadingModels(true);
+    try {
+      const [active, all] = await Promise.all([
+        getJson<DirectionalModel[]>('/api/v1/ml/directional/models?status=ACTIVE&limit=20'),
+        getJson<DirectionalModel[]>('/api/v1/ml/directional/models?limit=50'),
+      ]);
+      setActiveModels(active.data);
+      setAllModels(all.data);
+      setModelsError(null);
+      setSelectedVersion((current) => current || active.data[0]?.modelVersion || '');
+    } catch (error) {
+      // Falha fecha a tela: melhor não mostrar modelo nenhum do que mostrar
+      // uma lista parcial como se fosse a completa.
+      setActiveModels([]);
+      setAllModels([]);
+      setModelsError(isApiError(error) ? error : { code: 'INTERNAL_ERROR', message: 'falha ao carregar modelos' });
+    } finally {
+      setLoadingModels(false);
+    }
+  }, []);
+
+  const loadCostProfiles = useCallback(async () => {
+    try {
+      const { data } = await getJson<CostProfile[]>('/api/v1/ml/cost-profiles?limit=50');
+      setCostProfiles(data);
+    } catch {
+      setCostProfiles([]);
+    }
+  }, []);
+
+  const loadPredictions = useCallback(async (modelVersion: string) => {
+    if (!modelVersion) {
+      setPredictions([]);
+      setPredictionsMeta({});
+      return;
+    }
+    setLoadingPredictions(true);
+    try {
+      const { data, meta } = await getJson<DirectionalPrediction[]>(
+        `/api/v1/ml/directional/predictions?modelVersion=${encodeURIComponent(modelVersion)}`,
+      );
+      setPredictions(data);
+      setPredictionsMeta(meta);
+    } catch (error) {
+      setPredictions([]);
+      setPredictionsMeta({});
+      toast.error(`Falha ao carregar sinais — ${describeError(error)}`);
+    } finally {
+      setLoadingPredictions(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { void loadModels(); void loadCostProfiles(); }, [loadModels, loadCostProfiles]);
+  useEffect(() => { void loadPredictions(selectedVersion); }, [selectedVersion, loadPredictions]);
+
+  // --- ações -------------------------------------------------------------
+  const handleTrain = useCallback(async () => {
+    if (!selectedCostProfileId) {
+      toast.warning('Selecione um perfil de custos antes de treinar.');
+      return;
+    }
+    setTraining(true);
+    try {
+      const { data } = await postJson<{ status: string; modelVersion: string; gateFailures: string[] }>(
+        '/api/v1/ml/directional/models',
+        { costProfileId: selectedCostProfileId },
+      );
+      if (data.status === 'ACTIVE') {
+        toast.success(`Modelo aprovado no gate — versão ${shortVersion(data.modelVersion)}.`);
+      } else {
+        toast.warning(
+          `Modelo reprovado no gate (${data.gateFailures.length} de 4 critérios). Registrado para auditoria, não servível.`,
+        );
+      }
+      await loadModels();
+    } catch (error) {
+      toast.error(`Falha no treino — ${describeError(error)}`);
+    } finally {
+      setTraining(false);
+    }
+  }, [selectedCostProfileId, toast, loadModels]);
+
+  const handleGenerate = useCallback(async () => {
+    if (!selectedVersion) return;
+    setGenerating(true);
+    try {
+      const { data, meta } = await postJson<DirectionalPrediction[]>('/api/v1/ml/directional/predictions', {
+        modelVersion: selectedVersion,
+      });
+      setPredictions(data);
+      setPredictionsMeta(meta);
+      toast.success(`${meta.highConfidence ?? 0} sinais de alta confiança em ${data.length} empresas.`);
+    } catch (error) {
+      toast.error(`Falha ao gerar sinais — ${describeError(error)}`);
+    } finally {
+      setGenerating(false);
+    }
+  }, [selectedVersion, toast]);
+
+  // --- derivados ---------------------------------------------------------
+  const highConfidence = predictions.filter((p) => p.signal !== 'NEUTRO');
+  const visiblePredictions = signalFilter === 'ALTA_CONFIANCA' ? highConfidence : predictions;
+  const failedModels = allModels.filter((m) => m.status === 'FAILED');
+
+  const reliabilityData = (selectedModel?.metrics.reliability ?? [])
+    .filter((b) => b.n > 0 && b.meanPredicted !== null && b.observedRate !== null)
+    .map((b) => ({
+      previsto: Number((b.meanPredicted! * 100).toFixed(1)),
+      observado: Number((b.observedRate! * 100).toFixed(1)),
+      perfeito: Number((b.meanPredicted! * 100).toFixed(1)),
+      n: b.n,
+    }));
+
+  // -----------------------------------------------------------------------
+  return (
+    <div className="cyber-card p-6 space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h3 className="font-orbitron text-xl font-bold neon-text-cyan">
+            Classificador direcional (60 pregões · 1 trimestre)
+          </h3>
+          <p className="text-xs text-gray-500 mt-1">
+            Ensemble LightGBM + XGBoost + Regressão Logística sobre fundamentos CVM point-in-time.
+            Só emite sinal quando a probabilidade sai da zona ambígua ({pct(GATE_LOWER, 0)}–{pct(GATE_UPPER, 0)}).
+          </p>
+        </div>
+        <span
+          className={`text-xs font-mono px-3 py-1 rounded border ${
+            activeModels.length > 0
+              ? 'bg-green-500/20 text-green-400 border-green-500/40'
+              : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
+          }`}
+        >
+          {activeModels.length > 0 ? `${activeModels.length} modelo(s) aprovado(s)` : 'nenhum modelo aprovado'}
+        </span>
+      </div>
+
+      {/* ---------------- Seletor de versão ---------------- */}
+      <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-3">
+        <p className="text-sm font-semibold text-gray-300">Versão do modelo</p>
+
+        {loadingModels ? (
+          <p className="text-xs text-gray-500">Carregando versões…</p>
+        ) : modelsError ? (
+          <p className="text-xs text-red-400">
+            Falha ao carregar versões ({modelsError.code}): {modelsError.message}
+          </p>
+        ) : activeModels.length === 0 ? (
+          <div className="text-xs space-y-2">
+            <p className="text-yellow-400">
+              Nenhum modelo passou no gate de aceitação — por isso não há sinais a exibir.
+            </p>
+            <p className="text-gray-500">
+              Um modelo só fica disponível se atender aos quatro critérios simultaneamente: acurácia ≥ 85% nos
+              sinais de alta confiança, Brier &lt; 0,15, cobertura ≥ 30 empresas no último trimestre e vantagem
+              ≥ 15 p.p. sobre comprar tudo. Modelos reprovados ficam registrados abaixo, para auditoria.
+            </p>
+          </div>
+        ) : (
+          <select
+            value={selectedVersion}
+            onChange={(e) => setSelectedVersion(e.target.value)}
+            className="w-full max-w-2xl bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono"
+          >
+            {activeModels.map((m) => (
+              <option key={m.modelVersion} value={m.modelVersion}>
+                {shortVersion(m.modelVersion)} · acurácia {pct(m.metrics.accuracy)} · Brier {num(m.metrics.brier)} ·
+                cobertura {m.metrics.coverage} · {new Date(m.createdAt).toLocaleDateString('pt-BR')}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {selectedModel && <GatePanel model={selectedModel} />}
+      </div>
+
+      {/* ---------------- Sinais ---------------- */}
+      <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <p className="text-sm font-semibold text-gray-300">Sinais</p>
+          <div className="flex items-center gap-2">
+            <select
+              value={signalFilter}
+              onChange={(e) => setSignalFilter(e.target.value as 'TODOS' | 'ALTA_CONFIANCA')}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs"
+            >
+              <option value="ALTA_CONFIANCA">Somente alta confiança</option>
+              <option value="TODOS">Todas as empresas</option>
+            </select>
+            <button
+              onClick={() => void handleGenerate()}
+              disabled={!selectedVersion || generating || activeModels.length === 0}
+              className="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 rounded px-3 py-1 text-xs font-semibold"
+            >
+              {generating ? 'Gerando…' : 'Gerar sinais agora'}
+            </button>
+          </div>
+        </div>
+
+        {activeModels.length > 0 && (
+          <p className="text-xs text-gray-500">
+            <span className="text-gray-300 font-semibold">{highConfidence.length}</span> sinais de alta confiança em{' '}
+            <span className="text-gray-300 font-semibold">{predictions.length}</span> empresas avaliadas
+            {typeof predictionsMeta.generatedAt === 'string' && (
+              <> · gerado em {new Date(predictionsMeta.generatedAt).toLocaleString('pt-BR')}</>
+            )}
+          </p>
+        )}
+
+        {loadingPredictions ? (
+          <p className="text-xs text-gray-500">Carregando sinais…</p>
+        ) : visiblePredictions.length === 0 ? (
+          <p className="text-xs text-gray-500">
+            {activeModels.length === 0
+              ? 'Sem modelo aprovado, nenhum sinal é emitido.'
+              : predictions.length === 0
+                ? 'Nenhuma geração de sinais ainda para esta versão — use “Gerar sinais agora”.'
+                : 'Nenhuma empresa atingiu o gate de confiança nesta geração.'}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-800">
+                  <th className="text-left py-2 px-2">Ticker</th>
+                  <th className="text-left py-2 px-2">Sinal</th>
+                  <th className="text-right py-2 px-2">Confiança</th>
+                  <th className="text-right py-2 px-2">Prob. alta</th>
+                  <th className="text-left py-2 px-2">Conhecido em</th>
+                  <th className="text-left py-2 px-2">Principais fatores</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiblePredictions.map((p) => (
+                  <tr key={`${p.ticker}-${p.generatedAt}`} className="border-b border-gray-900 hover:bg-gray-900/40">
+                    <td className="py-2 px-2 font-mono text-gray-200">{p.ticker}</td>
+                    <td className="py-2 px-2">
+                      <span className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${SIGNAL_STYLES[p.signal]}`}>
+                        {p.signal}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-300">{pct(p.confidence)}</td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-500">{pct(p.prob)}</td>
+                    <td className="py-2 px-2 font-mono text-gray-500">{p.knowledgeDate.slice(0, 10)}</td>
+                    <td className="py-2 px-2 text-gray-400" title={p.topFeatures.map((f) => `${f.feature}: ${f.importance.toFixed(1)}`).join(' · ')}>
+                      {p.topFeatures.slice(0, 3).map((f) => f.feature).join(', ') || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[11px] text-gray-600 mt-2">
+              A importância dos fatores é global do modelo (ganho do LightGBM), não uma atribuição por empresa —
+              indica o que pesa no ensemble como um todo.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ---------------- Calibração ---------------- */}
+      {selectedModel && reliabilityData.length > 0 && (
+        <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-2">
+          <p className="text-sm font-semibold text-gray-300">Calibração (confiança prevista × frequência observada)</p>
+          <p className="text-xs text-gray-500">
+            Um modelo bem calibrado fica sobre a diagonal: quando diz 90%, acerta 90% das vezes.
+          </p>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={reliabilityData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                <XAxis dataKey="previsto" stroke="#6b7280" fontSize={11} unit="%" />
+                <YAxis domain={[0, 100]} stroke="#6b7280" fontSize={11} unit="%" />
+                <Tooltip
+                  contentStyle={{ background: '#111827', border: '1px solid #374151', fontSize: 12 }}
+                  formatter={(value: number, name: string) => [`${value}%`, name]}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="observado" name="Observado" stroke="#22d3ee" strokeWidth={2} dot />
+                <Line type="monotone" dataKey="perfeito" name="Calibração perfeita" stroke="#6b7280" strokeDasharray="4 4" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- Treinar ---------------- */}
+      <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-3">
+        <p className="text-sm font-semibold text-gray-300">Treinar novo modelo</p>
+        {costProfiles.length === 0 ? (
+          <p className="text-xs text-red-400">
+            Nenhum perfil de custos ativo — peça a um administrador para cadastrar um <code>BacktestCostProfile</code>{' '}
+            antes de treinar.
+          </p>
+        ) : (
+          <div className="flex items-end gap-3 flex-wrap">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Perfil de custos</label>
+              <select
+                value={selectedCostProfileId}
+                onChange={(e) => setSelectedCostProfileId(e.target.value)}
+                className="bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm min-w-[16rem]"
+              >
+                <option value="">Selecione um perfil…</option>
+                {costProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label} · v{p.version}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => void handleTrain()}
+              disabled={training || !selectedCostProfileId}
+              className="bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm font-semibold"
+            >
+              {training ? 'Treinando…' : 'Treinar (walk-forward trimestral)'}
+            </button>
+          </div>
+        )}
+        <p className="text-[11px] text-gray-600">
+          O treino roda o walk-forward anual completo e aplica os quatro gates no servidor. Um modelo reprovado é
+          persistido para auditoria, mas nunca fica servível.
+        </p>
+      </div>
+
+      {/* ---------------- Histórico ---------------- */}
+      <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-2">
+        <p className="text-sm font-semibold text-gray-300">Histórico de treinos ({allModels.length})</p>
+        {allModels.length === 0 ? (
+          <p className="text-xs text-gray-500">Nenhum treino registrado ainda.</p>
+        ) : (
+          <div className="space-y-2">
+            {allModels.map((m) => (
+              <details key={m.modelVersion} className="text-xs">
+                <summary className="cursor-pointer flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                      m.status === 'ACTIVE'
+                        ? 'bg-green-500/10 text-green-400 border-green-500/40'
+                        : m.status === 'FAILED'
+                          ? 'bg-red-500/10 text-red-400 border-red-500/40'
+                          : 'bg-gray-700/30 text-gray-400 border-gray-600/40'
+                    }`}
+                  >
+                    {m.status}
+                  </span>
+                  <span className="font-mono text-gray-400">{shortVersion(m.modelVersion)}</span>
+                  <span className="text-gray-600">{new Date(m.createdAt).toLocaleString('pt-BR')}</span>
+                  {m.gateFailures.length > 0 && (
+                    <span className="text-red-400">{m.gateFailures.length} de 4 gates reprovados</span>
+                  )}
+                </summary>
+                <div className="mt-2 pl-2 border-l border-gray-800">
+                  <GatePanel model={m} compact />
+                  <p className="text-[11px] text-gray-600 mt-2 font-mono">ResearchRun: {m.researchRunId}</p>
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+        {failedModels.length > 0 && (
+          <p className="text-[11px] text-gray-600">
+            {failedModels.length} tentativa(s) reprovada(s) permanecem registradas — nunca aparecem no seletor de
+            versão nem geram sinais.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+function GatePanel({ model, compact = false }: { model: DirectionalModel; compact?: boolean }): React.ReactElement {
+  const m = model.metrics;
+  return (
+    <div className={compact ? 'space-y-2' : 'space-y-3 pt-2'}>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {model.gateChecks.map((c) => (
+          <div
+            key={c.code}
+            className={`rounded border p-2 ${
+              c.passed ? 'bg-green-500/5 border-green-500/30' : 'bg-red-500/5 border-red-500/30'
+            }`}
+          >
+            <p className="text-[10px] text-gray-500 leading-tight">{c.label}</p>
+            <p className={`text-sm font-mono ${c.passed ? 'text-green-400' : 'text-red-400'}`}>
+              {c.code === 'COVERAGE_BELOW_MIN'
+                ? `${c.observed ?? '—'}`
+                : c.code === 'BRIER_ABOVE_MAX'
+                  ? num(c.observed)
+                  : pct(c.observed)}
+            </p>
+            <p className="text-[10px] text-gray-600">
+              exigido: {c.code === 'COVERAGE_BELOW_MIN'
+                ? `≥ ${c.threshold}`
+                : c.code === 'BRIER_ABOVE_MAX'
+                  ? `< ${c.threshold}`
+                  : `≥ ${pct(c.threshold, 0)}`}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[11px] font-mono text-gray-500">
+        <span>amostras: {m.nSamples}</span>
+        <span>alta confiança: {m.nHighConfidence}</span>
+        <span>acurácia geral: {pct(m.accuracyAllSamples)}</span>
+        <span>comprar-tudo: {pct(m.baselineAllUp)}</span>
+        <span>período da cobertura: {m.coveragePeriod ?? '—'}</span>
+        <span>
+          matriz: {m.confusionMatrix.truePositive}/{m.confusionMatrix.falsePositive}/
+          {m.confusionMatrix.trueNegative}/{m.confusionMatrix.falseNegative}
+        </span>
+      </div>
+
+      {m.byFold.length > 0 && (
+        <div className="text-[11px] text-gray-500 font-mono">
+          por ano:{' '}
+          {m.byFold.map((f) => (
+            <span key={f.foldId} className="mr-3">
+              {f.testYear}: {pct(f.accuracy)} ({f.nHighConfidence} sinais)
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
