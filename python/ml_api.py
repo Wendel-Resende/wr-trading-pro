@@ -43,7 +43,12 @@ _HASH64_RE = re.compile(r'^[0-9a-f]{64}$')
 # (B3_TICKER_PATTERN): raiz 1 letra + 3 alfanuméricos + 1-2 dígitos. Aceita
 # B3SA3, rejeita número puro; path-safe (sem / . .. separadores) — os símbolos
 # aceitos aqui compõem diretamente o path do snapshot.
-_TICKER_RE = re.compile(r'^[A-Z][A-Z0-9]{3}\d{1,2}$')
+# Âncora final `\Z` (não `$`): o `$` do Python, sem re.MULTILINE, casa ANTES
+# de um `\n` final ("PETR4\n" seria aceito por engano), enquanto o `$` do
+# JS não tem essa exceção. `\Z` casa apenas no fim absoluto da string,
+# replicando a semântica de isB3Ticker() em src/lib/b3-ticker.ts — o corpo
+# do padrão continua idêntico a B3_TICKER_PATTERN.
+_TICKER_RE = re.compile(r'^[A-Z][A-Z0-9]{3}\d{1,2}\Z')
 _MAX_LIMIT = 2000
 _DEFAULT_LIMIT = 500
 

@@ -239,6 +239,14 @@ def test_ticker_guard_accepts_b3sa3_and_rejects_path_traversal():
         rb = c.post('/ml/predict', json={'symbol': bad, 'artifactHash': valid_hash})
         assert rb.status_code == 400 and rb.get_json()['error'] == 'INVALID_SYMBOL', f'{bad} deve ser rejeitado'
 
+    # trailing newline: Python `$` (sem re.MULTILINE) casa ANTES de um \n
+    # final, então "PETR4\n"/"B3SA3\n" seriam aceitos por engano. `\Z` casa
+    # apenas no fim absoluto da string, replicando a semântica do `$` do
+    # JS (que não tem essa exceção de newline) usado em isB3Ticker().
+    for bad_nl in ['PETR4\n', 'B3SA3\n']:
+        rnl = c.post('/ml/predict', json={'symbol': bad_nl, 'artifactHash': valid_hash})
+        assert rnl.status_code == 400 and rnl.get_json()['error'] == 'INVALID_SYMBOL', f'{bad_nl!r} deve ser rejeitado (trailing newline)'
+
 def test_predictions_endpoint_corrupted_csv_never_500():
     deps = make_deps()
     app = create_app(deps); c = app.test_client()
