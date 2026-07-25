@@ -29,8 +29,16 @@ export async function GET(request: NextRequest) {
       ano = a;
       trimestre = t;
     }
+    const asOfRaw = searchParams.get('asOf');
+    let asOf: string | undefined;
+    if (asOfRaw !== null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfRaw) || Number.isNaN(Date.parse(asOfRaw))) {
+        return NextResponse.json({ error: 'Parâmetro "asOf" inválido (YYYY-MM-DD).' }, { status: 400 });
+      }
+      asOf = asOfRaw;
+    }
 
-    return NextResponse.json(sectorRanking(setor, indicator, ano, trimestre));
+    return NextResponse.json(sectorRanking(setor, indicator, ano, trimestre, asOf));
   } catch (error) {
     console.error('[api/cvm/sector-ranking]', error);
     return NextResponse.json({ error: 'Não foi possível montar o ranking setorial.' }, { status: 500 });

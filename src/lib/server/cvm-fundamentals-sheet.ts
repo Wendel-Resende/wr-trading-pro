@@ -71,6 +71,11 @@ export interface ValuationV1 {
 
 export interface FundamentalSheetV1 {
   company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
+  /** Data de corte "as of" (ISO) quando a ficha foi reconstruída para uma data
+   *  passada — só períodos cujo carimbo de conhecimento (prazo legal) <= corte.
+   *  `null` = visão completa atual. Limitação declarada: o corte usa o carimbo
+   *  ESTIMADO por prazo legal e o snapshot não versiona retificações. */
+  asOf: string | null;
   series: Record<string, FundamentalPointV1[]>;
   /** Decomposição DuPont do ROE por período (derivado no WR sobre fatores do pipeline). */
   dupont: DupontPointV1[];
@@ -157,7 +162,7 @@ function getFundamentalIndicators(cdCvm: string): FiRow[] {
 /** Multiplica por 100 preservando `null` (decimal → percentual para exibição). */
 const pct = (v: number | null): number | null => (v === null ? null : v * 100);
 
-export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null {
+export function buildFundamentalSheet(cdCvm: string, asOf?: string): FundamentalSheetV1 | null {
   const company = getCompany(cdCvm);
   if (!company) return null;
 
@@ -228,6 +233,11 @@ export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null 
     const q = qMap.get(key) ?? null;
     const [ano, trimestre] = key.split('T').map(Number);
     const dr = f?.dataRef ?? q?.dataRef ?? null;
+
+    // As-of por prazo legal: períodos ainda não conhecidos na data de corte
+    // ficam FORA de tudo (séries, DuPont, bandas, preço, mediana setorial —
+    // que usa lastEvPeriod, também filtrado aqui).
+    if (asOf && knowledgeDateFor(dr, ano, trimestre).iso > asOf) continue;
 
     // Indicadores: fonte única `fundamental_indicators` (decimal, 12M);
     // percentuais convertidos ×100 para exibição, razões em decimal.
@@ -331,6 +341,7 @@ export function buildFundamentalSheet(cdCvm: string): FundamentalSheetV1 | null 
 
   return {
     company: { cdCvm: company.cdCvm, ticker: company.ticker, nome: company.nome, setor: company.setor },
+    asOf: asOf ?? null,
     series,
     dupont,
     valuation,

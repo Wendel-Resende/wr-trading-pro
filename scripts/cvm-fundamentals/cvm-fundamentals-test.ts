@@ -129,6 +129,22 @@ function main(): void {
       assertLog(Array.isArray(sheet.series.evEbitda) && sheet.series.evEbitda.length > 0, 'série evEbitda presente na ficha');
     }
 
+    // --- smoke do as-of por prazo legal ---
+    if (sheet) {
+      const cut = '2020-01-01';
+      const past = buildFundamentalSheet(sheet.company.cdCvm, cut);
+      assertLog(past !== null && past.asOf === cut, 'ficha as-of ecoa a data de corte');
+      if (past) {
+        assertLog(past.series.roe.length < sheet.series.roe.length, 'as-of antigo tem menos períodos que a ficha completa');
+        assertLog(past.series.roe.every((p) => p.knowledgeDate <= cut), 'todo período da ficha as-of era conhecido até a data de corte');
+        assertLog(past.dupont.every((d) => d.knowledgeDate <= cut), 'dupont respeita o corte as-of');
+        const pr = past.valuation.precoRefPeriod;
+        assertLog(pr === null || knowledgeDateFor(null, pr.ano, pr.trimestre).iso <= cut, 'preço de referência do as-of era conhecido até o corte');
+      }
+      const rkPast = sectorRanking(bigSector, 'roe', undefined, undefined, cut);
+      assertLog(rkPast.period !== null && rkPast.knowledgeDate !== null && rkPast.knowledgeDate <= cut, 'ranking setorial as-of escolhe período já conhecido no corte');
+    }
+
     // dívida líq/EBITDA: menor é melhor → ordenado asc
     const rkDl = sectorRanking(bigSector, 'dividaLiquidaEbitda');
     const rankedDl = rkDl.rows.filter((r) => r.value !== null);

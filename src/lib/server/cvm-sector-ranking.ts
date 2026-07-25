@@ -105,7 +105,11 @@ export function sectorRanking(
   indicatorKey: IndicatorKey,
   ano?: number,
   trimestre?: number,
+  asOf?: string,
 ): SectorRanking {
+  // Corte de conhecimento: `asOf` (ISO) reconstrói o ranking como era naquela
+  // data (carimbo por prazo legal); sem asOf, vale hoje.
+  const cutoff = asOf ?? todayIso();
   const spec = INDICATORS[indicatorKey];
   const provenance = {
     db: 'data/cvm/cvm_fundamentos.db',
@@ -120,7 +124,7 @@ export function sectorRanking(
     period,
     knowledgeDate: period ? knowledgeDateFor(null, period.ano, period.trimestre).iso : null,
     estimadoPorPrazoLegal: true,
-    comparable: period ? knowledgeDateFor(null, period.ano, period.trimestre).iso <= todayIso() : false,
+    comparable: period ? knowledgeDateFor(null, period.ano, period.trimestre).iso <= cutoff : false,
     rows: [],
     stats: { n: 0, median: null, p25: null, p75: null, mean: null },
     provenance,
@@ -132,7 +136,7 @@ export function sectorRanking(
     period = { ano, trimestre };
   } else {
     const cands = candidatePeriods(setor, spec.col);
-    period = cands.find((p) => knowledgeDateFor(null, p.ano, p.trimestre).iso <= todayIso()) ?? cands[0] ?? null;
+    period = cands.find((p) => knowledgeDateFor(null, p.ano, p.trimestre).iso <= cutoff) ?? cands[0] ?? null;
   }
   if (!period) return empty(null);
 
@@ -177,7 +181,7 @@ export function sectorRanking(
     period,
     knowledgeDate: k.iso,
     estimadoPorPrazoLegal: k.estimadoPorPrazoLegal,
-    comparable: k.iso <= todayIso(),
+    comparable: k.iso <= cutoff,
     rows,
     stats,
     provenance,

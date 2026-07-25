@@ -172,6 +172,7 @@ interface ValuationUi {
 }
 interface FundamentalSheet {
   company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
+  asOf: string | null;
   series: Record<string, FundamentalPoint[]>;
   dupont: DupontPoint[];
   valuation: ValuationUi;
@@ -210,6 +211,9 @@ export default function CvmFundamentalsTab() {
   const [selIndicator, setSelIndicator] = useState<string>("roe");
   const [ranking, setRanking] = useState<SectorRanking | null>(null);
   const [loadingRanking, setLoadingRanking] = useState(false);
+  // "As of" por prazo legal: vazio = visão atual; data = reconstrução do que
+  // era conhecido até ela (carimbo estimado; snapshot sem retificações).
+  const [asOf, setAsOf] = useState<string>("");
   const [dividends, setDividends] = useState<DividendsData | null>(null);
   const [rankSearch, setRankSearch] = useState("");
   const [loadingList, setLoadingList] = useState(true);
@@ -248,14 +252,15 @@ export default function CvmFundamentalsTab() {
       return;
     }
     setSheet(null);
-    fetch(`/api/cvm/companies/${selected}/fundamentals`)
+    const qs = asOf ? `?asOf=${asOf}` : "";
+    fetch(`/api/cvm/companies/${selected}/fundamentals${qs}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((data) => setSheet(data))
       .catch(() => setError("Não foi possível carregar a ficha fundamentalista."));
-  }, [selected]);
+  }, [selected, asOf]);
 
   // Ranking de dividendos: carregado na primeira visita à visão
   useEffect(() => {
@@ -289,7 +294,7 @@ export default function CvmFundamentalsTab() {
   useEffect(() => {
     if (view !== "setorial" || !selSector || !selIndicator) return;
     setLoadingRanking(true);
-    fetch(`/api/cvm/sector-ranking?setor=${encodeURIComponent(selSector)}&indicator=${encodeURIComponent(selIndicator)}`)
+    fetch(`/api/cvm/sector-ranking?setor=${encodeURIComponent(selSector)}&indicator=${encodeURIComponent(selIndicator)}${asOf ? `&asOf=${asOf}` : ""}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -297,7 +302,7 @@ export default function CvmFundamentalsTab() {
       .then((data) => setRanking(data))
       .catch(() => setError("Não foi possível carregar o ranking setorial."))
       .finally(() => setLoadingRanking(false));
-  }, [view, selSector, selIndicator]);
+  }, [view, selSector, selIndicator, asOf]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -538,6 +543,22 @@ export default function CvmFundamentalsTab() {
                   <option key={i.key} value={i.key}>{i.label}</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider mb-1">Visão em (as of)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={asOf}
+                  onChange={(e) => setAsOf(e.target.value)}
+                  className="bg-cyber-dark border border-cyber-border rounded-lg px-3 py-2 text-sm text-gray-200 font-space"
+                />
+                {asOf && (
+                  <button onClick={() => setAsOf("")} className="text-xs text-cyber-cyan hover:text-white font-space">
+                    limpar
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -887,12 +908,29 @@ export default function CvmFundamentalsTab() {
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider">
                       Ficha Fundamentalista
+                      {sheet.asOf && <span className="ml-2 text-yellow-400 normal-case">as of {sheet.asOf}</span>}
                     </h3>
-                    {sheetStamp && (
-                      <span className="text-[0.65rem] text-gray-400 font-space">
-                        conhecimento estimado (prazo legal) — último: {sheetStamp.knowledgeDate}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <label className="text-[0.65rem] text-gray-400 font-space flex items-center gap-1.5">
+                        visão em:
+                        <input
+                          type="date"
+                          value={asOf}
+                          onChange={(e) => setAsOf(e.target.value)}
+                          className="bg-cyber-dark border border-cyber-border rounded px-2 py-1 text-xs text-gray-200 font-space"
+                        />
+                        {asOf && (
+                          <button onClick={() => setAsOf("")} className="text-cyber-cyan hover:text-white">
+                            limpar
+                          </button>
+                        )}
+                      </label>
+                      {sheetStamp && (
+                        <span className="text-[0.65rem] text-gray-400 font-space">
+                          conhecimento estimado (prazo legal) — último: {sheetStamp.knowledgeDate}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
