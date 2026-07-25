@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D + correção de rotulagem/calibração)
+Última atualização: 2026-07-25 (Item D + ranking transversal)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,102 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 10) — Troca de instrumento: ranking (branch `main`)
+
+Commits `81b7861` (alvo relativo) e `d8117c5` (instrumento + gates). Fecha a
+investigação "por que o modelo não tem sinal?" com a resposta oposta à
+esperada: **as features têm sinal; a classificação binária é que o destruía.**
+
+### Diagnóstico — IC por feature
+
+Spearman(feature, excesso de retorno) DENTRO de cada trimestre, 19 períodos:
+
+| feature | IC | t |
+|---|---|---|
+| `roic` | +0,127 | +3,41 |
+| `roa` | +0,123 | +3,39 |
+| `roe` | +0,119 | +2,77 |
+| `margem_ebit` | +0,103 | +3,50 |
+| `delta_roe` | +0,084 | **+3,75** |
+
+**16 de 28 features com |t| > 2.** Fator clássico de ações tem IC 0,02–0,05.
+O ensemble também tinha: IC +0,072, t = 2,16.
+
+### Por que a acurácia escondia isso
+
+A vantagem vive na ORDENAÇÃO dentro do trimestre. A classificação binária trata
+a empresa do percentil 51 igual à do percentil 99, enquanto o excesso entre
+quintis difere em pontos percentuais inteiros. Acurácia 52,1% (abaixo do
+baseline 52,2%) e IC 0,072 (t=2,16) descrevem o MESMO modelo.
+
+### O que mudou no código
+
+- `TARGET_MODE = 'sector_relative'`: y = 1 quando o retorno supera a mediana dos
+  pares do período. Referência é o MERCADO, com o setor entrando só quando tem
+  pares — a taxonomia CVM tem mediana de 2 empresas por (setor, período) e 305
+  grupos de UMA só. Efeito: acurácia geral 42,0% → 52,1%, Brier 0,291 → 0,252.
+- `_ranking_metrics()` no motor: IC + t-stat, excesso por quintil, spread
+  topo-fundo, `spreadByYear`, `positiveYearsRatio`.
+- **`gate.ts` REESCRITO** — a §4.7 original (acurácia ≥85%, Brier <0,15,
+  cobertura ≥30, delta ≥15 p.p.) media o instrumento errado. Agora:
+  IC ≥ 0,02 · t ≥ 2,0 · excesso do quintil superior ≥ 0,5%/tri · spread > 0 ·
+  ≥ 60% dos anos positivos. Os 4 códigos antigos PERMANECEM no domínio e no
+  Zod: versões já persistidas os têm e a auditoria precisa continuar legível.
+- UI: gráfico de barras de excesso por quintil + spread por ano.
+
+### Hipótese REJEITADA pela medição
+
+Previsão registrada antes de medir: rank-normalizar features por período
+melhoraria o ensemble. Piorou:
+
+    sem normalizar:  IC +0,0720  t +2,16  spread +1,17 p.p.
+    normalizando:    IC +0,0573  t +1,83  spread +0,89 p.p.
+
+`CROSS_SECTIONAL_NORMALIZATION = False` (configurável, medição no docstring).
+
+### Veredito atual: 4 de 5 gates
+
+| critério | limiar | obtido | |
+|---|---|---|---|
+| IC médio | ≥ 0,02 | 0,072 | ✅ |
+| t-stat | ≥ 2,0 | 2,16 | ✅ |
+| Excesso do quintil superior | ≥ 0,5%/tri | **+0,03%** | ❌ |
+| Spread topo−fundo | > 0 | +1,17 pp | ✅ |
+| Anos positivos | ≥ 60% | 75% | ✅ |
+
+Quintis: Q1 −1,13% · Q2 +0,06% · Q3 +1,97% · Q4 **+4,56%** · Q5 +0,03%.
+
+O spread positivo vem de Q1 ser ruim, não de Q5 ser bom. **Quem compra o topo
+precisa que o topo pague** — há teste dedicado a esse caso com os números reais.
+
+### Bloqueio de dados confirmado (não tentar de novo sem fonte nova)
+
+- XPMT5-DEMO limita D1 a **1248 barras (~5 anos)** para TODOS os instrumentos,
+  incluindo WIN$N e IBOV. `copy_rates_range` devolve o mesmo que
+  `copy_rates_from_pos`; repetir a chamada não aprofunda. Não é bug nosso.
+- `preco_ref` do snapshot CVM NÃO serve de alternativa: é constante por empresa
+  (ITUB4 = 40,04 em todo trimestre), não uma série temporal.
+- COTAHIST da B3 (`bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A<ano>.ZIP`)
+  baixa e parseia sem autenticação — verificado, 2020 e 2021. MAS é preço
+  NOMINAL contra o AJUSTADO do MT5: razão de 0,30 (PETR4) a 0,90 (WEGE3), e
+  não-constante. Usar nominal inverteria 5% dos rótulos no agregado e **22% em
+  TAEE11** — concentrado nos pagadores de dividendo, correlacionado com
+  `payout_ratio`, que é feature. Só vale com correção de proventos.
+
+### Correção de erro registrada
+
+A "vantagem de +4,3 p.p." do alvo relativo, reportada antes, estava ERRADA:
+comparava com "comprar tudo" (47,8%) em vez do melhor preditor constante
+("sempre baixa", 52,2%). O ganho real do alvo relativo está na calibração e na
+estabilidade, não em acurácia.
+
+### Em aberto
+
+Três leituras do quintil superior fraco, indistinguíveis com 4 anos: ruído nos
+extremos (324 obs em Q5); o escore mede qualidade e empresa excelente já está
+cara (prêmio no meio da distribuição — resultado conhecido); 60 pregões curto
+demais para fundamento virar preço.
 
 ## Sessão 2026-07-25 (cont. 9) — Rótulos fabricados + calibração (branch `main`)
 
