@@ -20,6 +20,47 @@ export function cashConversion(
   return { value: fco / lucroLiquido };
 }
 
+export interface DupontFactors {
+  /** Lucratividade — margem líquida (passthrough do pipeline). */
+  margemLiquida: number | null;
+  /** Eficiência — giro do ativo (receita/ativo, passthrough do pipeline). */
+  giroAtivo: number | null;
+  /** Alavancagem financeira = Ativo/PL = 1/pl_ativos (derivado no WR). */
+  alavancagem: number | null;
+  /** ROE reconstruído pelo produto dos três fatores (derivado no WR). */
+  roeReconstruido: number | null;
+  /** true/false se o produto bate com o ROE do pipeline dentro da tolerância;
+   *  null quando não há ROE do pipeline para comparar (não fabrica veredito). */
+  consistente: boolean | null;
+}
+
+/**
+ * Decomposição DuPont do ROE: ROE = margem líquida × giro do ativo ×
+ * alavancagem financeira (Ativo/PL = 1/pl_ativos). Os fatores vêm do pipeline;
+ * a alavancagem e o produto são derivados no WR. A checagem `consistente`
+ * compara o produto com o ROE reportado pelo pipeline (identidade contábil) —
+ * honesta: sinaliza divergência em vez de esconder, e fica `null` sem base de
+ * comparação. Nunca fabrica: fator ausente ou `pl_ativos` não-positivo → null.
+ */
+export function dupontFactors(
+  margemLiquida: number | null,
+  giroAtivos: number | null,
+  plAtivos: number | null,
+  roePipeline: number | null,
+): DupontFactors {
+  const alavancagem = plAtivos !== null && plAtivos > 0 ? 1 / plAtivos : null;
+  const roeReconstruido =
+    margemLiquida !== null && giroAtivos !== null && alavancagem !== null
+      ? margemLiquida * giroAtivos * alavancagem
+      : null;
+  let consistente: boolean | null = null;
+  if (roeReconstruido !== null && roePipeline !== null) {
+    const tol = Math.max(0.01, 0.05 * Math.abs(roePipeline));
+    consistente = Math.abs(roeReconstruido - roePipeline) <= tol;
+  }
+  return { margemLiquida, giroAtivo: giroAtivos, alavancagem, roeReconstruido, consistente };
+}
+
 /** Fim do período civil (UTC): T1→31/03, T2→30/06, T3→30/09, T4→31/12. */
 function endOfCivilQuarter(ano: number, trimestre: number): Date {
   const endMonthDay: Record<number, [number, number]> = {

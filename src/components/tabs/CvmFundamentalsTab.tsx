@@ -137,9 +137,21 @@ interface FundamentalPoint {
   estimadoPorPrazoLegal: boolean;
   note?: string;
 }
+interface DupontPoint {
+  period: { ano: number; trimestre: number };
+  margemLiquida: number | null;
+  giroAtivo: number | null;
+  alavancagem: number | null;
+  roeReconstruido: number | null;
+  roePipeline: number | null;
+  consistente: boolean | null;
+  knowledgeDate: string;
+  estimadoPorPrazoLegal: boolean;
+}
 interface FundamentalSheet {
   company: { cdCvm: string; ticker: string; nome: string; setor: string | null };
   series: Record<string, FundamentalPoint[]>;
+  dupont: DupontPoint[];
   provenance: {
     db: string;
     tables: string[];
@@ -265,6 +277,14 @@ export default function CvmFundamentalsTab() {
     });
   }, [sheet]);
   const sheetStamp = sheet?.series.roe?.[sheet.series.roe.length - 1] ?? null;
+  const dupontRows = useMemo(() => (sheet?.dupont ?? []).slice(-8).reverse(), [sheet]);
+  const dupontLatest = useMemo(() => {
+    const d = sheet?.dupont ?? [];
+    for (let i = d.length - 1; i >= 0; i -= 1) {
+      if (d[i].roePipeline !== null && d[i].roeReconstruido !== null) return d[i];
+    }
+    return null;
+  }, [sheet]);
 
   return (
     <div className="space-y-6">
@@ -741,7 +761,7 @@ export default function CvmFundamentalsTab() {
                           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}x`]} />
                           <Legend />
                           <ReferenceLine y={0} stroke="#475569" />
-                          <Line type="monotone" dataKey="dividaPl" name="Dívida/PL" stroke="#f59e0b" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="dividaBrutaPl" name="Dívida/PL" stroke="#f59e0b" dot={false} strokeWidth={2} connectNulls />
                           <Line type="monotone" dataKey="dividaLiquidaEbitda" name="Dív. Líq./EBITDA" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
                         </LineChart>
                       </ResponsiveContainer>
@@ -775,6 +795,88 @@ export default function CvmFundamentalsTab() {
                       </ResponsiveContainer>
                     </div>
                   </div>
+
+                  {/* Decomposição do Retorno (DuPont) + ROE vs ROIC */}
+                  {sheet.dupont.length > 0 && (
+                    <div className="border-t border-cyber-border/40 pt-5 space-y-4">
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider">
+                        Decomposição do Retorno (DuPont) · <span className="text-cyber-cyan">derivado no WR</span>
+                      </p>
+                      {dupontLatest && (
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-space">
+                          <span className="text-cyber-cyan font-bold">
+                            ROE {dupontLatest.roePipeline === null ? "—" : dupontLatest.roePipeline.toFixed(1)}%
+                          </span>
+                          <span className="text-gray-500">=</span>
+                          <span className="text-gray-200">Margem Líq. {dupontLatest.margemLiquida === null ? "—" : dupontLatest.margemLiquida.toFixed(1)}%</span>
+                          <span className="text-gray-500">×</span>
+                          <span className="text-gray-200">Giro {dupontLatest.giroAtivo === null ? "—" : dupontLatest.giroAtivo.toFixed(2)}</span>
+                          <span className="text-gray-500">×</span>
+                          <span className="text-gray-200">Alavancagem {dupontLatest.alavancagem === null ? "—" : dupontLatest.alavancagem.toFixed(2)}×</span>
+                          <span
+                            className={`ml-1 text-xs px-2 py-0.5 rounded ${
+                              dupontLatest.consistente === true
+                                ? "text-emerald-400 border border-emerald-400/40"
+                                : dupontLatest.consistente === false
+                                ? "text-yellow-400 border border-yellow-400/40"
+                                : "text-gray-500 border border-gray-500/40"
+                            }`}
+                          >
+                            {dupontLatest.consistente === true
+                              ? `✓ identidade fecha (recon. ${dupontLatest.roeReconstruido === null ? "—" : dupontLatest.roeReconstruido.toFixed(1)}%)`
+                              : dupontLatest.consistente === false
+                              ? `⚠ divergência (recon. ${dupontLatest.roeReconstruido === null ? "—" : dupontLatest.roeReconstruido.toFixed(1)}%)`
+                              : "sem checagem"}
+                          </span>
+                        </div>
+                      )}
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs font-space">
+                            <thead>
+                              <tr className="text-left text-gray-400 border-b border-cyber-border">
+                                <th className="py-1.5 pr-3">Período</th>
+                                <th className="py-1.5 pr-3">Margem Líq.</th>
+                                <th className="py-1.5 pr-3">Giro</th>
+                                <th className="py-1.5 pr-3">Alav.</th>
+                                <th className="py-1.5 pr-3">ROE</th>
+                                <th className="py-1.5">Ident.</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {dupontRows.map((d) => (
+                                <tr key={`${d.period.ano}T${d.period.trimestre}`} className="border-b border-cyber-border/40 text-gray-200">
+                                  <td className="py-1.5 pr-3 font-bold">{d.period.ano}T{d.period.trimestre}</td>
+                                  <td className="py-1.5 pr-3">{d.margemLiquida === null ? "—" : `${d.margemLiquida.toFixed(1)}%`}</td>
+                                  <td className="py-1.5 pr-3">{d.giroAtivo === null ? "—" : d.giroAtivo.toFixed(2)}</td>
+                                  <td className="py-1.5 pr-3">{d.alavancagem === null ? "—" : `${d.alavancagem.toFixed(2)}×`}</td>
+                                  <td className="py-1.5 pr-3">{d.roePipeline === null ? "—" : `${d.roePipeline.toFixed(1)}%`}</td>
+                                  <td className="py-1.5">
+                                    {d.consistente === true ? <span className="text-emerald-400">✓</span> : d.consistente === false ? <span className="text-yellow-400">⚠</span> : <span className="text-gray-600">—</span>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">ROE vs ROIC (%) — gap ≈ efeito da alavancagem</p>
+                          <ResponsiveContainer width="100%" height={200}>
+                            <LineChart data={sheetChart}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                              <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                              <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                              <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}%`]} />
+                              <Legend />
+                              <ReferenceLine y={0} stroke="#475569" />
+                              <Line type="monotone" dataKey="roe" name="ROE" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
+                              <Line type="monotone" dataKey="roic" name="ROIC" stroke="#a855f7" dot={false} strokeWidth={2} connectNulls />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="border-t border-cyber-border/40 pt-3 text-[0.7rem] text-gray-400 font-space space-y-1">
                     <p>

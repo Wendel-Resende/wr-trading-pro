@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE } from '../../src/lib/server/cvm-fundamentals-derive';
+import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors } from '../../src/lib/server/cvm-fundamentals-derive';
 import { buildFundamentalSheet } from '../../src/lib/server/cvm-fundamentals-sheet';
 import { listCompanies } from '../../src/lib/server/cvm-legacy-db';
 
@@ -27,6 +27,20 @@ function main(): void {
   assertLog(k3.iso === '2024-11-14', 'T3 sem data_ref: fim civil 2024-09-30 + 45d = 2024-11-14');
   assertLog(typeof LEGAL_LAG_RULE === 'string' && LEGAL_LAG_RULE.length > 0, 'regra de prazo documentada');
 
+  // --- decomposição DuPont (ROE = margem líq × giro do ativo × alavancagem) ---
+  // ABEV3 real: 0.1822 × 0.6131 × (1/0.6264) ≈ 0.1783 (bate com o ROE do pipeline)
+  const d1 = dupontFactors(0.1821724239464315, 0.6131173841939429, 0.6264364635152538, 0.17829913574241726);
+  assertLog(Math.abs((d1.alavancagem ?? 0) - 1.5963) < 1e-3, 'alavancagem = 1/pl_ativos ≈ 1.5963');
+  assertLog(d1.roeReconstruido !== null && Math.abs(d1.roeReconstruido - 0.1783) < 1e-3, 'produto DuPont reconstrói ROE ≈ 0.1783');
+  assertLog(d1.consistente === true, 'reconstrução consistente com o ROE do pipeline');
+  // divergência flagada
+  const d2 = dupontFactors(0.2, 0.5, 0.5, 0.9);
+  assertLog(d2.consistente === false, 'produto (0.2) distante do ROE do pipeline (0.9) → inconsistente');
+  // pl_ativos ausente/zero → alavancagem null, sem fabricar
+  assertLog(dupontFactors(0.2, 0.5, 0, 0.1).alavancagem === null, 'pl_ativos=0 → alavancagem null');
+  assertLog(dupontFactors(0.2, null, 0.5, 0.1).roeReconstruido === null, 'giro ausente → roeReconstruido null');
+  assertLog(dupontFactors(null, 0.5, 0.5, null).consistente === null, 'sem ROE do pipeline → consistente null (não checa)');
+
   // --- smoke read-only do assembler (só se o banco existir no ambiente) ---
   if (existsSync('data/cvm/cvm_fundamentos.db')) {
     const first = listCompanies()[0];
@@ -43,6 +57,15 @@ function main(): void {
       assertLog(sheet.series.conversaoCaixa.every((p) => p.value === null || Number.isFinite(p.value)), 'conversaoCaixa é número finito ou null explícito');
       const withNote = sheet.series.conversaoCaixa.filter((p) => p.note);
       assertLog(withNote.every((p) => p.value === null), 'todo ponto de conversaoCaixa com nota tem value null (nunca fabricado)');
+      // DuPont: bloco presente; onde há os 3 fatores + ROE do pipeline, a reconstrução deve ser majoritariamente consistente
+      assertLog(Array.isArray(sheet.dupont) && sheet.dupont.length > 0, 'bloco dupont presente e não vazio');
+      const checaveis = sheet.dupont.filter((d) => d.consistente !== null);
+      if (checaveis.length > 0) {
+        const okRate = checaveis.filter((d) => d.consistente).length / checaveis.length;
+        assertLog(okRate >= 0.8, `identidade DuPont reconstrói ROE do pipeline na maioria dos períodos (${(okRate * 100).toFixed(0)}%)`);
+      } else {
+        console.log('ok: nenhum período DuPont checável neste ticker (sem os 3 fatores + ROE)');
+      }
     }
   } else {
     console.log('ok: smoke da ficha pulado (banco CVM ausente no ambiente)');
