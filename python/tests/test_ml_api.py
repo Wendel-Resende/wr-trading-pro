@@ -215,6 +215,30 @@ def test_snapshot_bars_endpoint_paginates_in_stable_order_even_if_artifact_is_sh
     page_b = c.get(f'/ml/snapshot-bars/{universe_digest}?symbol=WEGE3&limit={limit}&offset=0').get_json()
     assert page_a['rows'] == page_b['rows']
 
+def test_ticker_guard_accepts_b3sa3_and_rejects_path_traversal():
+    """Item 5 (unificação de regex): _TICKER_RE do Flask deve aceitar o
+    padrao canonico B3 (raiz alfanumerica de 4 chars + 1-2 digitos, ex.
+    B3SA3), sincronizado manualmente com B3_TICKER_PATTERN de
+    src/lib/b3-ticker.ts. Simultaneamente, símbolos que não são tickers
+    válidos (path-traversal, separadores, número puro) continuam
+    rejeitados, pois compõem diretamente o path do snapshot em disco."""
+    deps = make_deps()
+    app = create_app(deps); c = app.test_client()
+    valid_hash = 'a' * 64
+
+    # B3SA3 (raiz alfanumérica "B3SA" + dígito "3") deve passar da guarda de
+    # símbolo — não é INVALID_SYMBOL. Como não há artefato no disco para
+    # valid_hash, a resposta esperada é MODEL_NOT_FOUND.
+    r = c.post('/ml/predict', json={'symbol': 'B3SA3', 'artifactHash': valid_hash})
+    assert r.get_json().get('error') != 'INVALID_SYMBOL', 'B3SA3 deve ser aceito pela guarda de ticker'
+    assert r.status_code == 404 and r.get_json()['error'] == 'MODEL_NOT_FOUND'
+
+    # path-traversal/lixo nunca deve compor o path do snapshot: rejeitado
+    # ANTES de qualquer acesso a filesystem.
+    for bad in ['../etc', 'A/B', 'foo.bar', '123456']:
+        rb = c.post('/ml/predict', json={'symbol': bad, 'artifactHash': valid_hash})
+        assert rb.status_code == 400 and rb.get_json()['error'] == 'INVALID_SYMBOL', f'{bad} deve ser rejeitado'
+
 def test_predictions_endpoint_corrupted_csv_never_500():
     deps = make_deps()
     app = create_app(deps); c = app.test_client()
@@ -250,6 +274,7 @@ if __name__ == '__main__':
     test_snapshot_bars_endpoint_validation_and_pagination()
     test_predictions_endpoint_paginates_in_stable_order_even_if_artifact_is_shuffled()
     test_snapshot_bars_endpoint_paginates_in_stable_order_even_if_artifact_is_shuffled()
+    test_ticker_guard_accepts_b3sa3_and_rejects_path_traversal()
     test_predictions_endpoint_corrupted_csv_never_500()
     test_snapshot_bars_endpoint_corrupted_parquet_never_leaks_detail()
     print('test_ml_api: OK')

@@ -39,7 +39,11 @@ _JOB_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 # validados ANTES de qualquer acesso a filesystem, para eliminar risco de
 # path traversal via valor de path malformado.
 _HASH64_RE = re.compile(r'^[0-9a-f]{64}$')
-_TICKER_RE = re.compile(r'^[A-Z]{4}\d{1,2}$')
+# Padrão canônico de ticker B3 — DEVE ser idêntico ao de src/lib/b3-ticker.ts
+# (B3_TICKER_PATTERN): raiz 1 letra + 3 alfanuméricos + 1-2 dígitos. Aceita
+# B3SA3, rejeita número puro; path-safe (sem / . .. separadores) — os símbolos
+# aceitos aqui compõem diretamente o path do snapshot.
+_TICKER_RE = re.compile(r'^[A-Z][A-Z0-9]{3}\d{1,2}$')
 _MAX_LIMIT = 2000
 _DEFAULT_LIMIT = 500
 
