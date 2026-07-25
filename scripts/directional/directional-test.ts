@@ -61,6 +61,25 @@ function metrics(overrides: Partial<DirectionalMetrics> = {}): DirectionalMetric
     confusionMatrix: { truePositive: 200, falsePositive: 20, trueNegative: 160, falseNegative: 20 },
     reliability: [{ binStart: 0.9, binEnd: 1, n: 100, meanPredicted: 0.95, observedRate: 0.94 }],
     byFold: [{ foldId: 0, testYear: 2025, n: 500, nHighConfidence: 100, accuracy: 0.9, brier: 0.1 }],
+    // Métricas de RANKING — é o que o gate atual avalia.
+    ic: 0.08,
+    icTStat: 2.5,
+    icPeriods: 13,
+    quantileExcess: [
+      { quantile: 1, n: 320, meanExcess: -0.02, hitRate: 0.44 },
+      { quantile: 2, n: 320, meanExcess: 0.0, hitRate: 0.48 },
+      { quantile: 3, n: 320, meanExcess: 0.01, hitRate: 0.5 },
+      { quantile: 4, n: 320, meanExcess: 0.02, hitRate: 0.52 },
+      { quantile: 5, n: 320, meanExcess: 0.04, hitRate: 0.56 },
+    ],
+    topBottomSpread: 0.06,
+    spreadByYear: [
+      { testYear: 2023, spread: 0.02 },
+      { testYear: 2024, spread: 0.05 },
+      { testYear: 2025, spread: -0.01 },
+      { testYear: 2026, spread: 0.04 },
+    ],
+    positiveYearsRatio: 0.75,
     ...overrides,
   };
 }
@@ -112,40 +131,61 @@ function fakePort(train: DirectionalTrainResponse, predict?: DirectionalPredictR
 // ---------------------------------------------------------------------------
 function gateTests(): void {
   const approved = evaluateDirectionalGate(metrics());
-  assert(approved.approved && approved.failures.length === 0, 'gate aprova métricas acima de todos os limiares');
-  assert(approved.checks.length === 4, 'gate expõe as 4 conferências da §4.7');
+  assert(approved.approved && approved.failures.length === 0, 'gate aprova um fator com IC significativo e topo lucrativo');
+  assert(approved.checks.length === 5, 'gate expõe as 5 conferências do instrumento de ranking');
 
   assert(
-    evaluateDirectionalGate(metrics({ accuracy: 0.84 })).failures.includes('ACCURACY_BELOW_MIN'),
-    'gate 1 reprova acurácia abaixo de 85%',
+    evaluateDirectionalGate(metrics({ ic: 0.01 })).failures.includes('IC_BELOW_MIN'),
+    'gate 1 reprova IC abaixo de 0,02',
   );
   assert(
-    evaluateDirectionalGate(metrics({ brier: 0.15 })).failures.includes('BRIER_ABOVE_MAX'),
-    'gate 2 reprova Brier igual ao teto (limite é estrito)',
-  );
-  assert(
-    evaluateDirectionalGate(metrics({ coverage: 29 })).failures.includes('COVERAGE_BELOW_MIN'),
-    'gate 3 reprova cobertura abaixo de 30 empresas',
-  );
-  assert(
-    evaluateDirectionalGate(metrics({ baselineDelta: 0.149 })).failures.includes('BASELINE_DELTA_BELOW_MIN'),
-    'gate 4 reprova vantagem abaixo de 15pp',
+    evaluateDirectionalGate(metrics({ icTStat: 1.9 })).failures.includes('IC_TSTAT_BELOW_MIN'),
+    'gate 2 reprova IC sem significância (t < 2)',
   );
 
-  // Métrica ausente NUNCA passa: ausência de evidência não é aprovação.
-  const semSinal = evaluateDirectionalGate(metrics({ accuracy: null, baselineDelta: null, nHighConfidence: 0, coverage: 0 }));
-  assert(!semSinal.approved, 'gate reprova quando não houve nenhum sinal de alta confiança');
+  // O caso REAL medido em 2026-07-25: IC significativo, mas o quintil superior
+  // não paga — o spread vinha inteiramente do quintil inferior ser ruim.
+  const topoVazio = evaluateDirectionalGate(metrics({
+    ic: 0.072,
+    icTStat: 2.16,
+    quantileExcess: [
+      { quantile: 1, n: 327, meanExcess: -0.0113, hitRate: 0.44 },
+      { quantile: 2, n: 318, meanExcess: 0.0006, hitRate: 0.48 },
+      { quantile: 3, n: 321, meanExcess: 0.0197, hitRate: 0.5 },
+      { quantile: 4, n: 318, meanExcess: 0.0456, hitRate: 0.52 },
+      { quantile: 5, n: 324, meanExcess: 0.0003, hitRate: 0.5 },
+    ],
+    topBottomSpread: 0.0117,
+    positiveYearsRatio: 0.75,
+  }));
+  assert(!topoVazio.approved, 'IC significativo NÃO basta: o topo precisa pagar');
   assert(
-    semSinal.failures.includes('ACCURACY_BELOW_MIN') && semSinal.failures.includes('BASELINE_DELTA_BELOW_MIN'),
-    'métrica null conta como reprovação explícita, não como aprovação silenciosa',
+    topoVazio.failures.length === 1 && topoVazio.failures[0] === 'TOP_QUANTILE_EXCESS_BELOW_MIN',
+    'reprova exatamente por quintil superior sem retorno — os demais critérios passam',
   );
 
   assert(
-    DIRECTIONAL_GATE_THRESHOLDS.minAccuracy === 0.85 &&
-      DIRECTIONAL_GATE_THRESHOLDS.maxBrier === 0.15 &&
-      DIRECTIONAL_GATE_THRESHOLDS.minCoverage === 30 &&
-      DIRECTIONAL_GATE_THRESHOLDS.minBaselineDelta === 0.15,
-    'limiares do gate são exatamente os da spec §4.7',
+    evaluateDirectionalGate(metrics({ topBottomSpread: -0.01 })).failures.includes('TOP_BOTTOM_SPREAD_BELOW_MIN'),
+    'gate 4 reprova spread topo-fundo negativo',
+  );
+  assert(
+    evaluateDirectionalGate(metrics({ positiveYearsRatio: 0.5 })).failures.includes('INCONSISTENT_ACROSS_YEARS'),
+    'gate 5 reprova fator que funciona em menos de 60% dos anos',
+  );
+
+  // Métrica ausente NUNCA passa (versão antiga, treinada pelo gate anterior).
+  const semRanking = evaluateDirectionalGate(metrics({
+    ic: null, icTStat: null, quantileExcess: undefined, topBottomSpread: null, positiveYearsRatio: null,
+  }));
+  assert(!semRanking.approved && semRanking.failures.length === 5,
+    'métricas de ranking ausentes reprovam em tudo — ausência de evidência não é aprovação');
+
+  assert(
+    DIRECTIONAL_GATE_THRESHOLDS.minIc === 0.02 &&
+      DIRECTIONAL_GATE_THRESHOLDS.minIcTStat === 2.0 &&
+      DIRECTIONAL_GATE_THRESHOLDS.minTopQuantileExcess === 0.005 &&
+      DIRECTIONAL_GATE_THRESHOLDS.minPositiveYearsRatio === 0.6,
+    'limiares do gate de ranking conforme documentado',
   );
 
   console.log('directional gate: OK');
@@ -192,11 +232,15 @@ async function trainingTests(prisma: PrismaClient): Promise<void> {
   // --- test_api_train (caminho reprovado) ---
   const rejectedService = new DirectionalService({
     prisma,
-    mlApi: fakePort(trainResponse({ modelVersion: HASH_B, metrics: metrics({ accuracy: 0.55, brier: 0.33, coverage: 1, baselineDelta: 0.12 }) })),
+    mlApi: fakePort(trainResponse({ modelVersion: HASH_B, metrics: metrics({
+      ic: 0.005, icTStat: 0.4, topBottomSpread: -0.02, positiveYearsRatio: 0.25,
+      quantileExcess: [{ quantile: 1, n: 300, meanExcess: 0.01, hitRate: 0.5 },
+                       { quantile: 5, n: 300, meanExcess: -0.01, hitRate: 0.48 }],
+    }) })),
   });
   const rejected = await rejectedService.runTraining('test-user', costProfile.id);
   assert(rejected.status === 'FAILED', 'treino reprovado no gate vira FAILED, não some');
-  assert(rejected.gate.failures.length === 4, 'os 4 gates reprovados são registrados');
+  assert(rejected.gate.failures.length === 5, 'os 5 gates reprovados são registrados');
   const rejectedRun = await prisma.researchRun.findUnique({ where: { runId: rejected.researchRunId } });
   assert(rejectedRun !== null && rejectedRun.modelVersionId === null,
     'ResearchRun de treino reprovado existe mas NÃO é linkado a versão ativa');
@@ -241,7 +285,7 @@ async function modelVersionLifecycleTests(prisma: PrismaClient): Promise<void> {
   const dto = toDirectionalModelVersionPublicDTO(ativas[0]);
   assert(!JSON.stringify(dto).includes('model.pkl'), 'DTO público NUNCA expõe artifactPath (path do servidor)');
   assert(!JSON.stringify(dto).includes('wr_trade_pro_'), 'DTO público não contém nenhum trecho de caminho local');
-  assert(dto.gateChecks.length === 4 && dto.gateApproved, 'DTO carrega as conferências do gate para a UI');
+  assert(dto.gateChecks.length === 5 && dto.gateApproved, 'DTO carrega as conferências do gate para a UI');
 
   console.log('directional model lifecycle: OK');
 }

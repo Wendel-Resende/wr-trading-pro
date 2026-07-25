@@ -16,10 +16,17 @@ export const ModelVersionIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const DirectionalSignalSchema = z.enum(['COMPRA', 'VENDA', 'NEUTRO']);
 export const DirectionalModelStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'FAILED', 'SUPERSEDED']);
 export const DirectionalGateFailureCodeSchema = z.enum([
+  // Gate de classificação (histórico — versões antigas têm estes persistidos).
   'ACCURACY_BELOW_MIN',
   'BRIER_ABOVE_MAX',
   'COVERAGE_BELOW_MIN',
   'BASELINE_DELTA_BELOW_MIN',
+  // Gate de ranking (atual).
+  'IC_BELOW_MIN',
+  'IC_TSTAT_BELOW_MIN',
+  'TOP_QUANTILE_EXCESS_BELOW_MIN',
+  'TOP_BOTTOM_SPREAD_BELOW_MIN',
+  'INCONSISTENT_ACROSS_YEARS',
 ]);
 
 const FiniteNumber = z.number().finite();
@@ -47,6 +54,23 @@ export const DirectionalMetricsSchema = z.object({
   calibrated: z.boolean().optional(),
   brierRaw: FiniteNumber.min(0).max(1).nullable().optional(),
   nHighConfidenceRaw: z.number().int().nonnegative().nullable().optional(),
+  // Métricas de ranking (instrumento atual). Opcionais: versões treinadas
+  // antes de 2026-07-25 não as têm, e a auditoria precisa continuar legível.
+  ic: FiniteNumber.min(-1).max(1).nullable().optional(),
+  icTStat: FiniteNumber.nullable().optional(),
+  icPeriods: z.number().int().nonnegative().optional(),
+  quantileExcess: z
+    .array(z.object({
+      quantile: z.number().int().positive(),
+      n: z.number().int().nonnegative(),
+      meanExcess: FiniteNumber,
+      hitRate: Probability,
+    }))
+    .max(20)
+    .optional(),
+  topBottomSpread: FiniteNumber.nullable().optional(),
+  spreadByYear: z.array(z.object({ testYear: z.number().int(), spread: FiniteNumber })).max(50).optional(),
+  positiveYearsRatio: Probability.nullable().optional(),
   confusionMatrix: z.object({
     truePositive: z.number().int().nonnegative(),
     falsePositive: z.number().int().nonnegative(),

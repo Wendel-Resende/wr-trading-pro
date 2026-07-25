@@ -43,6 +43,13 @@ export interface DirectionalModelVersionPublicDTO {
     readonly calibrated?: boolean;
     readonly brierRaw?: number | null;
     readonly nHighConfidenceRaw?: number | null;
+    readonly ic?: number | null;
+    readonly icTStat?: number | null;
+    readonly icPeriods?: number;
+    readonly quantileExcess?: DirectionalModelVersion['metrics']['quantileExcess'];
+    readonly topBottomSpread?: number | null;
+    readonly spreadByYear?: DirectionalModelVersion['metrics']['spreadByYear'];
+    readonly positiveYearsRatio?: number | null;
     readonly confusionMatrix: DirectionalModelVersion['metrics']['confusionMatrix'];
     readonly reliability: DirectionalModelVersion['metrics']['reliability'];
     readonly byFold: DirectionalModelVersion['metrics']['byFold'];

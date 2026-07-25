@@ -162,7 +162,36 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000, interv
  * Item D: métricas que passam/reprovam os 4 gates do classificador direcional
  * (§4.7). Substituem os antigos blocos de bootstrap do gate híbrido.
  */
+const RANKING_FORTE = {
+  // Métricas do gate de RANKING (instrumento atual, desde 2026-07-25).
+  ic: 0.08,
+  icTStat: 2.6,
+  icPeriods: 13,
+  quantileExcess: [
+    { quantile: 1, n: 320, meanExcess: -0.02, hitRate: 0.44 },
+    { quantile: 5, n: 320, meanExcess: 0.04, hitRate: 0.56 },
+  ],
+  topBottomSpread: 0.06,
+  spreadByYear: [{ testYear: 2024, spread: 0.05 }, { testYear: 2025, spread: 0.04 },
+                 { testYear: 2026, spread: -0.01 }],
+  positiveYearsRatio: 0.67,
+};
+
+const RANKING_FRACO = {
+  ic: 0.004,
+  icTStat: 0.3,
+  icPeriods: 13,
+  quantileExcess: [
+    { quantile: 1, n: 320, meanExcess: 0.01, hitRate: 0.5 },
+    { quantile: 5, n: 320, meanExcess: -0.01, hitRate: 0.47 },
+  ],
+  topBottomSpread: -0.02,
+  spreadByYear: [{ testYear: 2024, spread: -0.02 }],
+  positiveYearsRatio: 0.0,
+};
+
 const STRONG_METRICS = {
+  ...RANKING_FORTE,
   nSamples: 2000,
   nHighConfidence: 400,
   accuracy: 0.92,
@@ -181,6 +210,7 @@ const STRONG_METRICS = {
 /** Reprova nos 4 gates simultaneamente — números próximos dos reais de 2026-07-25. */
 const WEAK_METRICS = {
   ...STRONG_METRICS,
+  ...RANKING_FRACO,
   accuracy: 0.556,
   brier: 0.329,
   coverage: 1,

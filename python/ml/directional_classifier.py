@@ -86,6 +86,31 @@ _MIN_CALIBRATION_ROWS = 100
 #: ~50% por construção, então o baseline "comprar tudo" deixa de ser um alvo
 #: móvel e o gate 4 (vantagem >= 15 p.p.) vira um teste real de habilidade.
 TARGET_MODE = 'sector_relative'
+
+#: Normalização TRANSVERSAL das features (rank dentro de cada período).
+#:
+#: Diagnóstico de 2026-07-25 que motivou: as features carregam sinal
+#: transversal forte (IC de `roic` = 0,127 com t = 3,41; 16 de 28 features com
+#: |t| > 2), mas o ensemble treinava sobre NÍVEIS ABSOLUTOS empilhados no
+#: tempo e não extraía nada. ROE de 18% não significa a mesma coisa em 2021 e
+#: em 2025 — sem normalizar por período, o modelo teria de aprender o contexto
+#: macro sozinho a partir de 19 trimestres.
+#:
+#: Rank (percentil) em vez de z-score: é imune a outlier contábil (EV/EBITDA de
+#: 649× já apareceu neste projeto) e é exatamente a escala em que o sinal foi
+#: medido (Spearman). Centrado em 0 para que "mediana do período" seja o zero.
+#:
+#: DEFAULT = False. A hipótese era que normalizar melhoraria o ensemble; foi
+#: MEDIDA e REJEITADA em 2026-07-25 — piorou em todas as métricas:
+#:
+#:     sem normalizar:  IC +0,0720  t +2,16  spread topo-fundo +1,17 p.p.
+#:     normalizando:    IC +0,0573  t +1,83  spread topo-fundo +0,89 p.p.
+#:
+#: Explicação provável: as árvores já particionam por limiar, o que as torna
+#: invariantes a transformação monótona DENTRO de um período; ranquear apenas
+#: destrói a informação de NÍVEL que distingue um trimestre de outro. Mantido
+#: como opção configurável porque a conclusão pode mudar com mais história.
+CROSS_SECTIONAL_NORMALIZATION = False
 #: Setor/período com menos pares que isto não define mediana confiável — as
 #: linhas ficam SEM rótulo, nunca comparadas contra si mesmas.
 MIN_SECTOR_PEERS = 5
@@ -101,6 +126,7 @@ HYPERPARAMETERS = {
     'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
     'calibration': {'method': CALIBRATION_METHOD, 'fraction': CALIBRATION_FRACTION},
     'target': {'mode': TARGET_MODE, 'minSectorPeers': MIN_SECTOR_PEERS},
+    'crossSectionalNormalization': CROSS_SECTIONAL_NORMALIZATION,
 }
 
 _MIN_TRAIN_ROWS = 200
@@ -241,6 +267,41 @@ def _apply_target_mode(labeled: pd.DataFrame, target_mode: str) -> pd.DataFrame:
     labeled['ret_excess'] = labeled['ret_fwd'] - referencia
     labeled['y'] = (labeled['ret_excess'] > 0).astype(float)
     return labeled
+
+
+# ---------------------------------------------------------------------------
+# Normalização transversal
+# ---------------------------------------------------------------------------
+def cross_sectional_rank(df: pd.DataFrame, features: list[str],
+                         period_cols: tuple[str, ...] = ('ano', 'trimestre')) -> pd.DataFrame:
+    """Substitui cada feature pelo seu percentil DENTRO do período, centrado em 0.
+
+    Uma linha passa a dizer "esta empresa está no percentil 80 de ROIC entre as
+    pares deste trimestre" em vez de "esta empresa tem ROIC de 18%" — que é a
+    forma como o sinal existe (ver `CROSS_SECTIONAL_NORMALIZATION`).
+
+    NaN permanece NaN: ausência de dado não vira percentil médio. Períodos com
+    uma única empresa devolvem 0 (nada a ranquear), nunca NaN artificial.
+    """
+    out = df.copy()
+    for col in features:
+        out[col] = (df.groupby(list(period_cols))[col]
+                      .transform(lambda s: s.rank(pct=True) - 0.5 if s.notna().sum() > 1 else s * 0.0))
+    return out
+
+
+def assign_quantiles(scores: pd.Series, n: int = 5) -> pd.Series:
+    """Quantil do escore dentro do grupo já filtrado (1 = pior, n = melhor).
+
+    Grupos pequenos demais para `n` faixas caem para o número de faixas que o
+    tamanho permite — nunca levanta, nunca inventa faixa vazia.
+    """
+    if len(scores) < n:
+        return pd.Series([np.nan] * len(scores), index=scores.index)
+    try:
+        return pd.qcut(scores.rank(method='first'), n, labels=False, duplicates='drop') + 1
+    except ValueError:
+        return pd.Series([np.nan] * len(scores), index=scores.index)
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +561,17 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
 
         # Ajuste e calibração usam fatias DISJUNTAS do treino, ambas anteriores
         # ao teste — o mapa de calibração nunca vê previsão in-sample.
+        hp = hyperparameters or HYPERPARAMETERS
+        # Normaliza DENTRO de cada período, separadamente em treino e teste —
+        # o percentil de uma empresa depende só das pares do mesmo trimestre,
+        # então normalizar o teste não usa nenhuma informação do treino nem do
+        # futuro. É transformação por período, não estatística global.
+        if hp.get('crossSectionalNormalization', CROSS_SECTIONAL_NORMALIZATION):
+            train = cross_sectional_rank(train, features)
+            test = cross_sectional_rank(test, features)
+
         fit_rows, calib_rows = calibration_split(
-            train, (hyperparameters or HYPERPARAMETERS).get('calibration', {}).get('fraction', CALIBRATION_FRACTION))
+            train, hp.get('calibration', {}).get('fraction', CALIBRATION_FRACTION))
         model = DirectionalEnsemble(features, hyperparameters).fit(fit_rows[features], fit_rows['y'])
         if not calib_rows.empty:
             model.calibrate(calib_rows[features], calib_rows['y'])
@@ -532,7 +602,13 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
         }))
     if not out:
         raise ValueError('INSUFFICIENT_DATA: nenhum fold walk-forward viavel apos embargo do alvo')
-    return pd.concat(out, ignore_index=True)
+    wf = pd.concat(out, ignore_index=True)
+    # Posição TRANSVERSAL do escore — é ela que carrega o sinal, não o nível
+    # absoluto da probabilidade (ver `evaluate_walk_forward`).
+    grupo = ['ano', 'trimestre']
+    wf['percentile'] = wf.groupby(grupo)['prob'].transform(lambda s: s.rank(pct=True))
+    wf['quantile'] = wf.groupby(grupo, group_keys=False)['prob'].apply(assign_quantiles)
+    return wf
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +637,74 @@ def reliability_bins(prob: pd.Series, y_true: pd.Series, n_bins: int = 10) -> li
                      'meanPredicted': float(p[mask].mean()) if n else None,
                      'observedRate': float(y[mask].mean()) if n else None})
     return bins
+
+
+def _ranking_metrics(wf: pd.DataFrame) -> dict:
+    """Métricas do INSTRUMENTO CERTO: ranking transversal, não classificação.
+
+    Trocadas em 2026-07-25 depois de medir que a vantagem do modelo vive na
+    ORDENAÇÃO das empresas dentro de cada trimestre, e que a acurácia binária a
+    destrói: uma empresa no percentil 51 e outra no percentil 99 recebem o
+    mesmo rótulo "sobe", enquanto o quintil superior rende múltiplas vezes mais
+    que os do meio.
+
+    - `ic`: correlação de Spearman entre o escore e o excesso de retorno,
+      calculada DENTRO de cada período e agregada. É a medida padrão de
+      qualidade de fator; IC de 0,02–0,05 já é considerado utilizável.
+    - `icTStat`: média/erro-padrão dos ICs por período — separa sinal de sorte.
+    - `quantileExcess`: excesso médio por quintil, para ver se a relação é
+      monotônica ou concentrada nos extremos.
+    - `topBottomSpread`: excesso do quintil superior menos o do inferior.
+    - `positiveYearsRatio`: fração dos anos com spread positivo. Um fator que
+      só funciona em um ano não é um fator.
+    """
+    if 'retExcess' not in wf or 'quantile' not in wf:
+        return {}
+
+    from scipy import stats as _stats
+
+    ics = []
+    for _, g in wf.groupby(['ano', 'trimestre']):
+        s = g[['prob', 'retExcess']].dropna()
+        if len(s) < 20 or s['prob'].nunique() < 5:
+            continue
+        ics.append(float(_stats.spearmanr(s['prob'], s['retExcess']).statistic))
+
+    ic = float(np.mean(ics)) if ics else None
+    ic_t = None
+    if len(ics) >= 4:
+        erro = float(np.std(ics, ddof=1) / np.sqrt(len(ics)))
+        ic_t = float(np.mean(ics) / erro) if erro > 0 else None
+
+    por_quintil = []
+    for q, g in wf.dropna(subset=['quantile']).groupby('quantile'):
+        por_quintil.append({'quantile': int(q), 'n': int(len(g)),
+                            'meanExcess': float(g['retExcess'].mean()),
+                            'hitRate': float((g['retExcess'] > 0).mean())})
+
+    topo = wf[wf['quantile'] == wf['quantile'].max()]
+    fundo = wf[wf['quantile'] == wf['quantile'].min()]
+    spread = (float(topo['retExcess'].mean() - fundo['retExcess'].mean())
+              if len(topo) and len(fundo) else None)
+
+    por_ano = []
+    for ano, g in wf.groupby('testYear'):
+        t, b = g[g['quantile'] == g['quantile'].max()], g[g['quantile'] == g['quantile'].min()]
+        if not len(t) or not len(b):
+            continue
+        por_ano.append({'testYear': int(ano),
+                        'spread': float(t['retExcess'].mean() - b['retExcess'].mean())})
+    positivos = (sum(1 for a in por_ano if a['spread'] > 0) / len(por_ano)) if por_ano else None
+
+    return {
+        'ic': ic,
+        'icTStat': ic_t,
+        'icPeriods': len(ics),
+        'quantileExcess': por_quintil,
+        'topBottomSpread': spread,
+        'spreadByYear': por_ano,
+        'positiveYearsRatio': positivos,
+    }
 
 
 def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
@@ -606,9 +750,12 @@ def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
     tn = int(((high['signal'] == SIGNAL_SELL) & (high['yTrue'] == 0.0)).sum()) if len(high) else 0
     fn = int(((high['signal'] == SIGNAL_SELL) & (high['yTrue'] == 1.0)).sum()) if len(high) else 0
 
+    ranking = _ranking_metrics(wf)
+
     return {
         'nSamples': int(len(wf)),
         'nHighConfidence': int(len(high)),
+        **ranking,
         'accuracy': accuracy,
         'accuracyAllSamples': float(wf['_correct'].mean()),
         'brier': brier_score(wf['prob'], wf['yTrue']),

@@ -41,6 +41,18 @@ interface DirectionalMetrics {
   readonly calibrated?: boolean;
   readonly brierRaw?: number | null;
   readonly nHighConfidenceRaw?: number | null;
+  readonly ic?: number | null;
+  readonly icTStat?: number | null;
+  readonly icPeriods?: number;
+  readonly quantileExcess?: readonly {
+    readonly quantile: number;
+    readonly n: number;
+    readonly meanExcess: number;
+    readonly hitRate: number;
+  }[];
+  readonly topBottomSpread?: number | null;
+  readonly spreadByYear?: readonly { readonly testYear: number; readonly spread: number }[];
+  readonly positiveYearsRatio?: number | null;
   readonly confusionMatrix: {
     readonly truePositive: number;
     readonly falsePositive: number;
@@ -727,6 +739,50 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
           </div>
         ))}
       </div>
+
+      {m.quantileExcess && m.quantileExcess.length > 0 && (
+        <div className="bg-gray-900/40 border border-gray-800 rounded p-3 space-y-2">
+          <p className="text-xs font-semibold text-gray-300">Retorno por quintil do escore</p>
+          <p className="text-[11px] text-gray-600">
+            Excesso médio sobre os pares, por trimestre, fora da amostra. É aqui que a vantagem do
+            modelo aparece (ou não) — a acurácia binária não distingue o percentil 51 do 99.
+          </p>
+          <div className="flex gap-1 items-end h-24">
+            {m.quantileExcess.map((q) => {
+              const maior = Math.max(...m.quantileExcess!.map((x) => Math.abs(x.meanExcess)), 0.001);
+              const altura = Math.max(4, (Math.abs(q.meanExcess) / maior) * 70);
+              const positivo = q.meanExcess >= 0;
+              return (
+                <div key={q.quantile} className="flex-1 flex flex-col items-center justify-end gap-1">
+                  <span className={`text-[10px] font-mono ${positivo ? 'text-green-400' : 'text-red-400'}`}>
+                    {(q.meanExcess * 100).toFixed(2)}%
+                  </span>
+                  <div
+                    className={`w-full rounded-t ${positivo ? 'bg-green-500/40' : 'bg-red-500/40'}`}
+                    style={{ height: `${altura}px` }}
+                  />
+                  <span className="text-[10px] text-gray-500">Q{q.quantile}</span>
+                </div>
+              );
+            })}
+          </div>
+          {m.spreadByYear && m.spreadByYear.length > 0 && (
+            <p className="text-[11px] font-mono text-gray-500">
+              spread topo−fundo por ano:{' '}
+              {m.spreadByYear.map((a) => (
+                <span key={a.testYear} className={a.spread >= 0 ? 'text-gray-400 mr-2' : 'text-red-400 mr-2'}>
+                  {a.testYear}: {(a.spread * 100).toFixed(1)}pp
+                </span>
+              ))}
+            </p>
+          )}
+          <p className="text-[11px] text-gray-600">
+            IC {num(m.ic)} (t {num(m.icTStat, 2)}, {m.icPeriods ?? '—'} períodos) — mede se a ordenação
+            das empresas antecipa o excesso de retorno. Um ano negativo no spread não é detalhe: é o
+            tamanho do risco de o fator falhar quando você precisar dele.
+          </p>
+        </div>
+      )}
 
       {m.brierRaw !== null && m.brierRaw !== undefined && (
         <div className="text-[11px] text-gray-500 bg-gray-900/40 border border-gray-800 rounded p-2 space-y-0.5">

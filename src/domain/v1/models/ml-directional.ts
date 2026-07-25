@@ -23,12 +23,32 @@ export type DirectionalSignal = 'COMPRA' | 'VENDA' | 'NEUTRO';
  */
 export type DirectionalModelStatus = 'DRAFT' | 'ACTIVE' | 'FAILED' | 'SUPERSEDED';
 
-/** Códigos de reprovação — allowlist; nunca texto livre vindo do motor. */
+/**
+ * Códigos de reprovação — allowlist; nunca texto livre vindo do motor.
+ *
+ * Os quatro primeiros pertencem ao gate de CLASSIFICAÇÃO (versão original da
+ * §4.7, substituída em 2026-07-25). Mantidos porque `DirectionalModelVersion`
+ * antigas os têm persistidos e a auditoria precisa continuar legível.
+ */
 export type DirectionalGateFailureCode =
   | 'ACCURACY_BELOW_MIN'
   | 'BRIER_ABOVE_MAX'
   | 'COVERAGE_BELOW_MIN'
-  | 'BASELINE_DELTA_BELOW_MIN';
+  | 'BASELINE_DELTA_BELOW_MIN'
+  // Gate de RANKING (atual):
+  | 'IC_BELOW_MIN'
+  | 'IC_TSTAT_BELOW_MIN'
+  | 'TOP_QUANTILE_EXCESS_BELOW_MIN'
+  | 'TOP_BOTTOM_SPREAD_BELOW_MIN'
+  | 'INCONSISTENT_ACROSS_YEARS';
+
+/** Excesso de retorno observado em cada quintil do escore. */
+export interface DirectionalQuantileBucket {
+  readonly quantile: number;
+  readonly n: number;
+  readonly meanExcess: number;
+  readonly hitRate: number;
+}
 
 export interface DirectionalConfusionMatrix {
   readonly truePositive: number;
@@ -85,6 +105,17 @@ export interface DirectionalMetrics {
   readonly confusionMatrix: DirectionalConfusionMatrix;
   readonly reliability: readonly DirectionalReliabilityBin[];
   readonly byFold: readonly DirectionalFoldMetrics[];
+
+  // --- Métricas de RANKING (instrumento atual, desde 2026-07-25) -----------
+  /** Information Coefficient médio: Spearman(escore, excesso) por período. */
+  readonly ic?: number | null;
+  /** Significância do IC entre períodos (média / erro-padrão). */
+  readonly icTStat?: number | null;
+  readonly icPeriods?: number;
+  readonly quantileExcess?: readonly DirectionalQuantileBucket[];
+  readonly topBottomSpread?: number | null;
+  readonly spreadByYear?: readonly { readonly testYear: number; readonly spread: number }[];
+  readonly positiveYearsRatio?: number | null;
 }
 
 export interface DirectionalModelVersion {
