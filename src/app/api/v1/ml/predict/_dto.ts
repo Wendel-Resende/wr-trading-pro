@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { PredictLiveResult } from '../../../../../application/ml-hybrid';
 import { ReadModelError } from '../../../../../application/read-models-v1';
 import { redactUnsafeText } from '../../_shared/sanitize-text';
+import { canonicalizeB3Ticker } from '../../../../../lib/b3-ticker';
 
 /**
  * Item B (auditoria focada do Guardião, 2026-07-22, bloqueador 3):
@@ -14,7 +15,6 @@ import { redactUnsafeText } from '../../_shared/sanitize-text';
  * vaza parcialmente.
  */
 const HEX_DIGEST_RE = /^[a-f0-9]{64}$/i;
-const TICKER_RE = /^[A-Z]{4}\d{1,2}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/;
 /** Nomes de features vêm do LightGBM (`ALL_FEATURES`, `python/ml/features.py`) — texto interno fixo, nunca do usuário; mesmo assim validado por formato conservador. */
 const FEATURE_NAME_RE = /^[A-Za-z0-9_]{1,60}$/;
@@ -117,7 +117,7 @@ export function toPredictLivePublicDTO(result: PredictLiveResult): PredictLivePu
     throw new ReadModelError('UPSTREAM_ERROR', 'digest de dataset/artefato em formato inválido');
   }
 
-  const symbol = TICKER_RE.test(data.prediction.symbol) ? data.prediction.symbol : 'DESCONHECIDO';
+  const symbol = canonicalizeB3Ticker(data.prediction.symbol);
   const date = DATE_RE.test(data.prediction.date) ? data.prediction.date : 'DESCONHECIDO';
 
   const topFeatures: TopFeaturePublicDTO[] = data.prediction.topFeatures

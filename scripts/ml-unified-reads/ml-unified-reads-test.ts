@@ -632,6 +632,7 @@ function normalizeTickerLabelRejectsResidualNonCanonicalValues(): void {
   assertLog(normalizeTickerLabel('SECRET') === 'DESCONHECIDO', 'texto arbitrário sem dígitos nunca vira ticker');
   assertLog(normalizeTickerLabel('PETR4X') === 'DESCONHECIDO', 'ticker com sufixo extra é rejeitado, não truncado para passar');
   assertLog(normalizeTickerLabel('pEtr4') === 'PETR4', 'ticker canônico válido (case-insensitive na entrada) ainda passa');
+  assertLog(normalizeTickerLabel('B3SA3') === 'B3SA3', 'B3SA3 (raiz com dígito) é ticker canônico, não DESCONHECIDO');
   assertLog(normalizeTickerLabel('') === 'DESCONHECIDO', 'string vazia vira DESCONHECIDO');
   assertLog(normalizeTickerLabel('!!!@@@###') === 'DESCONHECIDO', 'apenas caracteres especiais vira DESCONHECIDO');
   // Item B (correção residual, 2026-07-22, bloqueador 1): pontuação/espaço não
