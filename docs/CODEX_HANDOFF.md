@@ -51,6 +51,50 @@ descrição de alto nível no plano da fila. Pelo processo multiagente, um item 
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
 
+## Sessão 2026-07-25 (cont. 3) — Ficha Fundamentalista por Empresa (v1) — EM ANDAMENTO (branch `main`)
+
+Primeira fatia do "Painel de Análise Fundamentalista" (foco: usar os dados
+CVM/B3 que já temos). Motivada pela análise dos diagramas archify do Guardião
+(Vibe-Trading/Fincept) — o Fincept tinha um Valuation/análise fundamentalista que
+a WR não superficiava. **Decisão do usuário: seguir SEM revisão prévia do Guardião**;
+documentar cada etapa para ele verificar depois. Spec/plano:
+`docs/architecture/2026-07-25-ficha-fundamentalista-cvm-design.md` e
+`docs/superpowers/plans/2026-07-25-ficha-fundamentalista-cvm.md`.
+
+### Backend CONCLUÍDO e verificado (checkpoint)
+
+Superfície read-only por empresa sobre o snapshot `cvm_fundamentos.db`, sem tocar
+nenhum fluxo de ML/backtest/execução nem o schema Prisma. Reaproveita
+`cvm-legacy-db.ts` (já lê DRE/BPA/BPP/DFC/`indicadores`).
+
+- **`src/lib/server/cvm-fundamentals-derive.ts`** (helpers puros, testados): conversão
+  de caixa `fco/lucro_liquido` (lucro≤0 → null+`LUCRO_NAO_POSITIVO`; ausente →
+  null+`DADO_AUSENTE`, nunca fabrica); carimbo de conhecimento = fim do período
+  (`data_ref` ou fim civil) + prazo legal (ITR T1-T3 +45d; DFP T4 +90d), sempre
+  `estimadoPorPrazoLegal` (o snapshot não tem data de publicação real). Commit `cea3385`.
+- **`src/lib/server/cvm-fundamentals-sheet.ts`**: `buildFundamentalSheet(cdCvm)` monta
+  `FundamentalSheetV1` — séries trimestrais de margens/ROE/ROA/**ROIC**/alavancagem
+  (dívida/PL, **dívida líq./EBITDA**, endividamento)/liquidez/**payout** (fonte
+  `pipeline-cvm`, lê `fundamental_indicators` + `indicadores`) + conversão de caixa
+  (`derivado-wr`), cada ponto com unidade, `dataRef`, `knowledgeDate` e proveniência.
+  Commit `51a4b29`.
+- **`GET /api/cvm/companies/[cdCvm]/fundamentals`** (read-only, padrão dos `/api/cvm/*`):
+  200 com `series`/`provenance`; cd inválido → 400; inexistente → 404. Verificado no
+  handler (cd `020958` → 200, 61 tri; `abc12` → 400; `9999999` → 404). Commit `5afb42e`.
+- Suíte `npm run test:cvm-fundamentals` (helpers + smoke read-only do assembler contra
+  o banco real) verde; `tsc --noEmit` limpo; `npm run build` OK (rota compila, `/api/cvm/*`
+  existentes intactos).
+
+### Pendente nesta fatia
+
+- **UI:** seção "Ficha Fundamentalista" na `CvmFundamentalsTab` (Recharts + proveniência) — próximo passo.
+- Verificação final + nota de conclusão. **Não é push definitivo até a UI fechar.**
+
+### Fora de escopo (próximas fatias do painel)
+
+Seletor "as of" estrito; múltiplos/valuation vs preço; comparação setorial PIT;
+decomposição DuPont/ROIC explicativa; recálculo a partir de demonstrações cruas.
+
 ## Sessão 2026-07-25 (cont. 2) — Regex de ticker B3 unificado (follow-up sistêmico resolvido) (branch `feat/b3-ticker-unification`)
 
 Fechado o follow-up registrado na sessão anterior: o padrão `^[A-Z]{4}\d{1,2}$`
