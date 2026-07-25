@@ -394,18 +394,45 @@ def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 # Identidade canônica do modelo (§3 princípio 8, §4.4)
 # ---------------------------------------------------------------------------
-def compute_model_version(hyperparameters: dict, features: list[str], universe: list[str]) -> str:
-    """SHA-256 (64 hex, sem prefixo) de hiperparâmetros + features + universo.
+def compute_dataset_digest(labeled: pd.DataFrame, features: list[str]) -> str:
+    """SHA-256 do dataset rotulado que de fato treinou o modelo.
 
-    Determinístico e independente de ordem de entrada do universo — dois
-    treinos com a mesma configuração e o mesmo conjunto de empresas produzem a
-    MESMA `modelVersion`, por definição. Nunca inclui float de preço nem
-    timestamp (princípio fixo 3/8: identidade canônica não carrega verdade
-    numérica volátil).
+    Cobre as colunas de identidade (ticker/período/carimbo), TODAS as features
+    e o rótulo — arredondadas a 10 casas para não depender de ruído de ponto
+    flutuante entre execuções. É o que torna a `modelVersion` reprodutível: dois
+    treinos com o mesmo dado produzem o mesmo digest, e um dado atualizado
+    produz outro.
+    """
+    cols = ['ticker', 'ano', 'trimestre', 'knowledge_date', 'entry_date',
+            'exit_date', 'y'] + list(features)
+    ordered = (labeled[cols].sort_values(['knowledge_date', 'ticker'])
+                            .reset_index(drop=True).round(10))
+    return hashlib.sha256(ordered.to_csv(index=False).encode()).hexdigest()
+
+
+def compute_model_version(hyperparameters: dict, features: list[str], universe: list[str],
+                          dataset_digest: str = '') -> str:
+    """SHA-256 (64 hex, sem prefixo) da identidade canônica do modelo.
+
+    Cobre hiperparâmetros + features + universo + **digest do dataset rotulado**.
+
+    Desvio consciente da §4.4 da spec, que define a versão como hash de
+    "hiperparâmetros + features + universo" apenas. Esse conjunto NÃO
+    identifica o modelo: os fundamentos CVM crescem a cada trimestre, então um
+    retreino com dado novo (modelo genuinamente diferente, métricas
+    diferentes) produziria a MESMA `modelVersion` — e como a publicação de
+    artefato é dedup por versão (primeiro escritor vence), o retreino seria
+    silenciosamente descartado e a UI continuaria servindo o modelo velho sob
+    métricas novas. Incluir o digest do dataset fecha esse buraco e mantém a
+    propriedade que a spec queria (§3.8: identidade canônica computada no
+    servidor, determinística, sem float volátil nem timestamp).
+
+    Determinístico e independente da ordem/duplicatas do universo.
     """
     payload = json.dumps({'hyperparameters': hyperparameters,
                           'features': list(features),
-                          'universe': sorted(set(universe))},
+                          'universe': sorted(set(universe)),
+                          'datasetDigest': dataset_digest},
                          sort_keys=True, separators=(',', ':')).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -428,13 +455,15 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
     metrics = evaluate_walk_forward(wf)
 
     universe = sorted(labeled['ticker'].unique().tolist())
-    model_version = compute_model_version(HYPERPARAMETERS, FEATURE_COLUMNS, universe)
+    dataset_digest = compute_dataset_digest(labeled, FEATURE_COLUMNS)
+    model_version = compute_model_version(HYPERPARAMETERS, FEATURE_COLUMNS, universe, dataset_digest)
 
     final_model = DirectionalEnsemble(FEATURE_COLUMNS, HYPERPARAMETERS).fit(
         labeled[FEATURE_COLUMNS], labeled['y'])
 
     result = {
         'modelVersion': model_version,
+        'datasetDigest': dataset_digest,
         'universe': universe,
         'universeBarsDigest': universe_bars_digest,
         'horizonTradingDays': horizon,

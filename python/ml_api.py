@@ -4,10 +4,13 @@ Motor de ML da plataforma: backfill D1 (MT5), dataset point-in-time,
 treino walk-forward e inferência. Governança/persistência ficam no Next
 (/api/v1/ml/*). Nunca envia ordem; nunca inventa dado.
 """
+import hashlib
 import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
+
 import lightgbm as lgb
 import pandas as pd
 from flask import Flask, jsonify, request
@@ -15,6 +18,9 @@ from flask import Flask, jsonify, request
 from ml.bars_snapshot import SnapshotNotFoundError, load_snapshot_bars, write_universe_snapshot
 from ml.candles import Mt5DailyClient, backfill_symbols, load_daily_candles
 from ml.dataset import ALL_FEATURES, build_dataset, build_inference_row
+from ml.directional_classifier import (
+    DirectionalEnsemble, predict_latest, run_directional_training)
+from ml.directional_features import load_directional_panel
 from ml.fundamentals import list_universe
 from ml.job_runner import JobRegistry
 from ml.timesfm_adapter import TimesFmFeatureProvider
@@ -25,6 +31,7 @@ DEFAULTS = {
     'db_path': os.path.join(_ROOT, 'prisma', 'dev.db'),
     'cvm_db_path': os.path.join(_ROOT, 'data', 'cvm', 'cvm_fundamentos.db'),
     'models_dir': os.path.join(_ROOT, 'data', 'ml', 'models'),
+    'directional_models_dir': os.path.join(_ROOT, 'data', 'ml', 'directional_models'),
     'bars_snapshot_dir': os.path.join(_ROOT, 'data', 'ml', 'bars_snapshot'),
     'tfm_cache_dir': os.path.join(_ROOT, 'data', 'ml', 'tfm_cache'),
     'jobs_dir': os.path.join(_ROOT, 'data', 'ml', 'training_jobs'),
@@ -373,6 +380,96 @@ def create_app(deps=None):
         page['time'] = page['time'].dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         return jsonify({'rows': page.to_dict(orient='records'), 'total': total,
                          'limit': limit, 'offset': offset})
+
+    # -----------------------------------------------------------------
+    # Item D — classificador direcional (ensemble governado, 60 pregões).
+    #
+    # Fronteira: este serviço TREINA e PREVÊ; nunca persiste governança. O
+    # `researchRunId` da §4.3 da spec é criado pelo Next (que é dono do
+    # `ResearchRun`), não aqui — devolver um ID de banco a partir do Python
+    # exigiria que ele escrevesse no Prisma, quebrando a separação que vale
+    # para todo o resto do motor ML.
+    # -----------------------------------------------------------------
+    def _directional_bars_loader(snapshot_dir):
+        def bars_for(ticker: str):
+            try:
+                return load_snapshot_bars(snapshot_dir, ticker)
+            except SnapshotNotFoundError:
+                return None
+        return bars_for
+
+    @app.post('/ml/directional/train')
+    def directional_train():
+        body = request.get_json(silent=True) or {}
+        try:
+            symbols = symbols_from(body)
+        except InvalidSymbolsError as exc:
+            return jsonify({'error': 'INVALID_SYMBOLS', 'detail': str(exc)}), 400
+
+        try:
+            # Mesma disciplina do Item A/D1: snapshot imutável das barras ANTES
+            # de qualquer leitura de preço — o rótulo de 60 pregões nunca pode
+            # mudar sob um backfill concorrente.
+            snapshot = write_universe_snapshot(cfg['db_path'], symbols, cfg['bars_snapshot_dir'])
+            panel = load_directional_panel(cfg['cvm_db_path'], symbols)
+            result = run_directional_training(
+                panel, _directional_bars_loader(snapshot['snapshotDir']),
+                cfg['directional_models_dir'],
+                universe_bars_digest=snapshot['universeBarsDigest'])
+        except ValueError as exc:
+            if 'INSUFFICIENT_DATA' in str(exc):
+                return jsonify({'error': 'INSUFFICIENT_DATA', 'detail': str(exc)}), 422
+            raise
+        return jsonify(result)
+
+    @app.post('/ml/directional/predict')
+    def directional_predict():
+        body = request.get_json(silent=True) or {}
+        model_version = body.get('modelVersion')
+
+        # G-003 item 1: versão validada ANTES de compor qualquer path — o valor
+        # entra direto em `os.path.join`, então malformado nunca chega ao disco.
+        if not isinstance(model_version, str) or not _HASH64_RE.match(model_version):
+            return jsonify({'error': 'INVALID_MODEL_VERSION'}), 400
+
+        artifact_path = os.path.join(cfg['directional_models_dir'], model_version, 'model.pkl')
+        if not os.path.exists(artifact_path):
+            return jsonify({'error': 'MODEL_NOT_FOUND'}), 404
+
+        try:
+            symbols = symbols_from(body)
+        except InvalidSymbolsError as exc:
+            return jsonify({'error': 'INVALID_SYMBOLS', 'detail': str(exc)}), 400
+
+        try:
+            model = DirectionalEnsemble.load(artifact_path)
+        except Exception:  # noqa: BLE001 — nunca vazar detalhe interno de artefato ao cliente
+            app.logger.exception('artefato ilegivel em /ml/directional/predict: %s', model_version)
+            return jsonify({'error': 'ARTIFACT_UNREADABLE'}), 422
+
+        # Previsão viva NÃO usa snapshot congelado: o painel é lido do banco CVM
+        # no estado atual, e cada linha já carrega o prazo legal de publicação —
+        # ponto-no-tempo continua garantido sem congelar nada.
+        panel = load_directional_panel(cfg['cvm_db_path'], symbols)
+        if panel.empty:
+            return jsonify({'error': 'INSUFFICIENT_DATA', 'detail': 'painel fundamentalista vazio'}), 422
+
+        preds = predict_latest(panel, model)
+        universe_digest = hashlib.sha256(
+            json.dumps(sorted(preds['ticker'].tolist()), separators=(',', ':')).encode()).hexdigest()
+
+        return jsonify({
+            'modelVersion': model_version,
+            'universeDigest': universe_digest,
+            'generatedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            'predictions': [
+                {'ticker': r['ticker'], 'cdCvm': r['cdCvm'], 'signal': r['signal'],
+                 'confidence': float(r['confidence']), 'prob': float(r['prob']),
+                 'knowledgeDate': r['knowledgeDate'],
+                 'topFeatures': json.loads(r['topFeatures'])}
+                for _, r in preds.iterrows()
+            ],
+        })
 
     @app.get('/ml/health')
     def health():
