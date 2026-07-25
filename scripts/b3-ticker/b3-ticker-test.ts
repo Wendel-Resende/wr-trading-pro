@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   B3_TICKER_PATTERN,
   B3_TICKER_EXACT,
@@ -35,6 +37,25 @@ function main(): void {
   // o padrão exportado é o canônico
   assertLog(B3_TICKER_PATTERN === '[A-Z][A-Z0-9]{3}\\d{1,2}', 'B3_TICKER_PATTERN é o canônico');
   assertLog(B3_TICKER_EXACT.test('B3SA3'), 'B3_TICKER_EXACT casa B3SA3');
+
+  // INVARIANTE CROSS-LANGUAGE: a guarda Python `_TICKER_RE` em python/ml_api.py
+  // é uma cópia MANUAL do mesmo corpo canônico. Este teste lê a fonte Python e
+  // trava o drift: se um lado mudar sem o outro, falha aqui. O corpo é idêntico;
+  // as âncoras diferem de propósito — Python usa `\Z` (não `$`, que casa antes de
+  // um `\n` final) para reproduzir a semântica do `$` do JS.
+  const pySource = readFileSync(path.join(process.cwd(), 'python', 'ml_api.py'), 'utf8');
+  const pyMatch = pySource.match(/_TICKER_RE\s*=\s*re\.compile\(r'([^']*)'\)/);
+  assertLog(pyMatch !== null, '_TICKER_RE encontrado em python/ml_api.py');
+  const pyFull = pyMatch![1]; // ex.: ^[A-Z][A-Z0-9]{3}\d{1,2}\Z
+  const pyBody = pyFull.replace(/^\^/, '').replace(/\\Z$/, '');
+  assertLog(
+    pyBody === B3_TICKER_PATTERN,
+    `corpo do _TICKER_RE Python ("${pyBody}") idêntico a B3_TICKER_PATTERN ("${B3_TICKER_PATTERN}")`,
+  );
+  assertLog(
+    pyFull === `^${B3_TICKER_PATTERN}\\Z`,
+    `_TICKER_RE Python ancorado com ^…\\Z (esperado "^${B3_TICKER_PATTERN}\\Z", obtido "${pyFull}")`,
+  );
 
   console.log('b3-ticker: TODOS OS TESTES PASSARAM');
 }
