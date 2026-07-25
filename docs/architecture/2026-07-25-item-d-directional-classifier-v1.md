@@ -1,9 +1,9 @@
 # Item D — Classificador Direcional com Ensemble Governado
 
 **Status:** SPEC PARA IMPLEMENTAÇÃO  
-**Modelo alvo:** Claude Code (Sonnet 5), Windows  
+**Modelo alvo:** Claude Code ( Opus 5), Windows  
 **Data:** 2026-07-25  
-**Aditivo e não destrutivo:** ✅  
+**Substituição limpa (remove legado):** ✅  
 **`docs/CODEX_HANDOFF.md` não tocado:** ✅  
 
 ---
@@ -19,7 +19,7 @@ Substituir o motor de previsão atual por um **classificador direcional binário
 ## 3. Princípios fixos
 
 1. **Sem lookahead:** `knowledgeTime <= decisionTime` em todas as features e targets.
-2. **Aditivo:** não remover código legado (TimesFM, MA Crossover, Regressão Linear). Apenas adicionar o novo motor e redirecionar a UI.
+2. **Substituição limpa:** remover código legado (TimesFM, MA Crossover, Regressão Linear, adaptadores e modelos associados). O classificador direcional é o único motor de previsão da plataforma. Rotas e UI legadas são removidas.
 3. **Sem float canônico em verdades:** preços e targets são entradas validadas, não verdades absolutas.
 4. **LLM não executa:** o ensemble é determinístico; LLM não participa da previsão.
 5. **Sem banco real/MT5/rede/trading:** read-only sobre dados locais.
@@ -79,7 +79,7 @@ Métricas por janela:
 
 ### 4.3 Integração com `ml_api.py` (porta 5560)
 
-Novos endpoints (aditivos, não substituem os existentes):
+Novos endpoints (substituem os legados de ML):
 
 ```
 POST /ml/directional/train
@@ -166,18 +166,25 @@ Se qualquer gate falhar, status = FAILED e o modelo não aparece na UI.
 
 - Criar `python/ml/directional_classifier.py` + testes
 - Adicionar endpoints em `python/ml/ml_api.py`
+- **Remover** código legado de ML:
+  - `python/ml/timesfm_adapter.py` e referências
+  - `python/ml/ma_crossover.py` e referências
+  - `python/ml/linear_regression.py` e referências
+  - Modelos Prisma legados: `MlModelVersion`, `MlPrediction` (se existirem como tabelas separadas do híbrido)
+  - Rotas Next.js legadas: `/api/v1/ml/hybrid/*`, `/api/v1/ml/legacy/*`
+  - Componentes UI legados: `MLModelsTab`, `MLPredictionsTab` (conteúdo antigo), heurísticas visíveis
+  - Ferramentas MCP legadas: `ml_run_prediction`, `ml_run_backtest`
 - Criar migration Prisma aditiva (DirectionalModelVersion, DirectionalPrediction)
 - Criar rotas Next.js em `src/app/api/v1/ml/directional/`
-- Criar/atualizar componentes UI na aba Previsões ML
+- Reescrever componentes UI na aba Previsões ML (dropdown versão, tabela sinais, gate visual)
 - Adicionar testes: `test:directional-classifier`, `test:directional-api`
-- Atualizar `npm run test:ml-hybrid` para incluir nova suíte (não quebrar existentes)
+- Atualizar `npm run test:ml-hybrid` para cobrir apenas o novo motor (remover testes de legado)
 
 ## 6. Escopo proibido
 
-- ❌ Remover TimesFM, MA Crossover, Regressão Linear, ou qualquer código legado
 - ❌ Alterar `docs/CODEX_HANDOFF.md`
 - ❌ Alterar `OrderIntent`, execução, broker, bridge de ordens
-- ❌ Alterar `tradingAgentsService`, `MLPredictionsTab` (legado), `src/app/api/agents/**`
+- ❌ Alterar `tradingAgentsService`, `src/app/api/agents/**`
 - ❌ Alterar `WR_TRADING_ENABLED`, kill switch, DEMO-only
 - ❌ Usar `Float`/`Decimal` em identidade canônica (usar string/hash)
 - ❌ Acessar MT5, rede externa, ou banco real
@@ -215,7 +222,6 @@ scripts/test:directional-classifier:
 ### Regressões (não podem quebrar)
 
 ```
-test:ml-hybrid (Item A + Item B)
 test:backtest-run
 test:b3-session
 test:cvm-facts
@@ -225,6 +231,8 @@ test:model-version
 smoke:auth
 ```
 
+Nota: `test:ml-hybrid` é substituído por `test:directional-classifier`. O legado (TimesFM, MA Crossover) não precisa de regressão pois está sendo removido.
+
 ## 8. Decisões de arquitetura
 
 1. **Por que 3 modelos em vez de 1?** Erros de LightGBM, XGBoost e RegLogística são descorrelacionados. Quando 3 modelos independentes concordam, a confiança sobe naturalmente. O gate de 90% é alcançável porque o ensemble filtra os casos ambíguos.
@@ -233,7 +241,7 @@ smoke:auth
 
 3. **Por que probabilidade calibrada (Brier) e não só acurácia?** Um modelo que diz "90% de confiança" mas acerta 70% é pior que um que diz "75%" e acerta 75%. O Brier score força calibração honesta.
 
-4. **Por que manter TimesFM legado?** Não destrutivo. Se no futuro o universo expandir para 500+ empresas, TimesFM pode ser reavaliado. Hoje, 138 séries é insuficiente.
+4. **Por que remover TimesFM?** Foundation model com 138 séries B3 é overkill — o sinal é fraco, o custo de treino é alto, e o ensemble LightGBM+XGBoost+Logística entrega melhor resultado com muito menos complexidade. Remover o legado simplifica a base de código, reduz superfície de bugs e elimina a confusão de múltiplos motores de previsão concorrentes.
 
 ## 9. Migração Prisma
 
@@ -273,9 +281,10 @@ CREATE UNIQUE INDEX "DirectionalPrediction_modelVersion_cdCvm_generatedAt_key"
 - [ ] `prisma validate` passa
 - [ ] `npm run build` sucesso
 - [ ] Todos os testes obrigatórios (seção 7) verdes
-- [ ] Regressões intactas (test:ml-hybrid, test:backtest-run, test:b3-session, test:cvm-facts, smoke:auth)
+- [ ] Regressões intactas (test:backtest-run, test:b3-session, test:cvm-facts, smoke:auth)
+- [ ] Código legado removido: TimesFM, MA Crossover, Regressão Linear, adaptadores, rotas e UI associadas
 - [ ] UI funcional: dropdown de versão, tabela de sinais, gate visual (cores), métricas visíveis
 - [ ] Treino via UI → ResearchRun criado → ModelVersion persiste com métricas → Predições disponíveis
 - [ ] Gate de confiança: sinais com p < 0.10 ou > 0.90 aparecem; 0.10-0.90 não
 - [ ] Modelo sem gate reprovado não aparece no dropdown da UI
-- [ ] Nenhum código legado removido
+- [ ] Ferramentas MCP `ml_run_prediction` e `ml_run_backtest` removidas do Pilot
