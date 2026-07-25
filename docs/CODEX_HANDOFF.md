@@ -16,12 +16,14 @@ Run Card → **C1/C2** hipótese/meta/evidência → **D** eventos/timeline Agen
 **E** preflight operacional → **F** validação estatística. Mandato DEMO temporal
 é apenas estudo futuro e requer nova aprovação.
 
-Claude Code deve iniciar **somente pelo Item A**: primeiro criar spec aditiva em
-`docs/architecture/`, parar para revisão do Guardião e só então implementar em
-worktree. Não editar este `CODEX_HANDOFF.md` durante o item, não fazer
-commit/push e não criar execução de ordens. Manter MT5/CVM point-in-time,
-`BacktestRun` canônico, entrada t+1, custos explícitos, DEMO-only e todos os
-gates atuais.
+Claude Code deve iniciar **somente pelo Item A**. A spec foi concluída e
+**aprovada pelo Guardião** em
+`docs/architecture/2026-07-20-item-a-backtest-real-ml-hibrido-design.md`
+(revisão 4). Pode implementar somente esse Item em worktree, seguindo todos os
+contratos/testes da spec. Não editar este `CODEX_HANDOFF.md` durante o item,
+não fazer commit/push e não criar execução de ordens. Manter MT5/CVM
+point-in-time, `BacktestRun` canônico, entrada t+1, custos explícitos,
+DEMO-only e todos os gates atuais.
 
 ## Sessão 2026-07-20 (cont. 2) — UPSTREAM_ERROR: 500 ao Treinar (branch `main`)
 
