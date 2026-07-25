@@ -25,6 +25,50 @@ não fazer commit/push e não criar execução de ordens. Manter MT5/CVM
 point-in-time, `BacktestRun` canônico, entrada t+1, custos explícitos,
 DEMO-only e todos os gates atuais.
 
+## Sessão 2026-07-25 (cont. 2) — Regex de ticker B3 unificado (follow-up sistêmico resolvido) (branch `feat/b3-ticker-unification`)
+
+Fechado o follow-up registrado na sessão anterior: o padrão `^[A-Z]{4}\d{1,2}$`
+estava duplicado em 9 pontos (8 Node + a guarda de filesystem `_TICKER_RE` do
+Flask) e rejeitava tickers reais com dígito na raiz (`B3SA3`). Executado via
+subagent-driven (brainstorm → spec → plano → 5 tasks TDD + review por task +
+review final de branch). Spec/plano em `docs/superpowers/`.
+
+### O que mudou
+
+- **Fonte única (Node):** novo `src/lib/b3-ticker.ts` exporta o padrão canônico
+  `[A-Z][A-Z0-9]{3}\d{1,2}` (raiz 1 letra + 3 alfanuméricos + 1-2 dígitos) e os
+  helpers `B3_TICKER_EXACT`, `b3TickerGlobal()` (instância fresca p/ evitar
+  `lastIndex`), `isB3Ticker`, `canonicalizeB3Ticker`. Aceita B3SA3, rejeita
+  número puro (crucial p/ a extração de texto livre do agent-run), path-safe.
+- **8 sites Node** migrados para o módulo: validação Zod (`train-job-port`,
+  `training-runs/route`, `train/route`, `ml-hybrid/service`, mcp-pilot),
+  canonicalização (`sanitize-text`, `predict/_dto`) e extração de texto livre
+  (`agent-run/service`). Zero resíduo do regex antigo (verificado por `git grep`).
+- **Python** (`ml_api.py` `_TICKER_RE`): cópia sincronizada do mesmo corpo, com
+  comentário cruzado apontando o módulo Node. Guarda de segurança testada via
+  `/ml/predict` (sem spawn): aceita B3SA3, rejeita path-traversal/lixo. O review
+  final pegou que o `$` do Python casa antes de `\n` (JS não) — corrigido para
+  `\Z` (`97186cc`) p/ semântica idêntica ao Node.
+
+### Verificação
+
+Review por task (5/5 Approved) + review final de branch (opus: Ready to merge
+YES, zero Critical/Important). `tsc --noEmit` limpo; suítes afetadas verdes
+(`b3-ticker` 25 asserts, ml-training-run, ml-hybrid, mcp-pilot, agent-run,
+ml-unified-reads com B3SA3, `test_ml_api.py` OK). Commits `36547ea`, `f7dd4a7`,
+`2d70fbe`, `05e0f6e`, `ade4961`, `97186cc`.
+
+### Follow-ups registrados (não feitos)
+
+- **Sincronia manual Node↔Python:** hoje travada só por comentário cruzado +
+  suítes paralelas. Recomendação do review final: teste que lê `B3_TICKER_PATTERN`
+  (Node) e o corpo do `_TICKER_RE` (Python) e asserta igualdade, p/ pegar drift.
+- **Import misto** `@/lib/b3-ticker` (2 rotas em `src/app`) vs relativo (demais):
+  aceitável (cada um segue a convenção/limitação de harness do próprio arquivo).
+- **Falha pré-existente e ambiental** em `test:ml-unified-reads` (`POST /ml/predict
+  real ... 502` p/ score fora do domínio): existe desde antes deste branch,
+  depende do estado do motor :5560 — não introduzida aqui.
+
 ## Sessão 2026-07-25 (cont.) — Treino falha após 17min: ticker `B3SA3` fora do regex do resultado (branch `main`)
 
 Depois do fix do `orphan` (build regenerado, app reaberto), o treino
