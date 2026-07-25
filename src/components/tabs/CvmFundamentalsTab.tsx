@@ -161,13 +161,32 @@ interface FundamentalSheet {
   };
 }
 
+interface SectorInfo { setor: string; n: number }
+interface IndicatorInfo { key: string; label: string; unit: string; betterWhen: string }
+interface SectorRankRow { cdCvm: string; ticker: string; nome: string; value: number | null; rank: number | null }
+interface SectorRanking {
+  setor: string;
+  indicator: { key: string; label: string; unit: string; betterWhen: string };
+  period: { ano: number; trimestre: number } | null;
+  knowledgeDate: string | null;
+  comparable: boolean;
+  rows: SectorRankRow[];
+  stats: { n: number; median: number | null; p25: number | null; p75: number | null; mean: number | null };
+}
+
 export default function CvmFundamentalsTab() {
-  const [view, setView] = useState<"empresas" | "dividendos">("empresas");
+  const [view, setView] = useState<"empresas" | "dividendos" | "setorial">("empresas");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
   const [sheet, setSheet] = useState<FundamentalSheet | null>(null);
+  const [sectors, setSectors] = useState<SectorInfo[]>([]);
+  const [indicators, setIndicators] = useState<IndicatorInfo[]>([]);
+  const [selSector, setSelSector] = useState<string>("");
+  const [selIndicator, setSelIndicator] = useState<string>("roe");
+  const [ranking, setRanking] = useState<SectorRanking | null>(null);
+  const [loadingRanking, setLoadingRanking] = useState(false);
   const [dividends, setDividends] = useState<DividendsData | null>(null);
   const [rankSearch, setRankSearch] = useState("");
   const [loadingList, setLoadingList] = useState(true);
@@ -226,6 +245,36 @@ export default function CvmFundamentalsTab() {
       .then((data) => setDividends(data))
       .catch(() => setError("Não foi possível carregar o ranking de dividendos."));
   }, [view, dividends]);
+
+  // Setores: carregados na primeira visita à visão setorial
+  useEffect(() => {
+    if (view !== "setorial" || sectors.length > 0) return;
+    fetch("/api/cvm/sectors")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        setSectors(data.sectors ?? []);
+        setIndicators(data.indicators ?? []);
+        if (!selSector && data.sectors?.length) setSelSector(data.sectors[0].setor);
+      })
+      .catch(() => setError("Não foi possível carregar os setores CVM."));
+  }, [view, sectors.length, selSector]);
+
+  // Ranking setorial: recarrega ao mudar setor/indicador
+  useEffect(() => {
+    if (view !== "setorial" || !selSector || !selIndicator) return;
+    setLoadingRanking(true);
+    fetch(`/api/cvm/sector-ranking?setor=${encodeURIComponent(selSector)}&indicator=${encodeURIComponent(selIndicator)}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => setRanking(data))
+      .catch(() => setError("Não foi possível carregar o ranking setorial."))
+      .finally(() => setLoadingRanking(false));
+  }, [view, selSector, selIndicator]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -305,6 +354,7 @@ export default function CvmFundamentalsTab() {
           [
             { id: "empresas", label: "Empresas" },
             { id: "dividendos", label: "Dividendos & Carteira" },
+            { id: "setorial", label: "Setorial" },
           ] as const
         ).map((v) => (
           <button
@@ -436,6 +486,94 @@ export default function CvmFundamentalsTab() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {view === "setorial" && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider mb-1">Setor (CVM)</label>
+              <select
+                value={selSector}
+                onChange={(e) => setSelSector(e.target.value)}
+                className="bg-cyber-dark border border-cyber-border rounded-lg px-3 py-2 text-sm text-gray-200 font-space min-w-[16rem]"
+              >
+                {sectors.map((s) => (
+                  <option key={s.setor} value={s.setor}>{s.setor} ({s.n})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider mb-1">Indicador</label>
+              <select
+                value={selIndicator}
+                onChange={(e) => setSelIndicator(e.target.value)}
+                className="bg-cyber-dark border border-cyber-border rounded-lg px-3 py-2 text-sm text-gray-200 font-space"
+              >
+                {indicators.map((i) => (
+                  <option key={i.key} value={i.key}>{i.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {loadingRanking && <p className="text-gray-400 font-space text-sm">Carregando ranking…</p>}
+
+          {ranking && !loadingRanking && (() => {
+            const isPct = ranking.indicator.unit === "percent";
+            const fmtVal = (v: number | null) => (v === null ? "—" : isPct ? `${v.toFixed(1)}%` : v.toFixed(2));
+            return (
+              <div className="cyber-card bg-cyber-dark/80 border border-cyber-border rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="font-orbitron text-sm font-bold text-cyber-cyan uppercase tracking-wider">
+                    {ranking.indicator.label} — {ranking.setor}
+                  </h3>
+                  <span className="text-[0.65rem] text-gray-400 font-space">
+                    {ranking.period ? `${ranking.period.ano}T${ranking.period.trimestre}` : "—"} · conhecimento {ranking.knowledgeDate ?? "—"} (estimado){ranking.comparable ? "" : " · ainda não publicado"} · {ranking.indicator.betterWhen === "lower" ? "menor é melhor" : "maior é melhor"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { l: "Empresas", v: String(ranking.stats.n) },
+                    { l: "Mediana", v: fmtVal(ranking.stats.median) },
+                    { l: "P25", v: fmtVal(ranking.stats.p25) },
+                    { l: "P75", v: fmtVal(ranking.stats.p75) },
+                  ].map((s) => (
+                    <div key={s.l} className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                      <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">{s.l}</p>
+                      <p className="text-lg font-bold text-white font-space mt-1">{s.v}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm font-space">
+                    <thead>
+                      <tr className="text-left text-gray-400 border-b border-cyber-border">
+                        <th className="py-2 pr-3 w-10">#</th>
+                        <th className="py-2 pr-3">Ticker</th>
+                        <th className="py-2 pr-3">Empresa</th>
+                        <th className="py-2 text-right">{ranking.indicator.label}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ranking.rows.map((r) => (
+                        <tr key={r.cdCvm} className="border-b border-cyber-border/40 text-gray-200">
+                          <td className="py-2 pr-3 text-gray-500">{r.rank ?? "—"}</td>
+                          <td className="py-2 pr-3 font-bold text-cyber-cyan">{r.ticker}</td>
+                          <td className="py-2 pr-3 truncate max-w-[16rem]">{r.nome}</td>
+                          <td className={`py-2 text-right ${r.value !== null && r.value < 0 ? "text-red-400" : ""}`}>{fmtVal(r.value)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="border-t border-cyber-border/40 pt-3 text-[0.7rem] text-gray-400 font-space space-y-1">
+                  <p>Fonte: pipeline CVM (`fundamental_indicators`, base 12M). Ranking por <span className="text-gray-300">{ranking.setor}</span> no período mais recente cujo carimbo de conhecimento (prazo legal) já passou — não compara período ainda não publicado. Empresas sem o indicador aparecem ao final, sem rank.</p>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
