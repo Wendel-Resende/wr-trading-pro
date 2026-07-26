@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D encerrado — pendências resolvidas)
+Última atualização: 2026-07-25 (Item D encerrado + histórico D1 estendido)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,74 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 13) — Histórico D1 estendido (Yahoo) + 2 correções
+
+Commit `410098a`. Fecha a questão "mais dados salvam o modelo?" com a fonte
+certa, e deixa um ativo permanente de dados.
+
+### O BANCO MUDOU — leia antes de mexer em candles
+
+| | antes | depois |
+|---|---|---|
+| Barras D1 | 167.208 | **531.131** |
+| Símbolos | 126 | 129 |
+| Início | 2021-07 | **2000-01** (mediana por empresa: 2007-10) |
+| Empresas com dado pré-2015 | 0 | **89** |
+
+`HistoricalCandle` ganhou a coluna **`source`** ('MT5' | 'YAHOO', migration
+aditiva com default 'MT5').
+
+**ARMADILHA FECHADA:** `replace_daily_candles` fazia full refresh por
+(symbol, 'D1') e teria apagado os 15 anos no primeiro backfill do MT5. Agora o
+DELETE é escopado em `source='MT5'` e o INSERT é `OR IGNORE` — o MT5 preenche
+só o que o Yahoo não cobre. Há teste de regressão
+(`test_backfill_mt5_nao_apaga_historico_yahoo`). Não reverter sem entender.
+
+### Por que Yahoo e não COTAHIST
+
+COTAHIST = preço NOMINAL, detecção de eventos societários confirmou 6 de 220.
+Yahoo = `adjclose` AJUSTADO, validado a **0,995 de correlação** com o MT5 nos
+retornos diários da sobreposição (diferença mediana de 2 pontos-base).
+
+### Resultado científico: conclusão negativa CONFIRMADA
+
+    IC = +0,0176   t = +1,27   spread +0,83 p.p.   anos positivos 57%
+    5.564 amostras OOS · 14 folds · 2011-2026 · 129 tickers
+
+Não significativo. O modelo segue reprovando nos gates (IC < 0,02, t < 2,0).
+
+### DUAS CORREÇÕES de afirmações feitas durante a sessão
+
+1. **A "reversão da conclusão" anunciada no meio do caminho estava ERRADA.** O
+   spike deu IC +0,0498 (t=3,92) sobre dados CORROMPIDOS: o `adjclose` do Yahoo
+   traz fatores de desdobramento errados em série antiga brasileira — VULC3 com
+   +9.900% e fechamento de R$ 114.496, SUZB3 +1.900%, CPFE3 +1.808%; 627 barras
+   em 13 símbolos. Saneado, o IC cai para +0,0176.
+2. **O primeiro filtro de saneamento também estava errado.** |ret| >= 60%
+   simétrico destruiu a série inteira da AMBP3 por uma queda REAL de -61,5%
+   (crise de dívida). Recalibrado e assimétrico: +200% / -90% / preço fora de
+   R$ 0,01-10.000, truncando no último ponto implausível.
+
+**Lição de método, repetida duas vezes na mesma sessão:** validar uma fonte na
+janela em que ela é boa e extrapolar para onde não é. Primeiro no COTAHIST
+(validei o parser, não as séries), depois no Yahoo (validei 2021+, assumi
+2000-2021). Vale para qualquer ingestão futura.
+
+### Limitações declaradas da fonte
+
+- **9 de 138 tickers** respondem 404 no Yahoo mesmo ativos na B3 (CPLE6, ELET3,
+  EMBR3, GUAR3, JBSS3, MRFG3, NEOE3, SRNA3, STBP3) — mensagem enganosa "symbol
+  may be delisted". Para eles o MT5 segue sendo a fonte. Nenhum tinha barra no
+  MT5 antes (estão entre os 12 indisponíveis na XP), então não houve perda.
+- **2 tickers renomeados** precisam de mapa: CCRO3→MOTV3, TRPL4→ISAE4
+  (`SYMBOL_OVERRIDES`). Renomeação futura exige atualizar o mapa.
+- **API não-oficial**: ingestão é sob demanda (`POST /ml/yahoo-backfill`),
+  nunca no caminho crítico de tela.
+- **Risco residual do saneamento**, declarado no código: artefato de
+  desdobramento na faixa -50% a -90% com nível de preço sadio sobrevive à regra.
+- **Viés de sobrevivência** cresce com a história (universo = empresas listadas
+  hoje). Infla resultado positivo; não afeta resultado negativo.
 
 ## Sessão 2026-07-25 (cont. 12) — Pendências técnicas resolvidas (branch `main`)
 
