@@ -53,6 +53,14 @@ interface DirectionalMetrics {
   readonly topBottomSpread?: number | null;
   readonly spreadByYear?: readonly { readonly testYear: number; readonly spread: number }[];
   readonly positiveYearsRatio?: number | null;
+  readonly roundTripCost?: number;
+  readonly netQuantileExcess?: readonly {
+    readonly quantile: number;
+    readonly n: number;
+    readonly meanExcess: number;
+    readonly hitRate: number;
+  }[];
+  readonly netTopBottomSpread?: number | null;
   readonly confusionMatrix: {
     readonly truePositive: number;
     readonly falsePositive: number;
@@ -114,7 +122,7 @@ interface CostProfile {
 interface TrainingRun {
   readonly trainingRunId: string;
   readonly status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'REJECTED' | 'FAILED' | 'CANCEL_REQUESTED' | 'CANCELLED' | 'INTERRUPTED';
-  readonly phase: 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'BACKTESTS' | 'FINALIZING';
+  readonly phase: 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'FINALIZING';
   readonly progress: number;
   readonly researchRunId: string | null;
   readonly modelVersionId: string | null;
@@ -138,7 +146,6 @@ const PHASE_LABELS: Record<TrainingRun['phase'], string> = {
   DATASET: 'montando painel fundamentalista',
   TRAINING: 'treinando ensemble (walk-forward)',
   GATE: 'aplicando gates',
-  BACKTESTS: 'backtests',
   FINALIZING: 'finalizando',
 };
 
@@ -748,8 +755,9 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
             modelo aparece (ou não) — a acurácia binária não distingue o percentil 51 do 99.
           </p>
           <div className="flex gap-1 items-end h-24">
-            {m.quantileExcess.map((q) => {
-              const maior = Math.max(...m.quantileExcess!.map((x) => Math.abs(x.meanExcess)), 0.001);
+            {(m.netQuantileExcess ?? m.quantileExcess).map((q) => {
+              const barras = m.netQuantileExcess ?? m.quantileExcess!;
+              const maior = Math.max(...barras.map((x) => Math.abs(x.meanExcess)), 0.001);
               const altura = Math.max(4, (Math.abs(q.meanExcess) / maior) * 70);
               const positivo = q.meanExcess >= 0;
               return (
@@ -777,6 +785,16 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
             </p>
           )}
           <p className="text-[11px] text-gray-600">
+            {m.roundTripCost !== undefined && (
+              <>
+                Líquido de custos: {(m.roundTripCost * 100).toFixed(2)}% de ida-e-volta por posição
+                (perfil de custo do treino){' '}
+                {m.netTopBottomSpread !== null && m.netTopBottomSpread !== undefined && (
+                  <>· spread líquido {(m.netTopBottomSpread * 100).toFixed(2)} p.p.</>
+                )}
+                {' — '}
+              </>
+            )}
             IC {num(m.ic)} (t {num(m.icTStat, 2)}, {m.icPeriods ?? '—'} períodos) — mede se a ordenação
             das empresas antecipa o excesso de retorno. Um ano negativo no spread não é detalhe: é o
             tamanho do risco de o fator falhar quando você precisar dele.

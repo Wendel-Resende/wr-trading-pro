@@ -68,7 +68,12 @@ function above(observed: number | null | undefined, threshold: number): boolean 
 export function evaluateDirectionalGate(metrics: DirectionalMetrics): DirectionalGateResult {
   const t = DIRECTIONAL_GATE_THRESHOLDS;
 
+  // Avalia a economia LÍQUIDA de custos quando ela existe. Aprovar um fator
+  // pelo retorno bruto seria aprovar algo que a corretagem come antes de
+  // chegar ao usuário — o `BacktestCostProfile` exigido no treino existe
+  // exatamente para esta conta.
   const topQuantile = topQuantileExcess(metrics);
+  const spread = metrics.netTopBottomSpread ?? metrics.topBottomSpread;
 
   const checks = [
     {
@@ -87,17 +92,17 @@ export function evaluateDirectionalGate(metrics: DirectionalMetrics): Directiona
     },
     {
       code: 'TOP_QUANTILE_EXCESS_BELOW_MIN' as const,
-      label: 'Excesso do quintil superior (por trimestre)',
+      label: 'Excesso do quintil superior, líquido de custos (por trimestre)',
       threshold: t.minTopQuantileExcess,
       observed: topQuantile,
       passed: atLeast(topQuantile, t.minTopQuantileExcess),
     },
     {
       code: 'TOP_BOTTOM_SPREAD_BELOW_MIN' as const,
-      label: 'Spread topo − fundo',
+      label: 'Spread topo − fundo, líquido de custos',
       threshold: t.minTopBottomSpread,
-      observed: metrics.topBottomSpread ?? null,
-      passed: above(metrics.topBottomSpread, t.minTopBottomSpread),
+      observed: spread ?? null,
+      passed: above(spread, t.minTopBottomSpread),
     },
     {
       code: 'INCONSISTENT_ACROSS_YEARS' as const,
@@ -112,9 +117,13 @@ export function evaluateDirectionalGate(metrics: DirectionalMetrics): Directiona
   return { approved: failures.length === 0, failures: Object.freeze(failures), checks: Object.freeze(checks) };
 }
 
-/** Excesso do quintil de maior escore, ou `null` se a decomposição não veio. */
+/**
+ * Excesso do quintil de maior escore, LÍQUIDO de custos quando disponível.
+ * Cai para o bruto apenas em versões treinadas antes de 2026-07-25, que não
+ * têm a decomposição líquida — nunca para "ignorar custos" por conveniência.
+ */
 export function topQuantileExcess(metrics: DirectionalMetrics): number | null {
-  const buckets = metrics.quantileExcess;
+  const buckets = metrics.netQuantileExcess ?? metrics.quantileExcess;
   if (!buckets || buckets.length === 0) return null;
   const top = buckets.reduce((a, b) => (b.quantile > a.quantile ? b : a));
   return top.meanExcess;

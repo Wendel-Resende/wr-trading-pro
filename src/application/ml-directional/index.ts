@@ -1,3 +1,4 @@
+export { roundTripCost, withNetEconomics, type DirectionalCostInputs } from './costs';
 export { DIRECTIONAL_GATE_THRESHOLDS, evaluateDirectionalGate, type DirectionalGateResult } from './gate';
 export {
   BackfillResponseSchema,

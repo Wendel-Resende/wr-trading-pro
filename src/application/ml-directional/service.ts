@@ -9,6 +9,7 @@ import type {
   DirectionalModelVersion,
   DirectionalPrediction,
 } from '../../domain/v1/models/ml-directional';
+import { withNetEconomics } from './costs';
 import { evaluateDirectionalGate, type DirectionalGateResult } from './gate';
 import type { DirectionalMlApiPort, DirectionalTrainResponse } from './port';
 
@@ -99,7 +100,13 @@ export class DirectionalService {
    */
   async finalizeTraining(
     createdBy: string,
-    costProfile: { readonly id: string; readonly version: number },
+    costProfile: {
+      readonly id: string;
+      readonly version: number;
+      readonly emolumentsPct?: number;
+      readonly spreadBps?: number;
+      readonly slippageBps?: number;
+    },
     trainResult: DirectionalTrainResponse,
     hooks?: { readonly claimAndPublish?: (modelVersion: string) => Promise<boolean> },
   ): Promise<RunDirectionalTrainingResult> {
@@ -129,8 +136,16 @@ export class DirectionalService {
       createdBy,
     );
 
+    // Custos aplicados NO SERVIDOR, a partir do perfil versionado do treino —
+    // o motor Python reporta economia bruta e nunca opina sobre custo.
+    const metrics = withNetEconomics(trainResult.metrics, {
+      emolumentsPct: costProfile.emolumentsPct ?? 0,
+      spreadBps: costProfile.spreadBps ?? 0,
+      slippageBps: costProfile.slippageBps ?? 0,
+    });
+
     // Gate reavaliado no servidor a partir das métricas — o upstream não vota.
-    const gate = evaluateDirectionalGate(trainResult.metrics);
+    const gate = evaluateDirectionalGate(metrics);
     // Aprovado nasce DRAFT quando há claim a fazer (treino cancelável);
     // reprovado já nasce FAILED — não há o que publicar.
     const initialStatus: DirectionalModelStatus = gate.approved
@@ -146,7 +161,7 @@ export class DirectionalService {
       (await this.repository.createModelVersion({
         modelVersion: trainResult.modelVersion,
         researchRunId: researchRun.runId,
-        metrics: trainResult.metrics,
+        metrics,
         artifactPath: trainResult.artifactPath,
         status: initialStatus,
         gateFailures: gate.failures,

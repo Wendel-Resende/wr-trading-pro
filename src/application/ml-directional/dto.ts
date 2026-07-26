@@ -50,6 +50,9 @@ export interface DirectionalModelVersionPublicDTO {
     readonly topBottomSpread?: number | null;
     readonly spreadByYear?: DirectionalModelVersion['metrics']['spreadByYear'];
     readonly positiveYearsRatio?: number | null;
+    readonly roundTripCost?: number;
+    readonly netQuantileExcess?: DirectionalModelVersion['metrics']['netQuantileExcess'];
+    readonly netTopBottomSpread?: number | null;
     readonly confusionMatrix: DirectionalModelVersion['metrics']['confusionMatrix'];
     readonly reliability: DirectionalModelVersion['metrics']['reliability'];
     readonly byFold: DirectionalModelVersion['metrics']['byFold'];

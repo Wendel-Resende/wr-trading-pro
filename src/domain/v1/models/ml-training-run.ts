@@ -34,7 +34,13 @@ export const TERMINAL_ML_TRAINING_RUN_STATUSES: ReadonlySet<MlTrainingRunStatus>
   'INTERRUPTED',
 ]);
 
-export type MlTrainingRunPhase = 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'BACKTESTS' | 'FINALIZING';
+/**
+ * Item D: `BACKTESTS` foi REMOVIDA em 2026-07-25. Ela existia para a fase de
+ * backtests por instrumento do motor híbrido; o motor direcional avalia
+ * economia dentro de `GATE` (excesso por quintil líquido de custos), então a
+ * fase nunca mais seria atingida e mentiria no acompanhamento do treino.
+ */
+export type MlTrainingRunPhase = 'QUEUED' | 'SNAPSHOT' | 'DATASET' | 'TRAINING' | 'GATE' | 'FINALIZING';
 
 export const ML_TRAINING_RUN_PHASES: readonly MlTrainingRunPhase[] = Object.freeze([
   'QUEUED',
@@ -42,7 +48,6 @@ export const ML_TRAINING_RUN_PHASES: readonly MlTrainingRunPhase[] = Object.free
   'DATASET',
   'TRAINING',
   'GATE',
-  'BACKTESTS',
   'FINALIZING',
 ]);
 

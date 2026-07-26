@@ -71,6 +71,18 @@ export const DirectionalMetricsSchema = z.object({
   topBottomSpread: FiniteNumber.nullable().optional(),
   spreadByYear: z.array(z.object({ testYear: z.number().int(), spread: FiniteNumber })).max(50).optional(),
   positiveYearsRatio: Probability.nullable().optional(),
+  // Economia líquida (custos aplicados no servidor).
+  roundTripCost: FiniteNumber.min(0).max(1).optional(),
+  netQuantileExcess: z
+    .array(z.object({
+      quantile: z.number().int().positive(),
+      n: z.number().int().nonnegative(),
+      meanExcess: FiniteNumber,
+      hitRate: Probability,
+    }))
+    .max(20)
+    .optional(),
+  netTopBottomSpread: FiniteNumber.nullable().optional(),
   confusionMatrix: z.object({
     truePositive: z.number().int().nonnegative(),
     falsePositive: z.number().int().nonnegative(),

@@ -1,6 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import {
   DIRECTIONAL_GATE_THRESHOLDS,
+  roundTripCost,
+  withNetEconomics,
   DirectionalService,
   createHttpDirectionalMlApiPort,
   evaluateDirectionalGate,
@@ -126,6 +128,48 @@ function fakePort(train: DirectionalTrainResponse, predict?: DirectionalPredictR
     train: async () => train,
     predict: async () => predict ?? predictResponse(),
   };
+}
+
+// ---------------------------------------------------------------------------
+function costTests(): void {
+  const perfil = { emolumentsPct: 0.0005, spreadBps: 5, slippageBps: 5 };
+  // ida-e-volta = 2 x (5bps + 5bps + 0,05%) = 2 x 0,0015 = 0,003
+  const custo = roundTripCost(perfil);
+  assert(Math.abs(custo - 0.003) < 1e-12, `custo de ida-e-volta = ${custo}, esperado 0,003`);
+
+  const bruto = metrics({
+    quantileExcess: [
+      { quantile: 1, n: 300, meanExcess: -0.02, hitRate: 0.44 },
+      { quantile: 5, n: 300, meanExcess: 0.004, hitRate: 0.52 },
+    ],
+    topBottomSpread: 0.024,
+  });
+  const liquido = withNetEconomics(bruto, perfil);
+
+  assert(liquido.roundTripCost === custo, 'custo aplicado fica registrado nas métricas');
+  assert(liquido.quantileExcess === bruto.quantileExcess, 'métrica BRUTA é preservada lado a lado');
+  assert(
+    Math.abs(liquido.netQuantileExcess![1].meanExcess - (0.004 - 0.003)) < 1e-12,
+    'quintil superior líquido desconta uma ida-e-volta',
+  );
+  assert(
+    Math.abs(liquido.netTopBottomSpread! - (0.024 - 2 * 0.003)) < 1e-12,
+    'spread topo-fundo desconta DUAS ida-e-volta (duas pontas)',
+  );
+
+  // O caso que motiva a conta: 0,4% ao trimestre passa no gate bruto e MORRE
+  // no líquido — é exatamente o retorno que a corretagem come.
+  assert(!evaluateDirectionalGate(liquido).approved, 'gate reprova quando o custo consome o excesso do topo');
+  assert(
+    evaluateDirectionalGate(liquido).failures.includes('TOP_QUANTILE_EXCESS_BELOW_MIN'),
+    'reprovação é atribuída ao quintil superior, não a outro critério',
+  );
+
+  // Sem custos declarados, líquido = bruto (nunca "melhora" por omissão).
+  const semCusto = withNetEconomics(bruto, { emolumentsPct: 0, spreadBps: 0, slippageBps: 0 });
+  assert(semCusto.netTopBottomSpread === bruto.topBottomSpread, 'custo zero não altera o spread');
+
+  console.log('directional costs: OK');
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +431,7 @@ async function httpPortTests(): Promise<void> {
 async function main(): Promise<void> {
   const prisma = new PrismaClient();
   try {
+    costTests();
     gateTests();
     await trainingTests(prisma);
     await modelVersionLifecycleTests(prisma);

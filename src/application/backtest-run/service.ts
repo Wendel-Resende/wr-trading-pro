@@ -113,6 +113,19 @@ export class BacktestRunService {
    * usada exclusivamente pelo fluxo ML Híbrido. `run()` acima (genérico) não
    * muda de assinatura nem de comportamento — esta função é aditiva.
    */
+  /**
+   * Item D (2026-07-25): NENHUM fluxo de ML chama este método hoje. Ele foi
+   * desenhado para o motor híbrido — sequências de trades BUY/HOLD por
+   * instrumento, horizonte de 10 pregões — e o classificador direcional
+   * produz outra coisa: uma ordenação da seção transversal com posição mantida
+   * por um trimestre. A prova econômica desse modelo é o excesso por quintil
+   * líquido de custos (`application/ml-directional/costs.ts`), não uma
+   * sequência de trades por papel.
+   *
+   * MANTIDO de propósito, não por esquecimento: é capacidade genérica,
+   * coberta por `npm run test:backtest-run`, e o próximo motor de ML pode
+   * produzir sinais nesse formato. Remover agora custaria mais do que guardar.
+   */
   async runGoverned(request: GovernedBacktestRunRequestV1, timeframe: Timeframe): Promise<GovernedBacktestRunResult> {
     await this.validateResearchAndModel(request.researchRunId, request.modelVersionId);
 

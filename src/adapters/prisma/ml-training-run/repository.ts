@@ -115,6 +115,8 @@ function parseMetrics(json: string | null): MlTrainingRunMetrics | null {
 }
 
 const KNOWN_STATUSES = new Set<string>(['QUEUED', 'RUNNING', 'SUCCEEDED', 'REJECTED', 'FAILED', 'CANCEL_REQUESTED', 'CANCELLED', 'INTERRUPTED']);
+// `BACKTESTS` permanece aceita na LEITURA: runs antigos (motor híbrido) a têm
+// persistida e a auditoria precisa continuar legível. Novos runs nunca a usam.
 const KNOWN_PHASES = new Set<string>(['QUEUED', 'SNAPSHOT', 'DATASET', 'TRAINING', 'GATE', 'BACKTESTS', 'FINALIZING']);
 
 /**

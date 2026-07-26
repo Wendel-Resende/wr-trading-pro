@@ -116,6 +116,14 @@ export interface DirectionalMetrics {
   readonly topBottomSpread?: number | null;
   readonly spreadByYear?: readonly { readonly testYear: number; readonly spread: number }[];
   readonly positiveYearsRatio?: number | null;
+
+  // --- Economia LÍQUIDA (custos aplicados no servidor a partir do
+  // BacktestCostProfile do treino). O bruto fica lado a lado de propósito: a
+  // diferença entre os dois é a informação.
+  /** Custo de ida-e-volta por posição, em fração do notional. */
+  readonly roundTripCost?: number;
+  readonly netQuantileExcess?: readonly DirectionalQuantileBucket[];
+  readonly netTopBottomSpread?: number | null;
 }
 
 export interface DirectionalModelVersion {
