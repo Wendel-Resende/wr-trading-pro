@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D encerrado + histórico D1 estendido)
+Última atualização: 2026-07-25 (motor = escore composto de fator)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,66 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 14) — Motor trocado: escore composto (branch `main`)
+
+Commit `9eca101`. Produz o PRIMEIRO modelo que passa nos cinco gates.
+
+### O diagnóstico que motivou
+
+IC por feature refeito sobre 15 anos limpos (58 trimestres) — ficaram MAIS
+fortes, não mais fracas:
+
+    delta_margem_liquida  IC +0,101  t +6,20
+    delta_roe             IC +0,093  t +5,93
+    delta_margem_ebit     IC +0,081  t +4,63
+    crescimento_lucro_yoy IC +0,091  t +4,36
+
+15 de 28 com |t| > 2. **O ensemble extraía IC 0,018 de features que sozinhas
+dão 0,101** — cinco vezes pior que o próprio melhor insumo.
+
+### A troca
+
+| | ensemble | escore composto |
+|---|---|---|
+| IC | +0,0176 | **+0,0956** |
+| t-stat | 1,27 | **+4,32** |
+| Spread topo−fundo | +0,83 p.p. | **+2,58 p.p.** |
+| Quintis | não-monótonos | **Q1 +0,13% → Q5 +2,71%** |
+
+`CompositeFactorScore` (`python/ml/directional_classifier.py`): seleciona
+features pelo IC no TREINO (t ≥ 2,0) e pontua pela média dos percentis
+transversais. Sem hiperparâmetro, sem otimização — menos código que o anterior.
+
+**REMOVIDOS** (não procure): LightGBM, XGBoost, regressão logística,
+calibração isotônica/Platt, Brier, matriz de confusão, diagrama de
+confiabilidade, cobertura. O escore ORDENA; não estima probabilidade. O sinal
+vem do QUINTIL, não de limiar de confiança.
+
+- Artefato agora é `model.json` legível (features + IC), não `model.pkl`.
+- Colunas `score` e `quantile` em DirectionalPrediction (migration aditiva).
+- **`prob` passou a carregar o PERCENTIL transversal** — nome herdado do motor
+  anterior, documentado no schema Prisma e no domínio. Não é probabilidade.
+- Métricas de classificação seguem OPCIONAIS no contrato para que versões
+  antigas continuem legíveis.
+
+### ARMADILHA: contrato duplicado Python↔Node
+
+`src/application/ml-training-run/train-job-port.ts` tem schema PRÓPRIO do
+resultado de treino, separado do `ml-directional/port.ts`. Não foi atualizado
+junto e o novo `gate` ({quantiles, minFeatureTStat}) violou o `.strict()` — o
+treino assíncrono inteiro morria com `INTERNAL_ERROR: falha não detalhável`,
+exatamente a assinatura do bug do campo `orphan` (cont. 8). **Mudou o contrato
+do Python? Atualize OS DOIS schemas.**
+
+### Limitações declaradas, NÃO resolvidas
+
+1. **Teste múltiplo na seleção**: 28 candidatas a t > 2 ⇒ ~1,4 falsos positivos
+   por fold. Bonferroni (t ≈ 3,0) cortaria os marginais mantendo os fortes.
+   Não aplicado de propósito — seria ajustar o critério depois de ver o
+   resultado, erro já cometido nesta sessão. Decisão do usuário/Guardião.
+2. **Viés de sobrevivência** — agora importa, porque o resultado é positivo.
+   Universo = empresas listadas hoje, aplicado a 15 anos.
 
 ## Sessão 2026-07-25 (cont. 13) — Histórico D1 estendido (Yahoo) + 2 correções
 
