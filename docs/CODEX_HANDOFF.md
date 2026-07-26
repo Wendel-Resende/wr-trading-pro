@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D + ranking transversal)
+Última atualização: 2026-07-25 (Item D — conclusão negativa após COTAHIST)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,86 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 11) — COTAHIST 15 anos: HIPÓTESE REJEITADA (spike)
+
+Executado como **spike científico**: o código ficou no scratchpad da sessão e o
+repositório NÃO foi tocado (`git status` limpo). Nenhum commit — de propósito:
+a pergunta era "mais dados salvam o modelo?", e a resposta dispensa código de
+produção.
+
+### O que foi montado
+
+11 arquivos anuais do COTAHIST (2011–2021, 246.578 registros do mercado à
+vista, 133 tickers) emendados à série do MT5 por fator de escala na primeira
+data comum. Histórico 167 mil → **386 mil barras** (início 2011-01-03); painel
+rotulado 2.353 → **5.871 linhas**; folds 4 → **14**.
+
+Eventos societários: 220 candidatos (queda diária ≤ −18%), apenas **6
+confirmados** pelo cruzamento com proventos da DFC. Política adotada: descartar
+as janelas de 60 pregões contendo candidato não explicado (2,2% das linhas) —
+nunca corrigir no escuro.
+
+### Resultado: o sinal DESAPARECE com mais dados
+
+| | 5 anos (4 folds) | 15 anos (14 folds) |
+|---|---|---|
+| Amostras out-of-sample | 1.608 | 5.312 |
+| IC | +0,0720 | **+0,0133** |
+| t-stat | 2,16 | **1,05** |
+| Spread topo−fundo | +1,17 pp | **−0,46 pp** |
+| Anos positivos | 75% | **43%** |
+
+Quintis sem gradiente: Q1 +3,07% · Q2 +8,87% · Q3 +1,69% · Q4 +2,17% · Q5 +2,60%.
+
+### A objeção do preço nominal foi testada e descartada
+
+Mantendo o período de TESTE idêntico (2023–2026, só dados MT5 limpos) e
+variando apenas o treino:
+
+    treino desde 2011 (B3+MT5)   IC −0,0277  t −1,37
+    treino desde 2019            IC −0,0206  t −1,03
+    treino desde 2021 (só MT5)   IC −0,0301  t −1,04
+
+Todos negativos, inclusive treinando só com dado limpo. Não é contaminação do
+COTAHIST.
+
+### O que fecha o caso
+
+O recorte 2023–2026, que na sessão anterior dera **IC +0,072 (t=2,16)**, passou
+a dar **−0,030** com uma perturbação mínima da amostra (7 tickers a mais, o
+filtro de janelas suspeitas, algumas linhas do início de 2021). **Resultado que
+troca de sinal assim nunca foi sinal** — era artefato de amostra pequena,
+agravado por teste múltiplo (várias configurações testadas, a melhor relatada).
+
+### Conclusão para quem retomar
+
+Não há sinal transversal confiável nos fundamentos CVM para prever retorno
+relativo em 60 pregões com as features atuais. As três variáveis do desenho
+foram percorridas e nenhuma sobreviveu:
+
+1. horizonte/alvo — absoluto → relativo aos pares;
+2. instrumento — classificação binária → ranking (IC/quintis);
+3. volume de dados — 5 → 15 anos.
+
+**NÃO refazer o COTAHIST.** Foi feito, funcionou tecnicamente (download, parser
+posicional, emenda, detecção de eventos) e a resposta foi não. Se alguém voltar
+a essa fonte por outro motivo, o ponto fraco conhecido é a confirmação de
+eventos societários: 220 candidatos, só 6 explicados pela DFC, e dividendos
+abaixo de 18% passam despercebidos.
+
+O que resta são hipóteses sobre a MATÉRIA-PRIMA, não sobre o método: features
+de preço/momentum junto das contábeis, ou valuation relativa à própria história
+da empresa (que o painel fundamentalista já calcula). São hipóteses NOVAS, não
+refinamentos desta — exigem spec e aprovação.
+
+### Estado da feature Previsões ML
+
+Funcional e honesta: treino assíncrono cancelável, gate de ranking avaliado no
+servidor, nenhum modelo ATIVO, UI mostrando os 5 critérios com valores medidos
+e o excesso por quintil. O harness detectou, ao longo destas sessões, três
+defeitos reais que teriam passado despercebidos — rótulos fabricados,
+superconfiança de 95% e a métrica errada. É esse o ativo que ficou.
 
 ## Sessão 2026-07-25 (cont. 10) — Troca de instrumento: ranking (branch `main`)
 
