@@ -74,11 +74,22 @@ const DirectionalTrainResultSchema = z
     universe: z.array(z.string().regex(B3_TICKER_EXACT)).min(1).max(2_000),
     horizonTradingDays: z.number().int().positive().max(1_000),
     targetMode: z.enum(['absolute', 'sector_relative']).optional(),
-    gate: z.object({ upper: finiteNumber.min(0).max(1), lower: finiteNumber.min(0).max(1) }).strict(),
+    // Escore composto reporta a configuração do RANKING; `upper`/`lower` são
+    // do gate de probabilidade do motor anterior e seguem aceitos para
+    // resultados antigos. Campo novo emitido pelo Python PRECISA aparecer
+    // aqui: foi a omissão de um campo (`orphan`) que quebrou o treino
+    // assíncrono inteiro em 2026-07-25.
+    gate: z.object({
+      upper: finiteNumber.min(0).max(1).optional(),
+      lower: finiteNumber.min(0).max(1).optional(),
+      quantiles: z.number().int().positive().max(20).optional(),
+      minFeatureTStat: finiteNumber.optional(),
+    }).strict(),
     windowStart: isoDate,
     windowEnd: isoDate,
     hyperparameters: z.record(z.string(), z.unknown()),
     features: z.array(z.string().max(200)).min(1).max(500),
+    selectedFeatures: z.array(z.string().max(200)).max(500).optional(),
     metrics: DirectionalMetricsSchema,
     artifactPath: z.string().min(1).max(1_000),
   })

@@ -163,10 +163,12 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000, interv
  * (§4.7). Substituem os antigos blocos de bootstrap do gate híbrido.
  */
 const RANKING_FORTE = {
-  // Métricas do gate de RANKING (instrumento atual, desde 2026-07-25).
+  nSamples: 5235,
+  nPeriods: 49,
+  nFeaturesMedian: 11,
   ic: 0.08,
   icTStat: 2.6,
-  icPeriods: 13,
+  icPeriods: 49,
   quantileExcess: [
     { quantile: 1, n: 320, meanExcess: -0.02, hitRate: 0.44 },
     { quantile: 5, n: 320, meanExcess: 0.04, hitRate: 0.56 },
@@ -175,12 +177,14 @@ const RANKING_FORTE = {
   spreadByYear: [{ testYear: 2024, spread: 0.05 }, { testYear: 2025, spread: 0.04 },
                  { testYear: 2026, spread: -0.01 }],
   positiveYearsRatio: 0.67,
+  byFold: [{ foldId: 0, testYear: 2025, n: 500, nFeatures: 11, ic: 0.09 }],
 };
 
+/** Fator sem informação: reprova nos cinco critérios. */
 const RANKING_FRACO = {
+  ...RANKING_FORTE,
   ic: 0.004,
   icTStat: 0.3,
-  icPeriods: 13,
   quantileExcess: [
     { quantile: 1, n: 320, meanExcess: 0.01, hitRate: 0.5 },
     { quantile: 5, n: 320, meanExcess: -0.01, hitRate: 0.47 },
@@ -190,33 +194,8 @@ const RANKING_FRACO = {
   positiveYearsRatio: 0.0,
 };
 
-const STRONG_METRICS = {
-  ...RANKING_FORTE,
-  nSamples: 2000,
-  nHighConfidence: 400,
-  accuracy: 0.92,
-  accuracyAllSamples: 0.7,
-  brier: 0.08,
-  coverage: 45,
-  coveragePeriod: '2025T4',
-  baselineAllUp: 0.5,
-  baselineOnSignals: 0.6,
-  baselineDelta: 0.32,
-  confusionMatrix: { truePositive: 200, falsePositive: 20, trueNegative: 160, falseNegative: 20 },
-  reliability: [{ binStart: 0.9, binEnd: 1, n: 100, meanPredicted: 0.95, observedRate: 0.94 }],
-  byFold: [{ foldId: 0, testYear: 2025, n: 500, nHighConfidence: 100, accuracy: 0.92, brier: 0.08 }],
-};
-
-/** Reprova nos 4 gates simultaneamente — números próximos dos reais de 2026-07-25. */
-const WEAK_METRICS = {
-  ...STRONG_METRICS,
-  ...RANKING_FRACO,
-  accuracy: 0.556,
-  brier: 0.329,
-  coverage: 1,
-  baselineOnSignals: 0.433,
-  baselineDelta: 0.123,
-};
+const STRONG_METRICS = RANKING_FORTE;
+const WEAK_METRICS = RANKING_FRACO;
 
 function fakeTrainResult(metrics: typeof STRONG_METRICS) {
   return {
@@ -234,7 +213,7 @@ function fakeTrainResult(metrics: typeof STRONG_METRICS) {
     // SUCCEEDED exercitar esse ticker pelo schema real.
     universe: ['PETR4', 'B3SA3'] as string[],
     horizonTradingDays: 60,
-    gate: { upper: 0.9, lower: 0.1 },
+    gate: { quantiles: 5, minFeatureTStat: 2 },
     windowStart: '2011-08-14',
     windowEnd: '2026-05-15',
     hyperparameters: { lightgbm: { max_depth: 6 } },
@@ -441,9 +420,9 @@ async function approvedTrainingCreatesExactlyOneModelVersion(prisma: PrismaClien
       assertLog(modelVersion !== null, 'DirectionalModelVersion persistida no banco');
       assertLog(modelVersion!.status === 'ACTIVE', 'versão aprovada é ativada pelo claim CAS do worker');
       assertLog(modelVersion!.gateFailures === null, 'versão aprovada não registra falha de gate');
-      const metrics = JSON.parse(modelVersion!.metrics) as { accuracy: number; brier: number; coverage: number };
-      assertLog(metrics.accuracy === 0.92 && metrics.brier === 0.08 && metrics.coverage === 45,
-        'métricas do walk-forward correspondem ao resultado do treino');
+      const metrics = JSON.parse(modelVersion!.metrics) as { ic: number; icTStat: number; topBottomSpread: number };
+      assertLog(metrics.ic === 0.08 && metrics.icTStat === 2.6,
+        'métricas de fator correspondem ao resultado do treino');
 
       const researchRun = await prisma.researchRun.findUnique({ where: { runId: finalJson.data.researchRunId! } });
       assertLog(researchRun !== null && researchRun.modelVersionId === modelVersion!.modelVersion, 'ResearchRun linkado à versão aprovada');
@@ -722,9 +701,9 @@ async function lostPublicationClaimNeverActivatesModelVersion(prisma: PrismaClie
  */
 async function malformedPythonPayloadsAreRejectedAndNeverPersist(prisma: PrismaClient): Promise<void> {
   const cases: { name: string; body: unknown }[] = [
-    { name: 'accuracy NaN', body: { ...fakeTrainResult(STRONG_METRICS), aggregate: { nSamples: 10, accuracy: Number.NaN } } },
-    { name: 'accuracy Infinity', body: { ...fakeTrainResult(STRONG_METRICS), aggregate: { nSamples: 10, accuracy: Number.POSITIVE_INFINITY } } },
-    { name: 'hash curto', body: { ...fakeTrainResult(STRONG_METRICS), artifact: { hash: 'abc123', path: 'x' } } },
+    { name: 'campo desconhecido (aggregate) no resultado', body: { ...fakeTrainResult(STRONG_METRICS), aggregate: { nSamples: 10, accuracy: Number.NaN } } },
+    { name: 'IC fora de [-1,1]', body: { ...fakeTrainResult({ ...STRONG_METRICS, ic: 5 }) } },
+    { name: 'modelVersion curta', body: { ...fakeTrainResult(STRONG_METRICS), modelVersion: 'abc123' } },
     { name: 'universeBarsDigest não-hex', body: { ...fakeTrainResult(STRONG_METRICS), universeBarsDigest: 'Z'.repeat(64) } },
   ];
 

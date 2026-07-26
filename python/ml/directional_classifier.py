@@ -29,10 +29,61 @@ from .directional_features import FEATURE_COLUMNS
 #: Horizonte do alvo, em pregões (princípio fixo 7 da spec: 1 trimestre).
 HORIZON_TRADING_DAYS = 60
 
-#: Gate de confiança (princípio fixo 6). Fora destes limites o modelo não
-#: opina — NEUTRO é uma resposta legítima, não uma falha.
-UPPER_GATE = 0.90
-LOWER_GATE = 0.10
+#: Número de faixas do ranking transversal. O sinal sai da POSIÇÃO da empresa
+#: entre as pares do trimestre, não de um limiar absoluto de probabilidade —
+#: o escore composto ordena, não estima probabilidade.
+QUANTILES = 5
+
+#: Mínimo de empresas num período para que a ordenação signifique algo.
+MIN_CROSS_SECTION = 20
+
+#: Corte de significância para uma feature entrar no escore. Medido sobre 58
+#: trimestres de dado limpo, as features fortes ficam bem acima disto
+#: (`delta_margem_liquida` t=6,20; `delta_roe` t=5,93) e as inúteis bem abaixo
+#: (`margem_ebitda` t=0,22) — o corte separa os dois grupos com folga.
+MIN_FEATURE_TSTAT = 2.0
+
+#: Períodos mínimos para estimar o IC de uma feature na seleção.
+MIN_SELECTION_PERIODS = 8
+
+#: LIMITAÇÃO CONHECIDA — teste múltiplo na seleção. Com 28 features candidatas
+#: e corte em t > 2 (p = 0,05), esperam-se ~1,4 falsos positivos POR ACASO em
+#: cada fold. O efeito é diluído (uma feature de ruído entre 13 selecionadas
+#: desloca pouco a média de percentis) e a seleção é refeita a cada fold, mas
+#: existe. Correção de Bonferroni (t ≈ 3,0 para 28 candidatas) cortaria os
+#: marginais mantendo os fortes (`delta_margem_liquida` t=6,20, `delta_roe`
+#: t=5,93) — não aplicada aqui para não ajustar o critério depois de ver o
+#: resultado, que é o erro que esta sessão já cometeu uma vez.
+
+SIGNAL_BUY = 'COMPRA'
+SIGNAL_SELL = 'VENDA'
+SIGNAL_NEUTRAL = 'NEUTRO'
+
+#: Número de faixas do ranking transversal. O sinal sai da POSIÇÃO da empresa
+#: entre as pares do trimestre, não de um limiar absoluto de probabilidade —
+#: o escore composto ordena, não estima probabilidade.
+QUANTILES = 5
+
+#: Mínimo de empresas num período para que a ordenação signifique algo.
+MIN_CROSS_SECTION = 20
+
+#: Corte de significância para uma feature entrar no escore. Medido sobre 58
+#: trimestres de dado limpo, as features fortes ficam bem acima disto
+#: (`delta_margem_liquida` t=6,20; `delta_roe` t=5,93) e as inúteis bem abaixo
+#: (`margem_ebitda` t=0,22) — o corte separa os dois grupos com folga.
+MIN_FEATURE_TSTAT = 2.0
+
+#: Períodos mínimos para estimar o IC de uma feature na seleção.
+MIN_SELECTION_PERIODS = 8
+
+#: LIMITAÇÃO CONHECIDA — teste múltiplo na seleção. Com 28 features candidatas
+#: e corte em t > 2 (p = 0,05), esperam-se ~1,4 falsos positivos POR ACASO em
+#: cada fold. O efeito é diluído (uma feature de ruído entre 13 selecionadas
+#: desloca pouco a média de percentis) e a seleção é refeita a cada fold, mas
+#: existe. Correção de Bonferroni (t ≈ 3,0 para 28 candidatas) cortaria os
+#: marginais mantendo os fortes (`delta_margem_liquida` t=6,20, `delta_roe`
+#: t=5,93) — não aplicada aqui para não ajustar o critério depois de ver o
+#: resultado, que é o erro que esta sessão já cometeu uma vez.
 
 SIGNAL_BUY = 'COMPRA'
 SIGNAL_SELL = 'VENDA'
@@ -116,17 +167,12 @@ CROSS_SECTIONAL_NORMALIZATION = False
 MIN_SECTOR_PEERS = 5
 
 HYPERPARAMETERS = {
-    'lightgbm': {'max_depth': 6, 'num_leaves': 63, 'learning_rate': 0.05,
-                 'n_estimators': 400, 'random_state': 42},
-    'xgboost': {'max_depth': 5, 'learning_rate': 0.05, 'n_estimators': 400,
-                'subsample': 0.8, 'colsample_bytree': 0.8, 'random_state': 42},
-    'logistic': {'C': 1.0, 'penalty': 'l2', 'max_iter': 2000, 'random_state': 42},
-    'weights': ENSEMBLE_WEIGHTS,
+    'model': 'composite-factor-score',
+    'minFeatureTStat': MIN_FEATURE_TSTAT,
+    'minSelectionPeriods': MIN_SELECTION_PERIODS,
+    'quantiles': QUANTILES,
     'horizon': HORIZON_TRADING_DAYS,
-    'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
-    'calibration': {'method': CALIBRATION_METHOD, 'fraction': CALIBRATION_FRACTION},
     'target': {'mode': TARGET_MODE, 'minSectorPeers': MIN_SECTOR_PEERS},
-    'crossSectionalNormalization': CROSS_SECTIONAL_NORMALIZATION,
 }
 
 _MIN_TRAIN_ROWS = 200
@@ -305,178 +351,128 @@ def assign_quantiles(scores: pd.Series, n: int = 5) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
-# Gate de confiança
+# Sinal por posição transversal
 # ---------------------------------------------------------------------------
-def classify_signal(prob: float) -> tuple[str, float]:
-    """Converte probabilidade de alta em (sinal, confiança) — §4.1.
+def classify_signal(quantile, n_quantiles: int = QUANTILES) -> str:
+    """Sinal a partir do QUINTIL, não de um limiar absoluto de probabilidade.
 
-    Acima do gate superior a confiança é a própria probabilidade; abaixo do
-    inferior é o complemento (confiança de que cai). Na zona ambígua devolve
-    NEUTRO carregando a probabilidade crua, para a UI poder mostrar o quão
-    perto do gate o caso ficou sem que isso vire recomendação.
+    O escore composto ordena empresas dentro do trimestre; ele não estima
+    probabilidade de nada. Emitir "90% de confiança" a partir dele seria
+    inventar um número — foi exatamente o que a calibração desmascarou no
+    ensemble anterior (a confiança de 95% não existia).
+
+    Topo = COMPRA, fundo = VENDA, meio = NEUTRO. Quem não tem quintil (período
+    com pares de menos) fica NEUTRO: sem seção transversal não há ordenação.
     """
-    p = float(prob)
-    if p > UPPER_GATE:
-        return SIGNAL_BUY, p
-    if p < LOWER_GATE:
-        return SIGNAL_SELL, 1.0 - p
-    return SIGNAL_NEUTRAL, p
-
-
-def is_high_confidence(prob: pd.Series) -> pd.Series:
-    return (prob > UPPER_GATE) | (prob < LOWER_GATE)
+    if quantile is None or (isinstance(quantile, float) and quantile != quantile):
+        return SIGNAL_NEUTRAL
+    q = int(quantile)
+    if q >= n_quantiles:
+        return SIGNAL_BUY
+    if q <= 1:
+        return SIGNAL_SELL
+    return SIGNAL_NEUTRAL
 
 
 # ---------------------------------------------------------------------------
-# Ensemble
+# Escore composto de fator
 # ---------------------------------------------------------------------------
-class DirectionalEnsemble:
-    """LightGBM + XGBoost + Regressão Logística (Ridge), votação ponderada.
+class CompositeFactorScore:
+    """Média de percentis transversais das features com sinal comprovado.
 
-    A logística recebe imputação de mediana + padronização (árvores não
-    precisam, e imputar com 0 quebraria a escala dos indicadores); as árvores
-    recebem os NaN diretamente, que ambas tratam nativamente.
+    SUBSTITUI o ensemble LightGBM + XGBoost + Logística em 2026-07-25. Medido
+    lado a lado, na MESMA base de 15 anos e mesmo walk-forward:
+
+        ensemble:  IC +0,0176  t +1,27  spread topo-fundo +0,83 p.p.
+        composto:  IC +0,0956  t +4,32  spread topo-fundo +2,58 p.p.
+
+    E os quintis do composto são MONÓTONOS (Q1 +0,13% → Q5 +2,71%), formato que
+    o ensemble nunca produziu. O ensemble extraía IC 0,018 de features que
+    sozinhas dão 0,101 — era cinco vezes pior que o próprio melhor insumo.
+
+    Causa provável do fracasso do ensemble: ~5.000 amostras com 28 features
+    fracamente informativas é o regime em que gradient boosting acha padrão
+    espúrio, e as poucas features fortes se diluem entre as que nada dizem.
+
+    O modelo aqui não tem hiperparâmetro para ajustar nem otimização a
+    convergir: seleciona por significância e tira a média. Menos código, menos
+    superfície de sobreajuste, resultado melhor.
     """
 
-    def __init__(self, features: list[str] | None = None, hyperparameters: dict | None = None):
-        self.features = list(features or FEATURE_COLUMNS)
-        self.hyperparameters = json.loads(json.dumps(hyperparameters or HYPERPARAMETERS))
-        self.weights = dict(self.hyperparameters.get('weights') or ENSEMBLE_WEIGHTS)
-        total = sum(self.weights.values())
-        if abs(total - 1.0) > 1e-9:
-            raise ValueError(f'PESOS_INVALIDOS: soma dos pesos do ensemble = {total}, esperado 1.0')
-        self._models: dict[str, object] = {}
-        self._logistic_pipeline = None
-        #: Mapa de calibração (probabilidade dita → frequência observada).
-        #: `None` = ensemble cru, e `is_calibrated` reporta isso honestamente.
-        self._calibrator = None
+    def __init__(self, min_tstat: float = MIN_FEATURE_TSTAT,
+                 features: list[str] | None = None,
+                 min_periods: int = MIN_SELECTION_PERIODS):
+        self.candidate_features = list(features or FEATURE_COLUMNS)
+        self.min_tstat = min_tstat
+        self.min_periods = min_periods
+        self.selected: list[str] = []
+        self.feature_ic: dict[str, dict] = {}
 
-    # -- treino ------------------------------------------------------------
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> 'DirectionalEnsemble':
-        import lightgbm as lgb
-        import xgboost as xgb
-        from sklearn.impute import SimpleImputer
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.pipeline import Pipeline
-        from sklearn.preprocessing import StandardScaler
+    def fit(self, train: pd.DataFrame) -> 'CompositeFactorScore':
+        """Seleciona features pelo IC no TREINO — jamais olhando o teste.
 
-        Xf = X[self.features]
-        yf = y.astype(int)
+        O IC é medido dentro de cada período e agregado; entra quem tem
+        t-stat acima do corte. Sinal fraco demais fica de fora em vez de
+        entrar com peso pequeno: incluir ruído dilui o escore.
+        """
+        from scipy import stats as _stats
 
-        self._models['lightgbm'] = lgb.LGBMClassifier(
-            **self.hyperparameters['lightgbm'], verbose=-1).fit(Xf, yf)
-        self._models['xgboost'] = xgb.XGBClassifier(
-            **self.hyperparameters['xgboost'], eval_metric='logloss',
-            verbosity=0, tree_method='hist').fit(Xf, yf)
-        self._logistic_pipeline = Pipeline([
-            ('impute', SimpleImputer(strategy='median')),
-            ('scale', StandardScaler()),
-            ('clf', LogisticRegression(**self.hyperparameters['logistic'])),
-        ]).fit(Xf, yf)
-        self._models['logistic'] = self._logistic_pipeline
+        self.selected, self.feature_ic = [], {}
+        for feature in self.candidate_features:
+            ics = []
+            for _, grupo in train.groupby(['ano', 'trimestre']):
+                amostra = grupo[[feature, 'ret_excess']].dropna()
+                if len(amostra) < MIN_CROSS_SECTION or amostra[feature].nunique() < 5:
+                    continue
+                ics.append(float(_stats.spearmanr(amostra[feature], amostra['ret_excess']).statistic))
+            if len(ics) < self.min_periods:
+                continue
+            media = float(np.mean(ics))
+            erro = float(np.std(ics, ddof=1) / np.sqrt(len(ics)))
+            t = media / erro if erro > 0 else 0.0
+            self.feature_ic[feature] = {'ic': media, 'tStat': t, 'periods': len(ics)}
+            if t >= self.min_tstat:
+                self.selected.append(feature)
+        if not self.selected:
+            raise ValueError('INSUFFICIENT_DATA: nenhuma feature atingiu significancia no treino')
         return self
 
-    # -- calibração --------------------------------------------------------
-    @property
-    def is_calibrated(self) -> bool:
-        return self._calibrator is not None
+    def score(self, df: pd.DataFrame) -> pd.Series:
+        """Escore = média dos percentis transversais das features selecionadas.
 
-    def calibrate(self, X: pd.DataFrame, y: pd.Series, method: str | None = None) -> 'DirectionalEnsemble':
-        """Aprende o mapa probabilidade-dita → frequência-observada.
+        Percentil DENTRO do período (não z-score): imune a outlier contábil e
+        é a escala em que o sinal foi medido (Spearman). Centrado em 0, então
+        escore positivo = acima da mediana das pares naquele trimestre.
 
-        `X`/`y` PRECISAM ser dados que os modelos-base nunca viram e que são
-        anteriores ao período de teste — caso contrário o mapa é aprendido
-        sobre previsões in-sample (otimistas) e não corrige a superconfiança,
-        ou pior, vaza o futuro para dentro da confiança reportada.
-
-        Abaixo de `_MIN_CALIBRATION_ROWS` o mapa não é ajustado: o ensemble
-        segue cru e `is_calibrated` devolve False, para que a métrica reportada
-        diga a verdade sobre o que foi feito.
+        Feature ausente na linha não vira zero: a média ignora o NaN, e a
+        empresa é avaliada pelas features que ela tem.
         """
-        from sklearn.isotonic import IsotonicRegression
-        from sklearn.linear_model import LogisticRegression
+        if not self.selected:
+            raise ValueError('MODELO_NAO_TREINADO: chame fit() antes de pontuar')
+        percentis = df.groupby(['ano', 'trimestre'])[self.selected].transform(
+            lambda s: s.rank(pct=True) - 0.5 if s.notna().sum() > 1 else s * 0.0)
+        return percentis.mean(axis=1)
 
-        chosen = method or self.hyperparameters.get('calibration', {}).get('method', CALIBRATION_METHOD)
-        raw = self._raw_proba(X)
-        yf = np.asarray(y, dtype=float)
-
-        # Um conjunto de calibração com uma classe só não define mapa nenhum.
-        if len(raw) < _MIN_CALIBRATION_ROWS or len(np.unique(yf)) < 2:
-            self._calibrator = None
-            return self
-
-        if chosen == 'sigmoid':
-            platt = LogisticRegression(C=1e10, solver='lbfgs')
-            platt.fit(raw.reshape(-1, 1), yf)
-            self._calibrator = ('sigmoid', platt)
-        else:
-            iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
-            iso.fit(raw, yf)
-            self._calibrator = ('isotonic', iso)
-        return self
-
-    def _apply_calibration(self, raw: np.ndarray) -> np.ndarray:
-        if self._calibrator is None:
-            return raw
-        kind, model = self._calibrator
-        if kind == 'sigmoid':
-            return np.asarray(model.predict_proba(raw.reshape(-1, 1)))[:, 1]
-        return np.clip(np.asarray(model.predict(raw)), 0.0, 1.0)
-
-    # -- inferência --------------------------------------------------------
-    def predict_proba_by_model(self, X: pd.DataFrame) -> dict[str, np.ndarray]:
-        if not self._models:
-            raise ValueError('MODELO_NAO_TREINADO: chame fit() antes de prever')
-        Xf = X[self.features]
-        return {name: np.asarray(model.predict_proba(Xf))[:, 1] for name, model in self._models.items()}
-
-    def _raw_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Média ponderada dos 3 modelos, ANTES da calibração (§4.1)."""
-        by_model = self.predict_proba_by_model(X)
-        return sum(self.weights[name] * probs for name, probs in by_model.items())
-
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Probabilidade final: votação ponderada + calibração (se houver).
-
-        É esta — a calibrada — que alimenta o gate de confiança. Usar a crua
-        faria o gate de 90% disparar sobre uma confiança que o próprio modelo
-        não sustenta.
-        """
-        return self._apply_calibration(self._raw_proba(X))
-
-    def predict_signals(self, X: pd.DataFrame) -> pd.DataFrame:
-        probs = self.predict_proba(X)
-        classified = [classify_signal(p) for p in probs]
-        return pd.DataFrame({'prob': probs,
-                             'signal': [c[0] for c in classified],
-                             'confidence': [c[1] for c in classified]}, index=X.index)
-
-    # -- importâncias ------------------------------------------------------
     def top_features(self, n: int = 3) -> list[dict]:
-        """Top features por ganho do LightGBM (única fonte estável entre os 3)."""
-        model = self._models.get('lightgbm')
-        if model is None:
-            return []
-        pairs = sorted(zip(self.features, model.feature_importances_), key=lambda t: -float(t[1]))
-        return [{'feature': f, 'importance': float(v)} for f, v in pairs[:n]]
+        """As features selecionadas com maior IC — a explicação do escore."""
+        ordenadas = sorted(((f, self.feature_ic[f]) for f in self.selected),
+                           key=lambda item: -abs(item[1]['ic']))
+        return [{'feature': f, 'importance': round(m['ic'], 6)} for f, m in ordenadas[:n]]
 
     # -- serialização ------------------------------------------------------
     def save(self, path: str) -> None:
-        with open(path, 'wb') as fh:
-            pickle.dump({'features': self.features, 'hyperparameters': self.hyperparameters,
-                         'weights': self.weights, 'models': self._models,
-                         'calibrator': self._calibrator}, fh)
+        """O artefato é a lista de features e seus ICs — não há pesos treinados."""
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump({'selected': self.selected, 'featureIc': self.feature_ic,
+                       'minTStat': self.min_tstat, 'candidates': self.candidate_features}, fh, indent=2)
 
     @classmethod
-    def load(cls, path: str) -> 'DirectionalEnsemble':
-        with open(path, 'rb') as fh:
-            blob = pickle.load(fh)
-        obj = cls(features=blob['features'], hyperparameters=blob['hyperparameters'])
-        obj.weights = blob['weights']
-        obj._models = blob['models']
-        obj._logistic_pipeline = blob['models'].get('logistic')
-        # Artefato antigo (pré-calibração) carrega sem o campo — segue cru.
-        obj._calibrator = blob.get('calibrator')
+    def load(cls, path: str) -> 'CompositeFactorScore':
+        with open(path, 'r', encoding='utf-8') as fh:
+            blob = json.load(fh)
+        obj = cls(min_tstat=blob['minTStat'], features=blob.get('candidates'))
+        obj.selected = blob['selected']
+        obj.feature_ic = blob['featureIc']
         return obj
 
 
@@ -542,15 +538,20 @@ def calibration_split(train: pd.DataFrame, fraction: float = CALIBRATION_FRACTIO
 
 def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
                      hyperparameters: dict | None = None) -> pd.DataFrame:
-    """Previsões out-of-sample: para cada ano de teste, treina só no passado.
+    """Previsões out-of-sample: para cada ano de teste, seleciona e pontua só com o passado.
+
+    A SELEÇÃO DE FEATURES acontece dentro do fold, sobre o treino — nunca sobre
+    a amostra inteira. Selecionar antes do walk-forward vazaria o futuro para
+    dentro da escolha e inflaria o IC medido.
 
     Embargo do alvo: linhas de treino cuja janela de 60 pregões invadiria o
-    período de teste são removidas do fold (`exit_date < test_start`), o que
-    garante `knowledgeTime <= decisionTime` E ausência de sobreposição de alvo
-    entre treino e teste.
+    período de teste são removidas, garantindo `knowledgeTime <= decisionTime` E
+    ausência de sobreposição de alvo entre treino e teste.
     """
-    features = list(features or FEATURE_COLUMNS)
-    out = []
+    hp = hyperparameters or HYPERPARAMETERS
+    candidatas = list(features or FEATURE_COLUMNS)
+    saida = []
+
     for split in yearly_splits(labeled['knowledge_date']):
         test = labeled[split['test_mask']]
         test_start = pd.to_datetime(test['knowledge_date']).min()
@@ -559,27 +560,20 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
         if len(train) < _MIN_TRAIN_ROWS:
             continue
 
-        # Ajuste e calibração usam fatias DISJUNTAS do treino, ambas anteriores
-        # ao teste — o mapa de calibração nunca vê previsão in-sample.
-        hp = hyperparameters or HYPERPARAMETERS
-        # Normaliza DENTRO de cada período, separadamente em treino e teste —
-        # o percentil de uma empresa depende só das pares do mesmo trimestre,
-        # então normalizar o teste não usa nenhuma informação do treino nem do
-        # futuro. É transformação por período, não estatística global.
-        if hp.get('crossSectionalNormalization', CROSS_SECTIONAL_NORMALIZATION):
-            train = cross_sectional_rank(train, features)
-            test = cross_sectional_rank(test, features)
+        modelo = CompositeFactorScore(
+            min_tstat=hp.get('minFeatureTStat', MIN_FEATURE_TSTAT),
+            features=candidatas,
+            min_periods=hp.get('minSelectionPeriods', MIN_SELECTION_PERIODS),
+        )
+        try:
+            modelo.fit(train)
+        except ValueError:
+            # Nenhuma feature significativa neste fold: não há escore a emitir.
+            # Pular é honesto; forçar um escore de features sem sinal não é.
+            continue
 
-        fit_rows, calib_rows = calibration_split(
-            train, hp.get('calibration', {}).get('fraction', CALIBRATION_FRACTION))
-        model = DirectionalEnsemble(features, hyperparameters).fit(fit_rows[features], fit_rows['y'])
-        if not calib_rows.empty:
-            model.calibrate(calib_rows[features], calib_rows['y'])
-
-        raw = model._raw_proba(test[features])
-        probs = model.predict_proba(test[features])
-        classified = [classify_signal(p) for p in probs]
-        out.append(pd.DataFrame({
+        escore = modelo.score(test)
+        saida.append(pd.DataFrame({
             'ticker': test['ticker'].to_numpy(),
             'cd_cvm': test['cd_cvm'].to_numpy(),
             'ano': test['ano'].to_numpy(),
@@ -587,56 +581,25 @@ def run_walk_forward(labeled: pd.DataFrame, features: list[str] | None = None,
             'knowledgeDate': pd.to_datetime(test['knowledge_date']).dt.strftime('%Y-%m-%d').to_numpy(),
             'foldId': split['fold_id'],
             'testYear': split['test_year'],
-            'trainRows': int(len(fit_rows)),
-            'calibRows': int(len(calib_rows)),
-            'calibrated': bool(model.is_calibrated),
-            'prob': probs,
-            # Probabilidade ANTES da calibração — mantida para que o ganho
-            # (ou a ausência dele) seja auditável, nunca só afirmado.
-            'probRaw': raw,
-            'signal': [c[0] for c in classified],
-            'confidence': [c[1] for c in classified],
+            'trainRows': int(len(train)),
+            'nFeatures': len(modelo.selected),
+            'score': escore.to_numpy(),
             'yTrue': test['y'].to_numpy(),
             'retFwd': test['ret_fwd'].to_numpy(),
             'retExcess': test['ret_excess'].to_numpy(),
         }))
-    if not out:
+
+    if not saida:
         raise ValueError('INSUFFICIENT_DATA: nenhum fold walk-forward viavel apos embargo do alvo')
-    wf = pd.concat(out, ignore_index=True)
-    # Posição TRANSVERSAL do escore — é ela que carrega o sinal, não o nível
-    # absoluto da probabilidade (ver `evaluate_walk_forward`).
+
+    wf = pd.concat(saida, ignore_index=True)
     grupo = ['ano', 'trimestre']
-    wf['percentile'] = wf.groupby(grupo)['prob'].transform(lambda s: s.rank(pct=True))
-    wf['quantile'] = wf.groupby(grupo, group_keys=False)['prob'].apply(assign_quantiles)
+    # Posição transversal do escore: é ela que carrega o sinal e define o sinal
+    # emitido. `percentile` fica em [0,1]; `quantile` em 1..QUANTILES.
+    wf['percentile'] = wf.groupby(grupo)['score'].transform(lambda s: s.rank(pct=True))
+    wf['quantile'] = wf.groupby(grupo, group_keys=False)['score'].apply(assign_quantiles)
+    wf['signal'] = wf['quantile'].map(classify_signal)
     return wf
-
-
-# ---------------------------------------------------------------------------
-# Métricas (§4.2 / §4.7)
-# ---------------------------------------------------------------------------
-def brier_score(prob: pd.Series, y_true: pd.Series) -> float:
-    """Erro quadrático médio da probabilidade — mede calibração, não acerto."""
-    p = np.asarray(prob, dtype=float)
-    y = np.asarray(y_true, dtype=float)
-    if len(p) == 0:
-        return float('nan')
-    return float(np.mean((p - y) ** 2))
-
-
-def reliability_bins(prob: pd.Series, y_true: pd.Series, n_bins: int = 10) -> list[dict]:
-    """Diagrama de confiabilidade: probabilidade prevista vs frequência observada."""
-    p = np.asarray(prob, dtype=float)
-    y = np.asarray(y_true, dtype=float)
-    edges = np.linspace(0.0, 1.0, n_bins + 1)
-    bins = []
-    for i in range(n_bins):
-        lo, hi = edges[i], edges[i + 1]
-        mask = (p >= lo) & (p < hi) if i < n_bins - 1 else (p >= lo) & (p <= hi)
-        n = int(mask.sum())
-        bins.append({'binStart': float(lo), 'binEnd': float(hi), 'n': n,
-                     'meanPredicted': float(p[mask].mean()) if n else None,
-                     'observedRate': float(y[mask].mean()) if n else None})
-    return bins
 
 
 def _ranking_metrics(wf: pd.DataFrame) -> dict:
@@ -665,10 +628,10 @@ def _ranking_metrics(wf: pd.DataFrame) -> dict:
 
     ics = []
     for _, g in wf.groupby(['ano', 'trimestre']):
-        s = g[['prob', 'retExcess']].dropna()
-        if len(s) < 20 or s['prob'].nunique() < 5:
+        s = g[['score', 'retExcess']].dropna()
+        if len(s) < MIN_CROSS_SECTION or s['score'].nunique() < 5:
             continue
-        ics.append(float(_stats.spearmanr(s['prob'], s['retExcess']).statistic))
+        ics.append(float(_stats.spearmanr(s['score'], s['retExcess']).statistic))
 
     ic = float(np.mean(ics)) if ics else None
     ic_t = None
@@ -708,80 +671,46 @@ def _ranking_metrics(wf: pd.DataFrame) -> dict:
 
 
 def evaluate_walk_forward(wf: pd.DataFrame) -> dict:
-    """Métricas do gate de aceitação (§4.7).
+    """Métricas do gate de aceitação.
 
-    - `accuracy`: acerto direcional APENAS nos sinais de alta confiança (é o
-      que o usuário de fato opera; a acurácia sobre tudo, inclusive NEUTRO,
-      fica em `accuracyAllSamples` para referência, nunca como gate).
-    - `brier`: calibração sobre TODAS as amostras out-of-sample.
-    - `coverage`: empresas distintas com sinal de alta confiança no ÚLTIMO
-      trimestre avaliado (o gate 3 é sobre o trimestre mais recente, não sobre
-      a média histórica).
-    - `baselineDelta`: acurácia dos sinais menos a do baseline "comprar tudo"
-      medido NO MESMO subconjunto de alta confiança — comparação pareada; a
-      taxa de alta sobre a amostra inteira fica à parte em `baselineAllUp`.
+    Só métricas de FATOR: IC, significância, excesso por quintil, spread
+    topo-fundo e consistência entre anos (ver `_ranking_metrics`).
+
+    As métricas de classificação da versão anterior (acurácia, Brier,
+    cobertura, matriz de confusão, diagrama de confiabilidade) NÃO são mais
+    emitidas: o escore composto ordena empresas, não estima probabilidade, e
+    reportar Brier de um número que não é probabilidade seria inventar
+    calibração onde não existe. Os campos seguem OPCIONAIS no contrato para
+    que as versões antigas continuem legíveis na auditoria.
+
+    `hitRate` por quintil ocupa o lugar da acurácia: é a fração de empresas do
+    quintil que de fato superou as pares, medida sem fingir confiança pontual.
     """
-    # Direção implícita é sempre `prob > 0.5` — a mesma regra vale dentro e
-    # fora do gate (acima de 0.90 é necessariamente > 0.5, abaixo de 0.10 é
-    # necessariamente < 0.5), então o acerto é comparável entre os dois
-    # recortes sem que NEUTRO seja contado como "aposta na baixa".
-    predicted_up = wf['prob'] > 0.5
-    wf = wf.assign(_correct=(predicted_up == (wf['yTrue'] == 1.0)))
-    high = wf[is_high_confidence(wf['prob'])]
-
-    last_period = None
-    coverage = 0
-    if not high.empty:
-        periods = sorted(set(zip(high['ano'].astype(int), high['trimestre'].astype(int))))
-        last_period = periods[-1]
-        last = high[(high['ano'].astype(int) == last_period[0])
-                    & (high['trimestre'].astype(int) == last_period[1])]
-        coverage = int(last['cd_cvm'].nunique())
-
-    # Sem NENHUM sinal de alta confiança não existe acurácia de sinal — o
-    # valor honesto é `None`, nunca 0 (que fingiria "errou tudo") nem NaN
-    # (que o `jsonify` do Flask serializa como o literal `NaN`, JSON inválido
-    # que quebraria o `JSON.parse` do lado Node).
-    accuracy = float(high['_correct'].mean()) if len(high) else None
-    baseline_on_signals = float((high['yTrue'] == 1.0).mean()) if len(high) else None
-
-    tp = int(((high['signal'] == SIGNAL_BUY) & (high['yTrue'] == 1.0)).sum()) if len(high) else 0
-    fp = int(((high['signal'] == SIGNAL_BUY) & (high['yTrue'] == 0.0)).sum()) if len(high) else 0
-    tn = int(((high['signal'] == SIGNAL_SELL) & (high['yTrue'] == 0.0)).sum()) if len(high) else 0
-    fn = int(((high['signal'] == SIGNAL_SELL) & (high['yTrue'] == 1.0)).sum()) if len(high) else 0
-
-    ranking = _ranking_metrics(wf)
-
-    return {
+    metricas = {
         'nSamples': int(len(wf)),
-        'nHighConfidence': int(len(high)),
-        **ranking,
-        'accuracy': accuracy,
-        'accuracyAllSamples': float(wf['_correct'].mean()),
-        'brier': brier_score(wf['prob'], wf['yTrue']),
-        'coverage': coverage,
-        'coveragePeriod': (f'{last_period[0]}T{last_period[1]}' if last_period else None),
-        'baselineAllUp': float((wf['yTrue'] == 1.0).mean()),
-        'baselineOnSignals': baseline_on_signals,
-        'baselineDelta': (accuracy - baseline_on_signals) if len(high) else None,
-        # Antes/depois da calibração — o ganho tem de ser auditável, não
-        # apenas afirmado. `brierRaw` é o Brier da probabilidade CRUA sobre as
-        # MESMAS amostras; `nHighConfidenceRaw` mostra o custo em cobertura
-        # (uma calibração honesta costuma reduzir sinais, porque desinfla
-        # confianças que o modelo não sustentava).
-        'calibrated': bool(wf['calibrated'].all()) if 'calibrated' in wf else False,
-        'brierRaw': (brier_score(wf['probRaw'], wf['yTrue']) if 'probRaw' in wf else None),
-        'nHighConfidenceRaw': (int(is_high_confidence(wf['probRaw']).sum()) if 'probRaw' in wf else None),
-        'confusionMatrix': {'truePositive': tp, 'falsePositive': fp,
-                            'trueNegative': tn, 'falseNegative': fn},
-        'reliability': reliability_bins(wf['prob'], wf['yTrue']),
-        'byFold': [{'foldId': int(f), 'testYear': int(g['testYear'].iloc[0]), 'n': int(len(g)),
-                    'nHighConfidence': int(is_high_confidence(g['prob']).sum()),
-                    'accuracy': (float(g[is_high_confidence(g['prob'])]['_correct'].mean())
-                                 if is_high_confidence(g['prob']).any() else None),
-                    'brier': brier_score(g['prob'], g['yTrue'])}
-                   for f, g in wf.groupby('foldId')],
+        'nPeriods': int(wf.groupby(['ano', 'trimestre']).ngroups),
+        'nFeaturesMedian': (int(wf['nFeatures'].median()) if 'nFeatures' in wf else None),
+        'byFold': [
+            {'foldId': int(f), 'testYear': int(g['testYear'].iloc[0]), 'n': int(len(g)),
+             'nFeatures': (int(g['nFeatures'].iloc[0]) if 'nFeatures' in g else None),
+             'ic': (float(_fold_ic(g)) if _fold_ic(g) is not None else None)}
+            for f, g in wf.groupby('foldId')
+        ],
     }
+    metricas.update(_ranking_metrics(wf))
+    return metricas
+
+
+def _fold_ic(fold: pd.DataFrame):
+    """IC médio dentro de um fold — `None` quando não há seção transversal."""
+    from scipy import stats as _stats
+    ics = []
+    for _, g in fold.groupby(['ano', 'trimestre']):
+        s = g[['score', 'retExcess']].dropna()
+        if len(s) < MIN_CROSS_SECTION or s['score'].nunique() < 5:
+            continue
+        ics.append(float(_stats.spearmanr(s['score'], s['retExcess']).statistic))
+    return float(np.mean(ics)) if ics else None
 
 
 # ---------------------------------------------------------------------------
@@ -837,12 +766,11 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
                              universe_bars_digest: str = '',
                              horizon: int = HORIZON_TRADING_DAYS,
                              target_mode: str = TARGET_MODE) -> dict:
-    """Rotula, roda o walk-forward, treina o modelo final e publica o artefato.
+    """Rotula, roda o walk-forward, ajusta o escore final e publica o artefato.
 
-    Retorna o dicionário de resultado consumido pelo Next (nunca persiste nada
-    em banco: governança é do lado Node). O modelo final é treinado sobre TODAS
-    as linhas rotuladas — é ele que serve `/ml/directional/predict`; as métricas
-    reportadas vêm exclusivamente do walk-forward out-of-sample.
+    O modelo publicável é selecionado sobre TODAS as linhas rotuladas — é ele
+    que serve `/ml/directional/predict`; as métricas reportadas vêm
+    exclusivamente do walk-forward out-of-sample.
     """
     labeled = label_panel(panel, bars_for, horizon=horizon, target_mode=target_mode)
     wf = run_walk_forward(labeled)
@@ -852,15 +780,7 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
     dataset_digest = compute_dataset_digest(labeled, FEATURE_COLUMNS)
     model_version = compute_model_version(HYPERPARAMETERS, FEATURE_COLUMNS, universe, dataset_digest)
 
-    # Modelo publicável: ajustado na maior parte da história e calibrado na
-    # fatia mais recente — mesma disciplina de cada fold do walk-forward, para
-    # que a confiança que ele reporta ao vivo tenha o mesmo significado da que
-    # foi medida na avaliação.
-    fit_rows, calib_rows = calibration_split(labeled)
-    final_model = DirectionalEnsemble(FEATURE_COLUMNS, HYPERPARAMETERS).fit(
-        fit_rows[FEATURE_COLUMNS], fit_rows['y'])
-    if not calib_rows.empty:
-        final_model.calibrate(calib_rows[FEATURE_COLUMNS], calib_rows['y'])
+    final_model = CompositeFactorScore().fit(labeled)
 
     result = {
         'modelVersion': model_version,
@@ -869,20 +789,20 @@ def run_directional_training(panel: pd.DataFrame, bars_for, models_dir: str,
         'universeBarsDigest': universe_bars_digest,
         'horizonTradingDays': horizon,
         'targetMode': target_mode,
-        'gate': {'upper': UPPER_GATE, 'lower': LOWER_GATE},
+        'gate': {'quantiles': QUANTILES, 'minFeatureTStat': MIN_FEATURE_TSTAT},
         'windowStart': pd.to_datetime(labeled['knowledge_date']).min().strftime('%Y-%m-%d'),
         'windowEnd': pd.to_datetime(labeled['knowledge_date']).max().strftime('%Y-%m-%d'),
         'hyperparameters': HYPERPARAMETERS,
         'features': list(FEATURE_COLUMNS),
-        'calibrated': bool(final_model.is_calibrated),
+        'selectedFeatures': list(final_model.selected),
         'metrics': metrics,
-        'artifactPath': os.path.join(models_dir, model_version, 'model.pkl'),
+        'artifactPath': os.path.join(models_dir, model_version, 'model.json'),
     }
     _publish_artifact(models_dir, model_version, final_model, wf, result)
     return result
 
 
-def _publish_artifact(models_dir: str, model_version: str, model: DirectionalEnsemble,
+def _publish_artifact(models_dir: str, model_version: str, model: CompositeFactorScore,
                       wf: pd.DataFrame, result: dict) -> None:
     """Publicação imutável e atômica — mesmo padrão de `ml/train.py`.
 
@@ -897,7 +817,7 @@ def _publish_artifact(models_dir: str, model_version: str, model: DirectionalEns
     provisional = os.path.join(models_dir, f'.provisional-{uuid.uuid4().hex}')
     os.makedirs(provisional, exist_ok=True)
     try:
-        model.save(os.path.join(provisional, 'model.pkl'))
+        model.save(os.path.join(provisional, 'model.json'))
         wf.to_csv(os.path.join(provisional, 'walkforward_predictions.csv'), index=False)
         with open(os.path.join(provisional, 'metrics.json'), 'w', encoding='utf-8') as fh:
             json.dump(result, fh, indent=2, default=str)
@@ -913,29 +833,36 @@ def _publish_artifact(models_dir: str, model_version: str, model: DirectionalEns
         raise
 
 
-def predict_latest(panel: pd.DataFrame, model: DirectionalEnsemble, top_n: int = 3) -> pd.DataFrame:
-    """Sinais para o trimestre mais recente já publicado de cada empresa.
+def predict_latest(panel: pd.DataFrame, model: CompositeFactorScore, top_n: int = 3) -> pd.DataFrame:
+    """Ranking do trimestre mais recente já publicado de cada empresa.
 
     Diferente do treino, NÃO exige alvo (o retorno de 60 pregões ainda não
-    existe) — é exatamente a previsão viva. Usa a última linha do painel por
-    empresa, que por construção já respeita o prazo legal de publicação.
+    existe) — é exatamente a previsão viva. O escore só tem significado DENTRO
+    de uma seção transversal, então todas as empresas são pontuadas juntas e o
+    percentil/quintil sai dessa comparação.
     """
     if panel.empty:
-        return pd.DataFrame(columns=['ticker', 'cdCvm', 'signal', 'confidence', 'prob', 'topFeatures'])
+        return pd.DataFrame(columns=['ticker', 'cdCvm', 'signal', 'score', 'percentile',
+                                     'quantile', 'knowledgeDate', 'topFeatures'])
 
     latest = (panel.sort_values('knowledge_date')
                    .groupby('ticker', as_index=False)
                    .tail(1)
                    .sort_values('ticker')
                    .reset_index(drop=True))
-    signals = model.predict_signals(latest[model.features])
+
+    escore = model.score(latest)
+    percentil = escore.rank(pct=True)
+    quantil = assign_quantiles(escore, QUANTILES)
     top = model.top_features(top_n)
+
     return pd.DataFrame({
         'ticker': latest['ticker'],
         'cdCvm': latest['cd_cvm'].astype(str),
-        'signal': signals['signal'],
-        'confidence': signals['confidence'],
-        'prob': signals['prob'],
+        'signal': [classify_signal(q) for q in quantil],
+        'score': escore,
+        'percentile': percentil,
+        'quantile': quantil,
         'knowledgeDate': pd.to_datetime(latest['knowledge_date']).dt.strftime('%Y-%m-%d'),
         'topFeatures': [json.dumps(top)] * len(latest),
     })

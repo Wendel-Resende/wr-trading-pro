@@ -1108,11 +1108,20 @@ model DirectionalPrediction {
   cdCvm          String
   ticker         String
   signal         String // COMPRA | VENDA | NEUTRO
+  // Força da posição: distância da mediana da seção transversal, |2·p−1|.
+  // NÃO é probabilidade — o escore composto ordena empresas, não estima
+  // chance de subir. Ver `score`/`percentile` abaixo.
   confidence     Float
-  // Probabilidade crua de alta, antes do gate. Guardada junto porque a UI
-  // precisa mostrar o quão perto do gate um NEUTRO ficou sem transformar isso
-  // em recomendação, e o diagrama de confiabilidade se apoia nela.
+  // ATENÇÃO: para modelos de escore composto (desde 2026-07-25) esta coluna
+  // guarda o PERCENTIL transversal, não uma probabilidade. O nome ficou por
+  // compatibilidade com as linhas do motor de classificação anterior; o
+  // domínio expõe o campo como `percentile`.
   prob           Float
+  // Escore bruto do fator (média dos percentis das features selecionadas),
+  // centrado em 0: positivo = acima da mediana das pares no trimestre.
+  score          Float?
+  // Quintil dentro do período: 1 = pior, 5 = melhor. É daqui que sai o sinal.
+  quantile       Int?
   // Carimbo de conhecimento (prazo legal) do trimestre que gerou o sinal —
   // proveniência point-in-time da previsão, não a data de geração.
   knowledgeDate  DateTime

@@ -1,9 +1,6 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from 'recharts';
 import { useToast } from '@/contexts/ToastContext';
 
 /**
@@ -16,9 +13,6 @@ import { useToast } from '@/contexts/ToastContext';
  * modelo que a plataforma considera insuficiente.
  */
 
-const GATE_UPPER = 0.9;
-const GATE_LOWER = 0.1;
-
 interface GateCheck {
   readonly code: string;
   readonly label: string;
@@ -29,15 +23,18 @@ interface GateCheck {
 
 interface DirectionalMetrics {
   readonly nSamples: number;
-  readonly nHighConfidence: number;
-  readonly accuracy: number | null;
-  readonly accuracyAllSamples: number;
-  readonly brier: number;
-  readonly coverage: number;
-  readonly coveragePeriod: string | null;
-  readonly baselineAllUp: number;
-  readonly baselineOnSignals: number | null;
-  readonly baselineDelta: number | null;
+  readonly nPeriods?: number;
+  readonly nFeaturesMedian?: number | null;
+  // Métricas do motor de classificação anterior — só existem em versões antigas.
+  readonly nHighConfidence?: number;
+  readonly accuracy?: number | null;
+  readonly accuracyAllSamples?: number;
+  readonly brier?: number;
+  readonly coverage?: number;
+  readonly coveragePeriod?: string | null;
+  readonly baselineAllUp?: number;
+  readonly baselineOnSignals?: number | null;
+  readonly baselineDelta?: number | null;
   readonly calibrated?: boolean;
   readonly brierRaw?: number | null;
   readonly nHighConfidenceRaw?: number | null;
@@ -61,13 +58,13 @@ interface DirectionalMetrics {
     readonly hitRate: number;
   }[];
   readonly netTopBottomSpread?: number | null;
-  readonly confusionMatrix: {
+  readonly confusionMatrix?: {
     readonly truePositive: number;
     readonly falsePositive: number;
     readonly trueNegative: number;
     readonly falseNegative: number;
   };
-  readonly reliability: readonly {
+  readonly reliability?: readonly {
     readonly binStart: number;
     readonly binEnd: number;
     readonly n: number;
@@ -78,9 +75,11 @@ interface DirectionalMetrics {
     readonly foldId: number;
     readonly testYear: number;
     readonly n: number;
-    readonly nHighConfidence: number;
-    readonly accuracy: number | null;
-    readonly brier: number;
+    readonly nFeatures?: number | null;
+    readonly ic?: number | null;
+    readonly nHighConfidence?: number;
+    readonly accuracy?: number | null;
+    readonly brier?: number;
   }[];
 }
 
@@ -101,6 +100,8 @@ interface DirectionalPrediction {
   readonly signal: 'COMPRA' | 'VENDA' | 'NEUTRO';
   readonly confidence: number;
   readonly prob: number;
+  readonly score?: number | null;
+  readonly quantile?: number | null;
   readonly knowledgeDate: string;
   readonly topFeatures: readonly { readonly feature: string; readonly importance: number }[];
   readonly modelVersion: string;
@@ -130,10 +131,11 @@ interface TrainingRun {
   readonly metrics: {
     readonly nSamples: number;
     readonly nHighConfidence: number;
-    readonly accuracy: number | null;
-    readonly brier: number;
-    readonly coverage: number;
-    readonly baselineDelta: number | null;
+    readonly nPeriods?: number;
+    readonly ic?: number | null;
+    readonly icTStat?: number | null;
+    readonly topBottomSpread?: number | null;
+    readonly positiveYearsRatio?: number | null;
   } | null;
   readonly errorCode: string | null;
   readonly errorSummary: string | null;
@@ -379,26 +381,17 @@ export default function DirectionalSignalsView(): React.ReactElement {
   const failedModels = allModels.filter((m) => m.status === 'FAILED');
   const trainingRunActive = trainingRun !== null && ACTIVE_RUN_STATUSES.has(trainingRun.status);
 
-  const reliabilityData = (selectedModel?.metrics.reliability ?? [])
-    .filter((b) => b.n > 0 && b.meanPredicted !== null && b.observedRate !== null)
-    .map((b) => ({
-      previsto: Number((b.meanPredicted! * 100).toFixed(1)),
-      observado: Number((b.observedRate! * 100).toFixed(1)),
-      perfeito: Number((b.meanPredicted! * 100).toFixed(1)),
-      n: b.n,
-    }));
-
   // -----------------------------------------------------------------------
   return (
     <div className="cyber-card p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h3 className="font-orbitron text-xl font-bold neon-text-cyan">
-            Classificador direcional (60 pregões · 1 trimestre)
+            Escore de fator fundamentalista (60 pregões · 1 trimestre)
           </h3>
           <p className="text-xs text-gray-500 mt-1">
-            Ensemble LightGBM + XGBoost + Regressão Logística sobre fundamentos CVM point-in-time.
-            Só emite sinal quando a probabilidade sai da zona ambígua ({pct(GATE_LOWER, 0)}–{pct(GATE_UPPER, 0)}).
+            Ordena as empresas dentro de cada trimestre pela média dos percentis das features com sinal
+            comprovado. O sinal vem da posição no ranking — não de uma probabilidade estimada.
           </p>
         </div>
         <span
@@ -428,9 +421,9 @@ export default function DirectionalSignalsView(): React.ReactElement {
               Nenhum modelo passou no gate de aceitação — por isso não há sinais a exibir.
             </p>
             <p className="text-gray-500">
-              Um modelo só fica disponível se atender aos quatro critérios simultaneamente: acurácia ≥ 85% nos
-              sinais de alta confiança, Brier &lt; 0,15, cobertura ≥ 30 empresas no último trimestre e vantagem
-              ≥ 15 p.p. sobre comprar tudo. Modelos reprovados ficam registrados abaixo, para auditoria.
+              Um modelo só fica disponível se atender aos cinco critérios: IC ≥ 0,02, t ≥ 2,0, excesso do
+              quintil superior ≥ 0,5% ao trimestre líquido de custos, spread topo−fundo positivo e ao menos
+              60% dos anos com spread positivo. Modelos reprovados ficam registrados abaixo, para auditoria.
             </p>
           </div>
         ) : (
@@ -441,8 +434,8 @@ export default function DirectionalSignalsView(): React.ReactElement {
           >
             {activeModels.map((m) => (
               <option key={m.modelVersion} value={m.modelVersion}>
-                {shortVersion(m.modelVersion)} · acurácia {pct(m.metrics.accuracy)} · Brier {num(m.metrics.brier)} ·
-                cobertura {m.metrics.coverage} · {new Date(m.createdAt).toLocaleDateString('pt-BR')}
+                {shortVersion(m.modelVersion)} · IC {num(m.metrics.ic)} · t {num(m.metrics.icTStat, 2)} ·
+                spread {pct(m.metrics.topBottomSpread, 2)} · {new Date(m.createdAt).toLocaleDateString('pt-BR')}
               </option>
             ))}
           </select>
@@ -461,7 +454,7 @@ export default function DirectionalSignalsView(): React.ReactElement {
               onChange={(e) => setSignalFilter(e.target.value as 'TODOS' | 'ALTA_CONFIANCA')}
               className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs"
             >
-              <option value="ALTA_CONFIANCA">Somente alta confiança</option>
+              <option value="ALTA_CONFIANCA">Somente quintis extremos</option>
               <option value="TODOS">Todas as empresas</option>
             </select>
             <button
@@ -476,8 +469,8 @@ export default function DirectionalSignalsView(): React.ReactElement {
 
         {activeModels.length > 0 && (
           <p className="text-xs text-gray-500">
-            <span className="text-gray-300 font-semibold">{highConfidence.length}</span> sinais de alta confiança em{' '}
-            <span className="text-gray-300 font-semibold">{predictions.length}</span> empresas avaliadas
+            <span className="text-gray-300 font-semibold">{highConfidence.length}</span> empresas nos quintis
+            extremos de <span className="text-gray-300 font-semibold">{predictions.length}</span> avaliadas
             {typeof predictionsMeta.generatedAt === 'string' && (
               <> · gerado em {new Date(predictionsMeta.generatedAt).toLocaleString('pt-BR')}</>
             )}
@@ -501,8 +494,8 @@ export default function DirectionalSignalsView(): React.ReactElement {
                 <tr className="text-gray-500 border-b border-gray-800">
                   <th className="text-left py-2 px-2">Ticker</th>
                   <th className="text-left py-2 px-2">Sinal</th>
-                  <th className="text-right py-2 px-2">Confiança</th>
-                  <th className="text-right py-2 px-2">Prob. alta</th>
+                  <th className="text-right py-2 px-2">Quintil</th>
+                  <th className="text-right py-2 px-2">Percentil</th>
                   <th className="text-left py-2 px-2">Conhecido em</th>
                   <th className="text-left py-2 px-2">Principais fatores</th>
                 </tr>
@@ -516,8 +509,10 @@ export default function DirectionalSignalsView(): React.ReactElement {
                         {p.signal}
                       </span>
                     </td>
-                    <td className="py-2 px-2 text-right font-mono text-gray-300">{pct(p.confidence)}</td>
-                    <td className="py-2 px-2 text-right font-mono text-gray-500">{pct(p.prob)}</td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-300">
+                      {p.quantile ? `Q${p.quantile}` : '—'}
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-500">{pct(p.prob, 0)}</td>
                     <td className="py-2 px-2 font-mono text-gray-500">{p.knowledgeDate.slice(0, 10)}</td>
                     <td className="py-2 px-2 text-gray-400" title={p.topFeatures.map((f) => `${f.feature}: ${f.importance.toFixed(1)}`).join(' · ')}>
                       {p.topFeatures.slice(0, 3).map((f) => f.feature).join(', ') || '—'}
@@ -527,38 +522,11 @@ export default function DirectionalSignalsView(): React.ReactElement {
               </tbody>
             </table>
             <p className="text-[11px] text-gray-600 mt-2">
-              A importância dos fatores é global do modelo (ganho do LightGBM), não uma atribuição por empresa —
-              indica o que pesa no ensemble como um todo.
+  
             </p>
           </div>
         )}
       </div>
-
-      {/* ---------------- Calibração ---------------- */}
-      {selectedModel && reliabilityData.length > 0 && (
-        <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-2">
-          <p className="text-sm font-semibold text-gray-300">Calibração (confiança prevista × frequência observada)</p>
-          <p className="text-xs text-gray-500">
-            Um modelo bem calibrado fica sobre a diagonal: quando diz 90%, acerta 90% das vezes.
-          </p>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={reliabilityData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                <XAxis dataKey="previsto" stroke="#6b7280" fontSize={11} unit="%" />
-                <YAxis domain={[0, 100]} stroke="#6b7280" fontSize={11} unit="%" />
-                <Tooltip
-                  contentStyle={{ background: '#111827', border: '1px solid #374151', fontSize: 12 }}
-                  formatter={(value: number, name: string) => [`${value}%`, name]}
-                />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="observado" name="Observado" stroke="#22d3ee" strokeWidth={2} dot />
-                <Line type="monotone" dataKey="perfeito" name="Calibração perfeita" stroke="#6b7280" strokeDasharray="4 4" dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
 
       {/* ---------------- Treinar ---------------- */}
       <div className="bg-gray-900/40 border border-gray-800 rounded p-4 space-y-3">
@@ -648,11 +616,11 @@ export default function DirectionalSignalsView(): React.ReactElement {
             {trainingRun.metrics && (
               <div className="font-mono text-gray-500 flex gap-3 flex-wrap">
                 <span>amostras: {trainingRun.metrics.nSamples}</span>
-                <span>alta confiança: {trainingRun.metrics.nHighConfidence}</span>
-                <span>acurácia: {pct(trainingRun.metrics.accuracy)}</span>
-                <span>Brier: {num(trainingRun.metrics.brier)}</span>
-                <span>cobertura: {trainingRun.metrics.coverage}</span>
-                <span>vs comprar-tudo: {pct(trainingRun.metrics.baselineDelta)}</span>
+                <span>trimestres: {trainingRun.metrics.nPeriods ?? '—'}</span>
+                <span>IC: {num(trainingRun.metrics.ic)}</span>
+                <span>t-stat: {num(trainingRun.metrics.icTStat, 2)}</span>
+                <span>spread: {pct(trainingRun.metrics.topBottomSpread, 2)}</span>
+                <span>anos+: {pct(trainingRun.metrics.positiveYearsRatio, 0)}</span>
               </div>
             )}
 
@@ -802,32 +770,11 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
         </div>
       )}
 
-      {m.brierRaw !== null && m.brierRaw !== undefined && (
-        <div className="text-[11px] text-gray-500 bg-gray-900/40 border border-gray-800 rounded p-2 space-y-0.5">
-          <p className="text-gray-400 font-semibold">Calibração de probabilidade</p>
-          <p className="font-mono">
-            Brier: {num(m.brierRaw)} (cru) → <span className="text-gray-300">{num(m.brier)}</span> (calibrado)
-            {' · '}sinais: {m.nHighConfidenceRaw ?? '—'} → <span className="text-gray-300">{m.nHighConfidence}</span>
-          </p>
-          <p className="text-gray-600">
-            {m.calibrated
-              ? 'O mapa foi ajustado em todos os folds, sobre a fatia mais recente do treino (nunca vista pelos modelos-base).'
-              : 'Nem todos os folds tiveram amostra suficiente para calibrar — a métrica reporta o que de fato foi feito.'}
-            {' '}Menos sinais depois de calibrar não é perda: é confiança que o modelo não sustentava sendo removida.
-          </p>
-        </div>
-      )}
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[11px] font-mono text-gray-500">
         <span>amostras: {m.nSamples}</span>
-        <span>alta confiança: {m.nHighConfidence}</span>
-        <span>acurácia geral: {pct(m.accuracyAllSamples)}</span>
-        <span>comprar-tudo: {pct(m.baselineAllUp)}</span>
-        <span>período da cobertura: {m.coveragePeriod ?? '—'}</span>
-        <span>
-          matriz: {m.confusionMatrix.truePositive}/{m.confusionMatrix.falsePositive}/
-          {m.confusionMatrix.trueNegative}/{m.confusionMatrix.falseNegative}
-        </span>
+        <span>trimestres: {m.nPeriods ?? '—'}</span>
+        <span>features no escore: {m.nFeaturesMedian ?? '—'}</span>
+        <span>IC: {num(m.ic)}</span>
       </div>
 
       {m.byFold.length > 0 && (
@@ -835,7 +782,7 @@ function GatePanel({ model, compact = false }: { model: DirectionalModel; compac
           por ano:{' '}
           {m.byFold.map((f) => (
             <span key={f.foldId} className="mr-3">
-              {f.testYear}: {pct(f.accuracy)} ({f.nHighConfidence} sinais)
+              {f.testYear}: IC {num(f.ic)} ({f.nFeatures ?? '—'} feat.)
             </span>
           ))}
         </div>

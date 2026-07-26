@@ -79,35 +79,28 @@ function parseGate(json: string | null): MlTrainingRunGate | null {
 function parseMetrics(json: string | null): MlTrainingRunMetrics | null {
   if (!json) return null;
   try {
-    const parsed = JSON.parse(json) as {
-      nSamples?: unknown;
-      nHighConfidence?: unknown;
-      accuracy?: unknown;
-      brier?: unknown;
-      coverage?: unknown;
-      baselineDelta?: unknown;
-    };
-    // `accuracy`/`baselineDelta` são legitimamente `null` quando nenhum sinal
-    // de alta confiança foi emitido — aceitar null aqui é honesto; converter
-    // para 0 fingiria um resultado que não existe.
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    // `ic`/`icTStat`/`topBottomSpread`/`positiveYearsRatio` são legitimamente
+    // `null` quando o fold não teve seção transversal suficiente — aceitar
+    // null é honesto; converter para 0 fingiria uma medição que não houve.
     const nullableNumber = (v: unknown): v is number | null => v === null || typeof v === 'number';
     if (
       typeof parsed.nSamples !== 'number' ||
-      typeof parsed.nHighConfidence !== 'number' ||
-      typeof parsed.brier !== 'number' ||
-      typeof parsed.coverage !== 'number' ||
-      !nullableNumber(parsed.accuracy) ||
-      !nullableNumber(parsed.baselineDelta)
+      typeof parsed.nPeriods !== 'number' ||
+      !nullableNumber(parsed.ic) ||
+      !nullableNumber(parsed.icTStat) ||
+      !nullableNumber(parsed.topBottomSpread) ||
+      !nullableNumber(parsed.positiveYearsRatio)
     ) {
       return null;
     }
     return {
       nSamples: parsed.nSamples,
-      nHighConfidence: parsed.nHighConfidence,
-      accuracy: parsed.accuracy ?? null,
-      brier: parsed.brier,
-      coverage: parsed.coverage,
-      baselineDelta: parsed.baselineDelta ?? null,
+      nPeriods: parsed.nPeriods,
+      ic: parsed.ic ?? null,
+      icTStat: parsed.icTStat ?? null,
+      topBottomSpread: parsed.topBottomSpread ?? null,
+      positiveYearsRatio: parsed.positiveYearsRatio ?? null,
     };
   } catch {
     return null;

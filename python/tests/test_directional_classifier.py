@@ -13,14 +13,15 @@ import tempfile
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from ml.directional_classifier import (  # noqa: E402
-    HORIZON_TRADING_DAYS, LOWER_GATE, MAX_ENTRY_LAG_DAYS, SIGNAL_BUY, SIGNAL_NEUTRAL,
-    SIGNAL_SELL, UPPER_GATE, DirectionalEnsemble, brier_score, calibration_split,
-    classify_signal, compute_model_version, evaluate_walk_forward, label_panel,
-    predict_latest, run_directional_training, run_walk_forward, yearly_splits,
+    HORIZON_TRADING_DAYS, MAX_ENTRY_LAG_DAYS, MIN_FEATURE_TSTAT, QUANTILES,
+    SIGNAL_BUY, SIGNAL_NEUTRAL, SIGNAL_SELL, CompositeFactorScore, classify_signal,
+    compute_model_version, evaluate_walk_forward, label_panel, predict_latest,
+    run_directional_training, run_walk_forward, yearly_splits,
 )
 from ml.directional_features import (  # noqa: E402
     FEATURE_COLUMNS, build_feature_panel, knowledge_date, load_directional_panel,
@@ -144,47 +145,6 @@ def test_directional_target():
     print('  test_directional_target: OK')
 
 
-def test_confidence_gate():
-    """prob 0.92 → COMPRA, 0.05 → VENDA, 0.50 → NEUTRO (§7)."""
-    assert classify_signal(0.92) == (SIGNAL_BUY, 0.92)
-    signal, conf = classify_signal(0.05)
-    assert signal == SIGNAL_SELL and abs(conf - 0.95) < 1e-12
-    assert classify_signal(0.50) == (SIGNAL_NEUTRAL, 0.50)
-    # Bordas exatas NÃO viram sinal — o gate é estrito (> 0.90 / < 0.10).
-    assert classify_signal(UPPER_GATE)[0] == SIGNAL_NEUTRAL
-    assert classify_signal(LOWER_GATE)[0] == SIGNAL_NEUTRAL
-    assert classify_signal(0.9000001)[0] == SIGNAL_BUY
-    assert classify_signal(0.0999999)[0] == SIGNAL_SELL
-    print('  test_confidence_gate: OK')
-
-
-def test_ensemble_voting():
-    """3 modelos, votação ponderada 0.40/0.40/0.20 exata."""
-    panel = _synthetic_panel()
-    labeled = _labeled_absolute(panel)
-    train = labeled[labeled['ano'] <= 2020]
-    model = DirectionalEnsemble().fit(train[FEATURE_COLUMNS], train['y'])
-
-    X = labeled[labeled['ano'] == 2021][FEATURE_COLUMNS].head(50)
-    by_model = model.predict_proba_by_model(X)
-    assert set(by_model) == {'lightgbm', 'xgboost', 'logistic'}, 'ensemble precisa dos 3 modelos'
-
-    esperado = (0.40 * by_model['lightgbm'] + 0.40 * by_model['xgboost']
-                + 0.20 * by_model['logistic'])
-    obtido = model.predict_proba(X)
-    assert np.allclose(obtido, esperado, atol=1e-12), 'votacao nao e a media ponderada declarada'
-    assert ((obtido >= 0.0) & (obtido <= 1.0)).all()
-
-    # Pesos que não somam 1 são rejeitados na construção, nunca normalizados em silêncio.
-    try:
-        DirectionalEnsemble(hyperparameters={**model.hyperparameters,
-                                             'weights': {'lightgbm': 0.5, 'xgboost': 0.5, 'logistic': 0.5}})
-        raise AssertionError('pesos invalidos deveriam falhar')
-    except ValueError as exc:
-        assert 'PESOS_INVALIDOS' in str(exc)
-    print('  test_ensemble_voting: OK')
-
-
 def test_walk_forward_no_lookahead():
     """knowledgeTime <= decisionTime: nenhum fold treina com alvo dentro do teste."""
     panel = _synthetic_panel()
@@ -210,59 +170,6 @@ def test_walk_forward_no_lookahead():
     print('  test_walk_forward_no_lookahead: OK')
 
 
-def test_brier_score():
-    """Calibração: perfeita = 0, invertida = 1, e o modelo fica dentro do gate."""
-    assert brier_score(pd.Series([1.0, 0.0]), pd.Series([1.0, 0.0])) == 0.0
-    assert brier_score(pd.Series([0.0, 1.0]), pd.Series([1.0, 0.0])) == 1.0
-    assert abs(brier_score(pd.Series([0.5, 0.5]), pd.Series([1.0, 0.0])) - 0.25) < 1e-12
-
-    metrics = _metrics_cache()
-    assert metrics['brier'] < 0.15, f"brier {metrics['brier']} fora do gate 2 (< 0.15)"
-    bins = [b for b in metrics['reliability'] if b['n'] > 0]
-    assert bins, 'diagrama de confiabilidade vazio'
-    print(f"  test_brier_score: OK (brier={metrics['brier']:.4f})")
-
-
-def test_coverage_metric():
-    """Cobertura conta empresas distintas com sinal de alta confiança no último trimestre."""
-    metrics = _metrics_cache()
-    assert metrics['nHighConfidence'] > 0, 'nenhum sinal de alta confianca emitido'
-    assert metrics['coverage'] >= 1
-    assert metrics['coveragePeriod'] is not None
-    assert metrics['coverage'] <= len(_TICKERS)
-    print(f"  test_coverage_metric: OK (coverage={metrics['coverage']} em {metrics['coveragePeriod']})")
-
-
-def test_baseline_comparison():
-    """Supera o baseline 'comprar tudo' no mesmo subconjunto de alta confiança."""
-    metrics = _metrics_cache()
-    assert metrics['accuracy'] >= 0.85, f"acuracia {metrics['accuracy']} abaixo do gate 1 (>= 0.85)"
-    assert metrics['baselineDelta'] > 0, 'ensemble nao supera comprar-tudo'
-    print(f"  test_baseline_comparison: OK (acc={metrics['accuracy']:.4f}, "
-          f"delta={metrics['baselineDelta']:.4f})")
-
-
-def test_serialization():
-    """Salva e carrega o modelo treinado sem alterar uma única probabilidade."""
-    panel = _synthetic_panel()
-    labeled = _labeled_absolute(panel)
-    train = labeled[labeled['ano'] <= 2018]
-    model = DirectionalEnsemble().fit(train[FEATURE_COLUMNS], train['y'])
-
-    X = labeled[labeled['ano'] == 2019][FEATURE_COLUMNS].head(30)
-    antes = model.predict_proba(X)
-
-    path = os.path.join(tempfile.mkdtemp(), 'model.pkl')
-    model.save(path)
-    recarregado = DirectionalEnsemble.load(path)
-    depois = recarregado.predict_proba(X)
-
-    assert np.array_equal(antes, depois), 'probabilidades mudaram apos round-trip'
-    assert recarregado.features == model.features
-    assert recarregado.weights == model.weights
-    print('  test_serialization: OK')
-
-
 def test_model_version_is_canonical():
     """Identidade canônica: determinística, independente da ordem do universo."""
     a = compute_model_version({'x': 1}, ['f1', 'f2'], ['PETR4', 'VALE3'])
@@ -283,23 +190,28 @@ def test_training_publishes_artifact():
     result = run_directional_training(panel, _bars_for(bars), models_dir,
                                       universe_bars_digest='0' * 64, target_mode='absolute')
     out_dir = os.path.join(models_dir, result['modelVersion'])
-    assert os.path.isfile(os.path.join(out_dir, 'model.pkl'))
+    assert os.path.isfile(os.path.join(out_dir, 'model.json'))
     assert os.path.isfile(os.path.join(out_dir, 'metrics.json'))
     assert os.path.isfile(os.path.join(out_dir, 'walkforward_predictions.csv'))
     assert result['horizonTradingDays'] == HORIZON_TRADING_DAYS
     assert result['features'] == list(FEATURE_COLUMNS)
+    assert result['selectedFeatures'], 'o artefato registra quais features entraram'
+    assert set(result['selectedFeatures']) <= set(FEATURE_COLUMNS)
 
     # Republicar a MESMA versão não sobrescreve o artefato já publicado.
-    mtime = os.path.getmtime(os.path.join(out_dir, 'model.pkl'))
+    mtime = os.path.getmtime(os.path.join(out_dir, 'model.json'))
     run_directional_training(panel, _bars_for(bars), models_dir, universe_bars_digest='0' * 64,
                              target_mode='absolute')
-    assert os.path.getmtime(os.path.join(out_dir, 'model.pkl')) == mtime
+    assert os.path.getmtime(os.path.join(out_dir, 'model.json')) == mtime
 
-    model = DirectionalEnsemble.load(os.path.join(out_dir, 'model.pkl'))
+    model = CompositeFactorScore.load(os.path.join(out_dir, 'model.json'))
     preds = predict_latest(panel, model)
     assert len(preds) == len(_TICKERS)
     assert set(preds['signal']) <= {SIGNAL_BUY, SIGNAL_SELL, SIGNAL_NEUTRAL}
-    assert ((preds['confidence'] >= 0) & (preds['confidence'] <= 1)).all()
+    assert ((preds['percentile'] >= 0) & (preds['percentile'] <= 1)).all()
+    # Sinal COMPRA só no quintil de topo; VENDA só no de fundo.
+    assert (preds.loc[preds['signal'] == SIGNAL_BUY, 'quantile'] == QUANTILES).all()
+    assert (preds.loc[preds['signal'] == SIGNAL_SELL, 'quantile'] == 1).all()
     assert json.loads(preds['topFeatures'].iloc[0])
     print('  test_training_publishes_artifact: OK')
 
@@ -439,91 +351,92 @@ def test_sector_relative_target_removes_the_common_factor():
           f'(choque comum move {mudou_abs:.1%} dos rotulos absolutos vs {mudou_rel:.1%} dos relativos)')
 
 
-def test_calibration_split_is_temporal_and_embargoed():
-    """A fatia de calibração é a MAIS RECENTE e não compartilha alvo com o ajuste."""
+def test_sinal_vem_do_quintil_nao_de_probabilidade():
+    """O escore ordena; não estima probabilidade. Sinal sai da POSIÇÃO."""
+    assert classify_signal(QUANTILES) == SIGNAL_BUY
+    assert classify_signal(1) == SIGNAL_SELL
+    for meio in range(2, QUANTILES):
+        assert classify_signal(meio) == SIGNAL_NEUTRAL
+    # Sem quintil (período com pares de menos) não há ordenação: NEUTRO.
+    assert classify_signal(None) == SIGNAL_NEUTRAL
+    assert classify_signal(float('nan')) == SIGNAL_NEUTRAL
+    print('  test_sinal_vem_do_quintil_nao_de_probabilidade: OK')
+
+
+def test_selecao_de_features_usa_so_o_treino():
+    """Feature entra pelo IC medido NO TREINO; ruído puro fica de fora."""
     panel = _synthetic_panel()
     labeled = _labeled_absolute(panel)
-    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
+    treino = labeled[labeled['ano'] <= 2020]
 
-    fit, calib = calibration_split(train, fraction=0.25)
-    assert len(calib) > 0 and len(fit) > 0
+    modelo = CompositeFactorScore().fit(treino)
+    assert modelo.selected, 'deveria selecionar ao menos uma feature'
+    assert 'roe' in modelo.selected, 'o sinal foi plantado em roe; ele tem de entrar'
+    for f in modelo.selected:
+        assert modelo.feature_ic[f]['tStat'] >= MIN_FEATURE_TSTAT
 
-    calib_start = pd.to_datetime(calib['knowledge_date']).min()
-    assert pd.to_datetime(fit['knowledge_date']).max() <= pd.to_datetime(calib['knowledge_date']).max()
-    assert (pd.to_datetime(fit['exit_date']) < calib_start).all(), 'alvo do ajuste invade a calibracao'
+    rng = np.random.default_rng(3)
+    com_ruido = treino.assign(ruido_puro=rng.normal(size=len(treino)))
+    m2 = CompositeFactorScore(features=list(FEATURE_COLUMNS) + ['ruido_puro']).fit(com_ruido)
+    assert 'ruido_puro' not in m2.selected, 'ruido nao pode entrar no escore'
 
-    chave = ['ticker', 'ano', 'trimestre']
-    sobreposicao = (set(map(tuple, fit[chave].to_numpy()))
-                    & set(map(tuple, calib[chave].to_numpy())))
-    assert len(sobreposicao) == 0, 'ajuste e calibracao precisam ser disjuntos'
+    # Base 100% ruído: com 28 candidatas a t > 2 (p=0,05), esperam-se ~1,4
+    # falsos positivos POR ACASO — a seleção não pode prometer lista vazia.
+    # O que se exige é que o escore NÃO tenha poder preditivo FORA da amostra
+    # em que a seleção foi feita. Medir dentro dela seria só reencontrar o
+    # próprio viés de seleção.
+    todo_ruido = labeled.assign(**{c: rng.normal(size=len(labeled)) for c in FEATURE_COLUMNS})
+    sel_in = todo_ruido[todo_ruido['ano'] <= 2019]
+    fora = todo_ruido[todo_ruido['ano'] >= 2021]
+    try:
+        m3 = CompositeFactorScore().fit(sel_in)
+        ics = [stats.spearmanr(g['s'], g['ret_excess']).statistic
+               for _, g in fora.assign(s=m3.score(fora)).groupby(['ano', 'trimestre'])
+               if len(g) >= 20]
+        assert abs(np.mean(ics)) < 0.05,             f'escore de ruido nao pode prever fora da amostra (IC {np.mean(ics):.4f})'
+    except ValueError as exc:
+        # Nenhuma feature passou: também é resultado válido, e explícito.
+        assert 'INSUFFICIENT_DATA' in str(exc)
+    print('  test_selecao_de_features_usa_so_o_treino: OK')
 
-    # Amostra pequena demais: devolve tudo como ajuste, sem calibrar.
-    f2, c2 = calibration_split(train.head(50))
-    assert len(c2) == 0 and len(f2) == 50
-    print('  test_calibration_split_is_temporal_and_embargoed: OK')
 
-
-def test_calibration_maps_confidence_to_observed_frequency():
-    """Calibrar altera a probabilidade sem destruir a qualidade probabilística."""
+def test_escore_e_transversal_e_imune_a_choque_comum():
+    """O escore é posição relativa: choque igual em todos não muda a ordem."""
     panel = _synthetic_panel()
     labeled = _labeled_absolute(panel)
-    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
-    test = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year == 2024]
+    treino = labeled[labeled['ano'] <= 2020]
+    teste = labeled[labeled['ano'] == 2021]
+    modelo = CompositeFactorScore().fit(treino)
 
-    fit, calib = calibration_split(train)
-    model = DirectionalEnsemble().fit(fit[FEATURE_COLUMNS], fit['y'])
-    assert not model.is_calibrated, 'modelo recem-ajustado nao esta calibrado'
+    escore = modelo.score(teste)
+    assert escore.notna().all() and len(escore) == len(teste)
+    media_por_periodo = escore.groupby([teste['ano'], teste['trimestre']]).mean()
+    assert media_por_periodo.abs().max() < 0.05
 
-    raw = model.predict_proba(test[FEATURE_COLUMNS])
-    model.calibrate(calib[FEATURE_COLUMNS], calib['y'])
-    assert model.is_calibrated
-    cal = model.predict_proba(test[FEATURE_COLUMNS])
-
-    assert not np.array_equal(raw, cal), 'calibracao precisa mudar a probabilidade'
-    assert ((cal >= 0) & (cal <= 1)).all()
-    assert brier_score(pd.Series(cal), test['y']) <= brier_score(pd.Series(raw), test['y']) + 0.02
-
-    # Sem amostra suficiente, NÃO calibra — e diz isso.
-    outro = DirectionalEnsemble().fit(fit[FEATURE_COLUMNS], fit['y'])
-    outro.calibrate(calib.head(10)[FEATURE_COLUMNS], calib.head(10)['y'])
-    assert not outro.is_calibrated, 'amostra minuscula nao pode virar mapa de calibracao'
-    print('  test_calibration_maps_confidence_to_observed_frequency: OK')
+    deslocado = teste.copy()
+    for f in modelo.selected:
+        deslocado[f] = deslocado[f] + 1000.0
+    assert np.allclose(modelo.score(deslocado).to_numpy(), escore.to_numpy()),         'escore transversal nao pode reagir a choque comum'
+    print('  test_escore_e_transversal_e_imune_a_choque_comum: OK')
 
 
-def test_calibration_survives_serialization():
-    """O calibrador viaja com o artefato — senão o modelo carregado mentiria."""
+def test_artefato_do_escore_e_a_lista_de_features():
+    """Serialização: o artefato é a seleção, não pesos treinados."""
     panel = _synthetic_panel()
     labeled = _labeled_absolute(panel)
-    train = labeled[pd.to_datetime(labeled['knowledge_date']).dt.year <= 2023]
-    fit, calib = calibration_split(train)
-    model = (DirectionalEnsemble()
-             .fit(fit[FEATURE_COLUMNS], fit['y'])
-             .calibrate(calib[FEATURE_COLUMNS], calib['y']))
+    modelo = CompositeFactorScore().fit(labeled[labeled['ano'] <= 2020])
 
-    X = labeled[FEATURE_COLUMNS].head(40)
-    antes = model.predict_proba(X)
+    path = os.path.join(tempfile.mkdtemp(), 'model.json')
+    modelo.save(path)
+    recarregado = CompositeFactorScore.load(path)
 
-    path = os.path.join(tempfile.mkdtemp(), 'model.pkl')
-    model.save(path)
-    recarregado = DirectionalEnsemble.load(path)
-
-    assert recarregado.is_calibrated, 'calibrador perdido no round-trip'
-    assert np.array_equal(antes, recarregado.predict_proba(X))
-    print('  test_calibration_survives_serialization: OK')
-
-
-def test_walk_forward_reports_calibration_evidence():
-    """As métricas carregam o antes/depois — o ganho tem de ser auditável."""
-    metrics = _metrics_cache()
-    assert 'brierRaw' in metrics and 'nHighConfidenceRaw' in metrics
-    assert metrics['brierRaw'] is not None
-    assert isinstance(metrics['calibrated'], bool)
-    print(f"  test_walk_forward_reports_calibration_evidence: OK "
-          f"(brier cru={metrics['brierRaw']:.4f} -> calibrado={metrics['brier']:.4f})")
-
-
-# ---------------------------------------------------------------------------
-_CACHE: dict = {}
+    assert recarregado.selected == modelo.selected
+    assert recarregado.feature_ic == modelo.feature_ic
+    teste = labeled[labeled['ano'] == 2021]
+    assert np.allclose(recarregado.score(teste).to_numpy(), modelo.score(teste).to_numpy())
+    with open(path, encoding='utf-8') as fh:
+        assert 'selected' in json.load(fh)
+    print('  test_artefato_do_escore_e_a_lista_de_features: OK')
 
 
 def _metrics_cache() -> dict:
@@ -538,20 +451,14 @@ def _metrics_cache() -> dict:
 
 if __name__ == '__main__':
     test_feature_panel_from_sqlite()
-    test_confidence_gate()
     test_model_version_is_canonical()
+    test_sinal_vem_do_quintil_nao_de_probabilidade()
+    test_selecao_de_features_usa_so_o_treino()
+    test_escore_e_transversal_e_imune_a_choque_comum()
+    test_artefato_do_escore_e_a_lista_de_features()
     test_directional_target()
-    test_ensemble_voting()
     test_walk_forward_no_lookahead()
-    test_brier_score()
-    test_coverage_metric()
-    test_baseline_comparison()
-    test_serialization()
     test_entry_lag_guard_discards_stale_labels()
     test_sector_relative_target_removes_the_common_factor()
-    test_calibration_split_is_temporal_and_embargoed()
-    test_calibration_maps_confidence_to_observed_frequency()
-    test_calibration_survives_serialization()
-    test_walk_forward_reports_calibration_evidence()
     test_training_publishes_artifact()
     print('test_directional_classifier: OK')

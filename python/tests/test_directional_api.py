@@ -143,19 +143,20 @@ def test_train_returns_model_version_and_metrics():
     assert len(body['datasetDigest']) == 64
     assert len(body['universeBarsDigest']) == 64
     assert body['horizonTradingDays'] == 60
-    assert body['gate'] == {'upper': 0.90, 'lower': 0.10}
+    assert body['gate']['quantiles'] == 5
     assert sorted(body['universe']) == body['universe'], 'universo tem de vir ordenado'
     assert set(body['universe']) <= set(_TICKERS)
 
     metrics = body['metrics']
-    for key in ('nSamples', 'nHighConfidence', 'accuracy', 'brier', 'coverage',
-                'coveragePeriod', 'baselineAllUp', 'baselineOnSignals', 'baselineDelta',
-                'confusionMatrix', 'reliability', 'byFold'):
+    for key in ('nSamples', 'nPeriods', 'ic', 'icTStat', 'quantileExcess',
+                'topBottomSpread', 'spreadByYear', 'positiveYearsRatio', 'byFold'):
         assert key in metrics, f'metrica ausente: {key}'
     assert metrics['nSamples'] > 0
-    assert 0.0 <= metrics['brier'] <= 1.0
+    # O escore composto NAO emite metricas de classificacao.
+    assert 'brier' not in metrics and 'coverage' not in metrics
+    assert body['selectedFeatures'], 'o resultado registra as features escolhidas'
     assert os.path.isfile(os.path.join(ctx['deps']['directional_models_dir'],
-                                       body['modelVersion'], 'model.pkl'))
+                                       body['modelVersion'], 'model.json'))
     print('  test_train_returns_model_version_and_metrics: OK')
 
 
@@ -163,7 +164,7 @@ def test_train_is_deterministic_and_dedups_artifact():
     """Mesmos dados ⇒ mesma modelVersion; artefato publicado nunca é sobrescrito."""
     ctx = _app_and_training()
     version = ctx['result']['modelVersion']
-    artifact = os.path.join(ctx['deps']['directional_models_dir'], version, 'model.pkl')
+    artifact = os.path.join(ctx['deps']['directional_models_dir'], version, 'model.json')
     mtime = os.path.getmtime(artifact)
 
     again = ctx['client'].post('/ml/directional/train', json={'symbols': _TICKERS})
@@ -173,7 +174,7 @@ def test_train_is_deterministic_and_dedups_artifact():
     print('  test_train_is_deterministic_and_dedups_artifact: OK')
 
 
-def test_predict_applies_confidence_gate():
+def test_predict_ranking():
     ctx = _app_and_training()
     response = ctx['client'].post('/ml/directional/predict',
                                   json={'modelVersion': ctx['result']['modelVersion'],
@@ -188,19 +189,20 @@ def test_predict_applies_confidence_gate():
 
     for pred in body['predictions']:
         assert pred['signal'] in ('COMPRA', 'VENDA', 'NEUTRO')
+        assert 0.0 <= pred['prob'] <= 1.0, 'prob carrega o PERCENTIL transversal'
         assert 0.0 <= pred['confidence'] <= 1.0
-        assert 0.0 <= pred['prob'] <= 1.0
         assert pred['ticker'] in _TICKERS
         assert isinstance(pred['topFeatures'], list)
-        # O gate é a única fonte do sinal — contrato verificado na fronteira HTTP.
-        if pred['prob'] > 0.90:
-            assert pred['signal'] == 'COMPRA' and pred['confidence'] == pred['prob']
-        elif pred['prob'] < 0.10:
+        # O SINAL vem do quintil, nunca de um limiar de probabilidade.
+        if pred['quantile'] == 5:
+            assert pred['signal'] == 'COMPRA'
+        elif pred['quantile'] == 1:
             assert pred['signal'] == 'VENDA'
-            assert abs(pred['confidence'] - (1 - pred['prob'])) < 1e-9
         else:
             assert pred['signal'] == 'NEUTRO'
-    print('  test_predict_applies_confidence_gate: OK')
+    quintis = {p['quantile'] for p in body['predictions']}
+    assert quintis == {1, 2, 3, 4, 5}, f'ranking deveria cobrir os 5 quintis: {quintis}'
+    print('  test_predict_ranking: OK')
 
 
 def test_predict_validation_and_guards():
@@ -232,8 +234,8 @@ def test_predict_corrupted_artifact_never_leaks_detail():
     version = 'b' * 64
     out_dir = os.path.join(ctx['deps']['directional_models_dir'], version)
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, 'model.pkl'), 'wb') as fh:
-        fh.write(b'\x00\x01nao-e-um-pickle\x02')
+    with open(os.path.join(out_dir, 'model.json'), 'wb') as fh:
+        fh.write(b'\x00\x01nao-e-um-json\x02')
 
     bad = ctx['client'].post('/ml/directional/predict', json={'modelVersion': version})
     assert bad.status_code == 422
@@ -255,7 +257,7 @@ def test_train_insufficient_data_is_explicit():
 if __name__ == '__main__':
     test_train_returns_model_version_and_metrics()
     test_train_is_deterministic_and_dedups_artifact()
-    test_predict_applies_confidence_gate()
+    test_predict_ranking()
     test_predict_validation_and_guards()
     test_predict_corrupted_artifact_never_leaks_detail()
     test_train_insufficient_data_is_explicit()

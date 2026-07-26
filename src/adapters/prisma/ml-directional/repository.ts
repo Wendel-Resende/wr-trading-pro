@@ -107,6 +107,8 @@ export class PrismaDirectionalRepository implements DirectionalRepository {
           signal: p.signal,
           confidence: p.confidence,
           prob: p.prob,
+          score: p.score ?? null,
+          quantile: p.quantile ?? null,
           knowledgeDate: new Date(p.knowledgeDate),
           topFeatures: JSON.stringify(p.topFeatures),
           universeDigest: p.universeDigest,

@@ -60,6 +60,8 @@ export const toDirectionalPrediction = (row: DirectionalPredictionRow): Directio
   signal: row.signal as DirectionalSignal,
   confidence: row.confidence,
   prob: row.prob,
+  score: row.score,
+  quantile: row.quantile,
   knowledgeDate: row.knowledgeDate.toISOString(),
   topFeatures: parseJsonColumn(
     row.topFeatures,

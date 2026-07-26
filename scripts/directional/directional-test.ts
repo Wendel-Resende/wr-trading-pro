@@ -50,23 +50,15 @@ const HASH_C = 'c'.repeat(64);
 
 function metrics(overrides: Partial<DirectionalMetrics> = {}): DirectionalMetrics {
   return {
-    nSamples: 2000,
-    nHighConfidence: 400,
-    accuracy: 0.9,
-    accuracyAllSamples: 0.7,
-    brier: 0.1,
-    coverage: 40,
-    coveragePeriod: '2025T4',
-    baselineAllUp: 0.5,
-    baselineOnSignals: 0.6,
-    baselineDelta: 0.3,
-    confusionMatrix: { truePositive: 200, falsePositive: 20, trueNegative: 160, falseNegative: 20 },
-    reliability: [{ binStart: 0.9, binEnd: 1, n: 100, meanPredicted: 0.95, observedRate: 0.94 }],
-    byFold: [{ foldId: 0, testYear: 2025, n: 500, nHighConfidence: 100, accuracy: 0.9, brier: 0.1 }],
-    // Métricas de RANKING — é o que o gate atual avalia.
+    nSamples: 5235,
+    nPeriods: 49,
+    nFeaturesMedian: 11,
+    // Métricas de FATOR — é o que o escore composto emite. As de
+    // classificação (acurácia, Brier, cobertura) não existem mais: o escore
+    // ordena empresas, não estima probabilidade.
     ic: 0.08,
     icTStat: 2.5,
-    icPeriods: 13,
+    icPeriods: 49,
     quantileExcess: [
       { quantile: 1, n: 320, meanExcess: -0.02, hitRate: 0.44 },
       { quantile: 2, n: 320, meanExcess: 0.0, hitRate: 0.48 },
@@ -82,6 +74,7 @@ function metrics(overrides: Partial<DirectionalMetrics> = {}): DirectionalMetric
       { testYear: 2026, spread: 0.04 },
     ],
     positiveYearsRatio: 0.75,
+    byFold: [{ foldId: 0, testYear: 2025, n: 500, nFeatures: 11, ic: 0.09 }],
     ...overrides,
   };
 }
@@ -93,12 +86,13 @@ function trainResponse(overrides: Partial<DirectionalTrainResponse> = {}): Direc
     universeBarsDigest: HASH_C,
     universe: ['WEGE3', 'PETR4'],
     horizonTradingDays: 60,
-    gate: { upper: 0.9, lower: 0.1 },
+    gate: { quantiles: 5, minFeatureTStat: 2 },
     windowStart: '2011-08-14',
     windowEnd: '2026-05-15',
     hyperparameters: { lightgbm: { max_depth: 6 } },
     features: ['roe', 'roic'],
     metrics: metrics(),
+    selectedFeatures: ['roe', 'roic', 'delta_roe'],
     // Path local do servidor — o teste de DTO abaixo prova que ele nunca sai.
     artifactPath: 'C:/WR/wr_trade_pro_/data/ml/directional_models/aaa/model.pkl',
     ...overrides,
@@ -111,12 +105,15 @@ function predictResponse(overrides: Partial<DirectionalPredictResponse> = {}): D
     universeDigest: HASH_C,
     generatedAt: '2026-07-25T12:00:00.000Z',
     predictions: [
-      { ticker: 'WEGE3', cdCvm: '005410', signal: 'COMPRA', confidence: 0.95, prob: 0.95,
-        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roe', importance: 12.5 }] },
-      { ticker: 'PETR4', cdCvm: '009512', signal: 'VENDA', confidence: 0.93, prob: 0.07,
-        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roic', importance: 9.1 }] },
-      { ticker: 'VALE3', cdCvm: '004170', signal: 'NEUTRO', confidence: 0.52, prob: 0.52,
-        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roe', importance: 12.5 }] },
+      { ticker: 'WEGE3', cdCvm: '005410', signal: 'COMPRA', confidence: 0.9, prob: 0.95,
+        score: 0.31, quantile: 5,
+        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roe', importance: 0.12 }] },
+      { ticker: 'PETR4', cdCvm: '009512', signal: 'VENDA', confidence: 0.86, prob: 0.07,
+        score: -0.28, quantile: 1,
+        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roic', importance: 0.09 }] },
+      { ticker: 'VALE3', cdCvm: '004170', signal: 'NEUTRO', confidence: 0.04, prob: 0.52,
+        score: 0.01, quantile: 3,
+        knowledgeDate: '2026-05-15', topFeatures: [{ feature: 'roe', importance: 0.12 }] },
     ],
     ...overrides,
   };
@@ -341,21 +338,21 @@ async function predictionTests(prisma: PrismaClient): Promise<void> {
     mlApi: fakePort(trainResponse({ modelVersion: HASH_C }), predictResponse({ modelVersion: HASH_C })),
   });
 
-  // --- test_api_predict + test_confidence_gate_contract ---
+  // --- test_api_predict + contrato do ranking ---
   const result = await service.generatePredictions(HASH_C);
   assert(result.saved === 3, 'lote de previsões é persistido inteiro');
   assert(result.predictions.length === 3, 'previsões voltam da persistência, não do upstream');
 
   const porTicker = new Map(result.predictions.map((p) => [p.ticker, p]));
-  assert(porTicker.get('WEGE3')!.signal === 'COMPRA' && porTicker.get('WEGE3')!.prob > 0.9,
-    'prob > 0.90 é COMPRA');
-  assert(porTicker.get('PETR4')!.signal === 'VENDA' && porTicker.get('PETR4')!.prob < 0.1,
-    'prob < 0.10 é VENDA');
-  assert(porTicker.get('VALE3')!.signal === 'NEUTRO', 'zona ambígua é NEUTRO');
-  assert(
-    porTicker.get('VALE3')!.confidence === porTicker.get('VALE3')!.prob,
-    'NEUTRO carrega a probabilidade crua, sem virar recomendação',
-  );
+  // O SINAL vem do quintil, não de um limiar de probabilidade.
+  assert(porTicker.get('WEGE3')!.signal === 'COMPRA' && porTicker.get('WEGE3')!.quantile === 5,
+    'quintil superior é COMPRA');
+  assert(porTicker.get('PETR4')!.signal === 'VENDA' && porTicker.get('PETR4')!.quantile === 1,
+    'quintil inferior é VENDA');
+  assert(porTicker.get('VALE3')!.signal === 'NEUTRO' && porTicker.get('VALE3')!.quantile === 3,
+    'quintil do meio é NEUTRO');
+  assert(porTicker.get('WEGE3')!.score !== null && porTicker.get('WEGE3')!.score !== undefined,
+    'o escore bruto do fator é persistido junto');
 
   // --- test_prediction_persistence (idempotência) ---
   const denovo = await service.generatePredictions(HASH_C);

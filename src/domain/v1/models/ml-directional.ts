@@ -70,40 +70,55 @@ export interface DirectionalFoldMetrics {
   readonly foldId: number;
   readonly testYear: number;
   readonly n: number;
-  readonly nHighConfidence: number;
-  readonly accuracy: number | null;
-  readonly brier: number;
+  /** Features que passaram no corte de significância naquele fold. */
+  readonly nFeatures?: number | null;
+  /** IC do fold — `null` quando não houve seção transversal suficiente. */
+  readonly ic?: number | null;
+  // Campos do motor de classificação anterior, só em versões antigas.
+  readonly nHighConfidence?: number;
+  readonly accuracy?: number | null;
+  readonly brier?: number;
 }
 
 /**
- * Métricas out-of-sample do walk-forward. `accuracy` é medida APENAS sobre os
- * sinais de alta confiança (é o que se opera); `accuracyAllSamples` fica à
- * parte, como referência, e nunca participa do gate.
+ * Métricas out-of-sample do walk-forward.
+ *
+ * O escore composto (desde 2026-07-25) emite apenas métricas de FATOR: IC,
+ * significância, excesso por quintil, spread e consistência. As de
+ * classificação seguem OPCIONAIS no contrato porque versões antigas as têm
+ * persistidas e a auditoria precisa continuar legível.
  */
 export interface DirectionalMetrics {
   readonly nSamples: number;
-  readonly nHighConfidence: number;
+  /**
+   * Métricas do motor de CLASSIFICAÇÃO (até 2026-07-25), agora opcionais: o
+   * escore composto ordena empresas e não estima probabilidade. Mantidas no
+   * contrato para que versões antigas sigam legíveis na auditoria.
+   */
+  readonly nHighConfidence?: number;
+  readonly nPeriods?: number;
+  readonly nFeaturesMedian?: number | null;
   /**
    * `null` quando NÃO houve nenhum sinal de alta confiança: não existe
    * acurácia de sinal a reportar. Zero fingiria "errou tudo" — o gate reprova
    * esse caso por cobertura, não por acurácia inventada.
    */
-  readonly accuracy: number | null;
-  readonly accuracyAllSamples: number;
-  readonly brier: number;
-  readonly coverage: number;
-  readonly coveragePeriod: string | null;
-  readonly baselineAllUp: number;
-  readonly baselineOnSignals: number | null;
-  readonly baselineDelta: number | null;
+  readonly accuracy?: number | null;
+  readonly accuracyAllSamples?: number;
+  readonly brier?: number;
+  readonly coverage?: number;
+  readonly coveragePeriod?: string | null;
+  readonly baselineAllUp?: number;
+  readonly baselineOnSignals?: number | null;
+  readonly baselineDelta?: number | null;
   /** `true` quando o mapa de calibração foi ajustado em TODOS os folds. */
   readonly calibrated?: boolean;
   /** Brier da probabilidade CRUA (antes da calibração), nas mesmas amostras. */
   readonly brierRaw?: number | null;
   /** Sinais de alta confiança que a probabilidade crua teria emitido. */
   readonly nHighConfidenceRaw?: number | null;
-  readonly confusionMatrix: DirectionalConfusionMatrix;
-  readonly reliability: readonly DirectionalReliabilityBin[];
+  readonly confusionMatrix?: DirectionalConfusionMatrix;
+  readonly reliability?: readonly DirectionalReliabilityBin[];
   readonly byFold: readonly DirectionalFoldMetrics[];
 
   // --- Métricas de RANKING (instrumento atual, desde 2026-07-25) -----------
@@ -159,8 +174,16 @@ export interface DirectionalPrediction {
   readonly ticker: string;
   readonly signal: DirectionalSignal;
   readonly confidence: number;
-  /** Probabilidade crua de alta, ANTES do gate — proximidade do corte, nunca recomendação. */
+  /**
+   * Percentil transversal do escore no período (0-1). O nome da COLUNA no
+   * banco é `prob` por compatibilidade com o motor de classificação anterior;
+   * aqui o significado é posição relativa, nunca probabilidade.
+   */
   readonly prob: number;
+  /** Escore bruto do fator, centrado em 0 (positivo = acima da mediana das pares). */
+  readonly score?: number | null;
+  /** Quintil no período: 1 = pior, 5 = melhor. É daqui que sai o sinal. */
+  readonly quantile?: number | null;
   /** Carimbo de conhecimento (prazo legal) do trimestre que gerou o sinal. */
   readonly knowledgeDate: string;
   readonly topFeatures: readonly DirectionalTopFeature[];
@@ -175,6 +198,8 @@ export interface DirectionalPredictionSubmission {
   readonly signal: DirectionalSignal;
   readonly confidence: number;
   readonly prob: number;
+  readonly score?: number | null;
+  readonly quantile?: number | null;
   readonly knowledgeDate: string;
   readonly topFeatures: readonly DirectionalTopFeature[];
   readonly universeDigest: string;

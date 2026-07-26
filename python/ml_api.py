@@ -17,7 +17,7 @@ from flask import Flask, jsonify, request
 from ml.bars_snapshot import SnapshotNotFoundError, load_snapshot_bars, write_universe_snapshot
 from ml.candles import Mt5DailyClient, backfill_symbols
 from ml.directional_classifier import (
-    DirectionalEnsemble, predict_latest, run_directional_training)
+    CompositeFactorScore, predict_latest, run_directional_training)
 from ml.directional_features import load_directional_panel
 from ml.fundamentals import list_universe
 from ml.job_runner import JobRegistry
@@ -278,7 +278,7 @@ def create_app(deps=None):
         if not isinstance(model_version, str) or not _HASH64_RE.match(model_version):
             return jsonify({'error': 'INVALID_MODEL_VERSION'}), 400
 
-        artifact_path = os.path.join(cfg['directional_models_dir'], model_version, 'model.pkl')
+        artifact_path = os.path.join(cfg['directional_models_dir'], model_version, 'model.json')
         if not os.path.exists(artifact_path):
             return jsonify({'error': 'MODEL_NOT_FOUND'}), 404
 
@@ -288,7 +288,7 @@ def create_app(deps=None):
             return jsonify({'error': 'INVALID_SYMBOLS', 'detail': str(exc)}), 400
 
         try:
-            model = DirectionalEnsemble.load(artifact_path)
+            model = CompositeFactorScore.load(artifact_path)
         except Exception:  # noqa: BLE001 — nunca vazar detalhe interno de artefato ao cliente
             app.logger.exception('artefato ilegivel em /ml/directional/predict: %s', model_version)
             return jsonify({'error': 'ARTIFACT_UNREADABLE'}), 422
@@ -310,7 +310,14 @@ def create_app(deps=None):
             'generatedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
             'predictions': [
                 {'ticker': r['ticker'], 'cdCvm': r['cdCvm'], 'signal': r['signal'],
-                 'confidence': float(r['confidence']), 'prob': float(r['prob']),
+                 # `confidence` é a distância da mediana da seção transversal
+                 # (|2·p−1|), NÃO probabilidade: o escore ordena, não estima
+                 # chance. `prob` carrega o percentil por compatibilidade de
+                 # contrato — ver comentário do schema Prisma.
+                 'confidence': float(abs(2 * r['percentile'] - 1)),
+                 'prob': float(r['percentile']),
+                 'score': float(r['score']),
+                 'quantile': (int(r['quantile']) if r['quantile'] == r['quantile'] else None),
                  'knowledgeDate': r['knowledgeDate'],
                  'topFeatures': json.loads(r['topFeatures'])}
                 for _, r in preds.iterrows()

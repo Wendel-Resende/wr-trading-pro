@@ -29,34 +29,7 @@ export interface DirectionalModelVersionPublicDTO {
   readonly gateApproved: boolean;
   readonly gateFailures: readonly string[];
   readonly gateChecks: readonly DirectionalGateCheckDTO[];
-  readonly metrics: {
-    readonly nSamples: number;
-    readonly nHighConfidence: number;
-    readonly accuracy: number | null;
-    readonly accuracyAllSamples: number;
-    readonly brier: number;
-    readonly coverage: number;
-    readonly coveragePeriod: string | null;
-    readonly baselineAllUp: number;
-    readonly baselineOnSignals: number | null;
-    readonly baselineDelta: number | null;
-    readonly calibrated?: boolean;
-    readonly brierRaw?: number | null;
-    readonly nHighConfidenceRaw?: number | null;
-    readonly ic?: number | null;
-    readonly icTStat?: number | null;
-    readonly icPeriods?: number;
-    readonly quantileExcess?: DirectionalModelVersion['metrics']['quantileExcess'];
-    readonly topBottomSpread?: number | null;
-    readonly spreadByYear?: DirectionalModelVersion['metrics']['spreadByYear'];
-    readonly positiveYearsRatio?: number | null;
-    readonly roundTripCost?: number;
-    readonly netQuantileExcess?: DirectionalModelVersion['metrics']['netQuantileExcess'];
-    readonly netTopBottomSpread?: number | null;
-    readonly confusionMatrix: DirectionalModelVersion['metrics']['confusionMatrix'];
-    readonly reliability: DirectionalModelVersion['metrics']['reliability'];
-    readonly byFold: DirectionalModelVersion['metrics']['byFold'];
-  };
+  readonly metrics: DirectionalModelVersion['metrics'];
 }
 
 export function toDirectionalModelVersionPublicDTO(
@@ -91,6 +64,8 @@ export interface DirectionalPredictionPublicDTO {
   readonly signal: string;
   readonly confidence: number;
   readonly prob: number;
+  readonly score?: number | null;
+  readonly quantile?: number | null;
   readonly knowledgeDate: string;
   readonly topFeatures: readonly { readonly feature: string; readonly importance: number }[];
   readonly modelVersion: string;
@@ -105,6 +80,8 @@ export function toDirectionalPredictionPublicDTO(p: DirectionalPrediction): Dire
     signal: p.signal,
     confidence: p.confidence,
     prob: p.prob,
+    score: p.score,
+    quantile: p.quantile,
     knowledgeDate: p.knowledgeDate,
     topFeatures: p.topFeatures,
     modelVersion: p.modelVersion,

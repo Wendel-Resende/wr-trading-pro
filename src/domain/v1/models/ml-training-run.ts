@@ -58,6 +58,13 @@ export const ML_TRAINING_RUN_PHASES: readonly MlTrainingRunPhase[] = Object.free
  * como texto livre vindo de um blob persistido.
  */
 export const KNOWN_GATE_CHECK_CODES: ReadonlySet<string> = new Set([
+  // Gate de FATOR (atual — escore composto).
+  'IC_BELOW_MIN',
+  'IC_TSTAT_BELOW_MIN',
+  'TOP_QUANTILE_EXCESS_BELOW_MIN',
+  'TOP_BOTTOM_SPREAD_BELOW_MIN',
+  'INCONSISTENT_ACROSS_YEARS',
+  // Gate de classificação (runs antigos têm estes persistidos).
   'ACCURACY_BELOW_MIN',
   'BRIER_ABOVE_MAX',
   'COVERAGE_BELOW_MIN',
@@ -85,11 +92,12 @@ export interface MlTrainingRunGate {
  */
 export interface MlTrainingRunMetrics {
   readonly nSamples: number;
-  readonly nHighConfidence: number;
-  readonly accuracy: number | null;
-  readonly brier: number;
-  readonly coverage: number;
-  readonly baselineDelta: number | null;
+  readonly nPeriods: number;
+  /** Information Coefficient médio do fator (Spearman escore × excesso). */
+  readonly ic: number | null;
+  readonly icTStat: number | null;
+  readonly topBottomSpread: number | null;
+  readonly positiveYearsRatio: number | null;
 }
 
 export interface MlTrainingRun {

@@ -24,11 +24,20 @@ export const DirectionalTrainResponseSchema = z
     horizonTradingDays: z.number().int().positive(),
     /** 'sector_relative' (default) | 'absolute' — ver TARGET_MODE no motor. */
     targetMode: z.enum(['absolute', 'sector_relative']).optional(),
-    gate: z.object({ upper: z.number(), lower: z.number() }),
+    // O escore composto não tem gate de probabilidade; reporta a configuração
+    // do ranking. `upper`/`lower` seguem aceitos para versões antigas.
+    gate: z.object({
+      upper: z.number().optional(),
+      lower: z.number().optional(),
+      quantiles: z.number().int().optional(),
+      minFeatureTStat: z.number().optional(),
+    }),
     windowStart: z.string().min(1).max(64),
     windowEnd: z.string().min(1).max(64),
     hyperparameters: z.record(z.string(), z.unknown()),
     features: z.array(z.string().max(200)).max(500),
+    /** Features que passaram no corte de significância no treino final. */
+    selectedFeatures: z.array(z.string().max(200)).max(500).optional(),
     metrics: DirectionalMetricsSchema,
     /**
      * Caminho local do artefato. NUNCA sai desta camada: não entra em nenhum
@@ -52,7 +61,11 @@ export const DirectionalPredictResponseSchema = z
             cdCvm: z.string().min(1).max(20),
             signal: z.enum(['COMPRA', 'VENDA', 'NEUTRO']),
             confidence: z.number().finite().min(0).max(1),
+            // `prob` carrega o PERCENTIL transversal no escore composto — o
+            // nome do campo é herança do motor de classificação anterior.
             prob: z.number().finite().min(0).max(1),
+            score: z.number().finite().nullable().optional(),
+            quantile: z.number().int().positive().max(20).nullable().optional(),
             knowledgeDate: z.string().min(1).max(64),
             topFeatures: z
               .array(z.object({ feature: z.string().max(200), importance: z.number().finite() }))
@@ -79,6 +92,8 @@ export interface DirectionalPredictionRow {
   readonly signal: DirectionalSignal;
   readonly confidence: number;
   readonly prob: number;
+  readonly score?: number | null;
+  readonly quantile?: number | null;
   readonly knowledgeDate: string;
   readonly topFeatures: readonly { readonly feature: string; readonly importance: number }[];
 }

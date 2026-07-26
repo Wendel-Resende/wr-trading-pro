@@ -360,13 +360,16 @@ async function finalizeSucceeded(
       // presa em DRAFT (claim perdido) não é apontada como resultado do run.
       modelVersionId: result.status === 'ACTIVE' ? result.modelVersion : null,
       gate: { approved: result.gate.approved, checks: result.gate.checks },
+      // Resumo do FATOR (o escore composto não emite acurácia/Brier — ver
+      // `ml-directional`): informação, significância, retorno do topo e
+      // consistência. É o que o acompanhamento do treino precisa mostrar.
       metrics: {
         nSamples: trainResult.metrics.nSamples,
-        nHighConfidence: trainResult.metrics.nHighConfidence,
-        accuracy: trainResult.metrics.accuracy,
-        brier: trainResult.metrics.brier,
-        coverage: trainResult.metrics.coverage,
-        baselineDelta: trainResult.metrics.baselineDelta,
+        nPeriods: trainResult.metrics.nPeriods ?? 0,
+        ic: trainResult.metrics.ic ?? null,
+        icTStat: trainResult.metrics.icTStat ?? null,
+        topBottomSpread: trainResult.metrics.topBottomSpread ?? null,
+        positiveYearsRatio: trainResult.metrics.positiveYearsRatio ?? null,
       },
       completedAt: new Date(),
     });

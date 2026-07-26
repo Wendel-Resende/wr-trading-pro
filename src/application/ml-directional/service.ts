@@ -230,6 +230,8 @@ export class DirectionalService {
         signal: p.signal,
         confidence: p.confidence,
         prob: p.prob,
+        score: p.score ?? null,
+        quantile: p.quantile ?? null,
         knowledgeDate: toInstant(p.knowledgeDate),
         topFeatures: p.topFeatures,
         universeDigest: response.universeDigest,

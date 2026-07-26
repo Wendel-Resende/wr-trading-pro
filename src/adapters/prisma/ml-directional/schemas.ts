@@ -34,18 +34,25 @@ const Probability = FiniteNumber.min(0).max(1);
 
 export const DirectionalMetricsSchema = z.object({
   nSamples: z.number().int().nonnegative(),
-  nHighConfidence: z.number().int().nonnegative(),
+  // Métricas do motor de CLASSIFICAÇÃO (até 2026-07-25). Opcionais: o escore
+  // composto ordena empresas e não estima probabilidade, então não emite
+  // acurácia, Brier, cobertura, matriz de confusão nem confiabilidade —
+  // reportar Brier de algo que não é probabilidade seria inventar calibração.
+  // Seguem no contrato para que as versões antigas continuem legíveis.
+  nHighConfidence: z.number().int().nonnegative().optional(),
+  nPeriods: z.number().int().nonnegative().optional(),
+  nFeaturesMedian: z.number().int().nonnegative().nullable().optional(),
   // Acurácia pode ser NaN quando não houve NENHUM sinal de alta confiança —
   // o motor devolve `null` nesse caso (JSON não representa NaN) e o gate
   // reprova por cobertura. Aceitar null aqui é honesto; inventar 0 não seria.
-  accuracy: Probability.nullable(),
-  accuracyAllSamples: Probability,
-  brier: FiniteNumber.min(0).max(1),
-  coverage: z.number().int().nonnegative(),
-  coveragePeriod: z.string().max(20).nullable(),
-  baselineAllUp: Probability,
-  baselineOnSignals: Probability.nullable(),
-  baselineDelta: FiniteNumber.min(-1).max(1).nullable(),
+  accuracy: Probability.nullable().optional(),
+  accuracyAllSamples: Probability.optional(),
+  brier: FiniteNumber.min(0).max(1).optional(),
+  coverage: z.number().int().nonnegative().optional(),
+  coveragePeriod: z.string().max(20).nullable().optional(),
+  baselineAllUp: Probability.optional(),
+  baselineOnSignals: Probability.nullable().optional(),
+  baselineDelta: FiniteNumber.min(-1).max(1).nullable().optional(),
   // Evidência da calibração (2026-07-25). `brierRaw`/`nHighConfidenceRaw` são
   // as MESMAS métricas medidas sobre a probabilidade ANTES do mapa de
   // calibração — é o que torna o ganho (ou a ausência dele) auditável em vez
@@ -88,7 +95,7 @@ export const DirectionalMetricsSchema = z.object({
     falsePositive: z.number().int().nonnegative(),
     trueNegative: z.number().int().nonnegative(),
     falseNegative: z.number().int().nonnegative(),
-  }),
+  }).optional(),
   reliability: z
     .array(
       z.object({
@@ -99,16 +106,21 @@ export const DirectionalMetricsSchema = z.object({
         observedRate: Probability.nullable(),
       }),
     )
-    .max(100),
+    .max(100)
+    .optional(),
   byFold: z
     .array(
       z.object({
         foldId: z.number().int().nonnegative(),
         testYear: z.number().int(),
         n: z.number().int().nonnegative(),
-        nHighConfidence: z.number().int().nonnegative(),
-        accuracy: Probability.nullable(),
-        brier: FiniteNumber.min(0).max(1),
+        // Fator (atual):
+        nFeatures: z.number().int().nonnegative().nullable().optional(),
+        ic: FiniteNumber.min(-1).max(1).nullable().optional(),
+        // Classificação (versões antigas):
+        nHighConfidence: z.number().int().nonnegative().optional(),
+        accuracy: Probability.nullable().optional(),
+        brier: FiniteNumber.min(0).max(1).optional(),
       }),
     )
     .max(100),
@@ -134,6 +146,8 @@ export const DirectionalPredictionSubmissionSchema = z.object({
   signal: DirectionalSignalSchema,
   confidence: Probability,
   prob: Probability,
+  score: FiniteNumber.nullable().optional(),
+  quantile: z.number().int().positive().max(20).nullable().optional(),
   knowledgeDate: z.string().min(1),
   topFeatures: DirectionalTopFeaturesSchema,
   universeDigest: ModelVersionIdSchema,
