@@ -286,6 +286,20 @@ model StockReport {
 }
 
 // Cache de candles históricos do MT5 para o pipeline de ML
+// `source` (2026-07-25): proveniência explícita da barra. Até então a tabela
+// só recebia D1 do MT5; passou a receber também histórico do Yahoo Finance,
+// que cobre 15-26 anos contra os ~5 do servidor da corretora (limite duro de
+// 1248 barras, ver docs/CODEX_HANDOFF.md).
+//
+// Ambas as fontes entregam preço AJUSTADO por proventos — validado em
+// 2026-07-25 na janela de sobreposição: correlação de 0,995 entre os retornos
+// diários, diferença absoluta mediana de 2 pontos-base. Misturar séries com
+// bases de ajuste diferentes criaria descontinuidade artificial na emenda; por
+// isso a coluna existe, para que a origem de cada barra seja verificável e uma
+// eventual divergência de metodologia seja rastreável em vez de invisível.
+//
+// ADITIVO: coluna com default 'MT5', que é a proveniência correta de todas as
+// linhas anteriores à migration.
 model HistoricalCandle {
   id        Int      @id @default(autoincrement())
   symbol    String
@@ -296,10 +310,12 @@ model HistoricalCandle {
   low       Float
   close     Float
   volume    Float
+  source    String   @default("MT5") // MT5 | YAHOO
   createdAt DateTime @default(now())
 
   @@unique([symbol, timeframe, time])
   @@index([symbol, timeframe, time])
+  @@index([source, symbol])
 }
 
 // ---------------------------------------------------------------------------

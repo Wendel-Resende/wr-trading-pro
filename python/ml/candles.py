@@ -1,8 +1,16 @@
 """Store de candles D1 em prisma/dev.db (tabela HistoricalCandle).
 
 Escreve apenas LINHAS via sqlite3 (WAL, transação por símbolo) — o schema é
-exclusivo do Prisma. Full refresh por (symbol,'D1'): o store é cache da fonte
-MT5; substituir é honesto e elimina lixo legado (H1 rotulado D1).
+exclusivo do Prisma.
+
+Precedência entre fontes (2026-07-25): o full refresh do MT5 passou a ser
+ESCOPADO em `source='MT5'`, e a inserção usa `INSERT OR IGNORE`. Motivo: o
+histórico do Yahoo (`ml/yahoo_history.py`) cobre 15-26 anos contra os ~5 que a
+corretora entrega, e é gravado como autoritativo na janela que cobre. Sem o
+escopo, um backfill do MT5 apagaria toda a história estendida a cada execução.
+
+O MT5 continua sendo a fonte para o que o Yahoo não tem: os 9 tickers sem
+cobertura lá, e o pregão mais recente (que o Yahoo publica com atraso).
 """
 from datetime import datetime, timezone
 import sqlite3
@@ -14,16 +22,27 @@ def _iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 def replace_daily_candles(db_path: str, symbol: str, rows) -> int:
+    """Full refresh das barras do MT5 — escopado à PRÓPRIA fonte.
+
+    `DELETE ... AND source='MT5'` preserva o histórico estendido do Yahoo, e
+    `INSERT OR IGNORE` faz o MT5 preencher apenas os dias que o Yahoo não
+    cobre (a chave única é (symbol, timeframe, time), então o dia já ocupado
+    por uma barra Yahoo permanece dela). Devolve quantas linhas foram de fato
+    inseridas, não quantas vieram do MT5 — a diferença é a sobreposição.
+    """
     con = sqlite3.connect(db_path, timeout=30)
     try:
         con.execute('PRAGMA journal_mode=WAL')
         with con:  # transação: delete+insert atômico
-            con.execute('DELETE FROM HistoricalCandle WHERE symbol=? AND timeframe=?', (symbol, TIMEFRAME))
+            con.execute("DELETE FROM HistoricalCandle WHERE symbol=? AND timeframe=? AND source='MT5'",
+                        (symbol, TIMEFRAME))
+            antes = con.total_changes
             con.executemany(
-                'INSERT INTO HistoricalCandle (symbol, timeframe, time, open, high, low, close, volume) '
-                'VALUES (?,?,?,?,?,?,?,?)',
+                'INSERT OR IGNORE INTO HistoricalCandle (symbol, timeframe, time, open, high, low, close, volume, source) '
+                "VALUES (?,?,?,?,?,?,?,?,'MT5')",
                 [(symbol, TIMEFRAME, _iso(r[0]), r[1], r[2], r[3], r[4], r[5]) for r in rows])
-        return len(rows)
+            inseridas = con.total_changes - antes
+        return inseridas
     finally:
         con.close()
 

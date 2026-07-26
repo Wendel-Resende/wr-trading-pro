@@ -5,7 +5,8 @@ from ml.candles import replace_daily_candles, load_daily_candles, backfill_symbo
 DDL = """CREATE TABLE HistoricalCandle (
   id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
   time DATETIME NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
-  close REAL NOT NULL, volume REAL NOT NULL, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  close REAL NOT NULL, volume REAL NOT NULL, source TEXT NOT NULL DEFAULT 'MT5',
+  createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE UNIQUE INDEX u ON HistoricalCandle(symbol, timeframe, time);"""
 
 def make_db():

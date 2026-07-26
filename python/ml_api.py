@@ -21,6 +21,7 @@ from ml.directional_classifier import (
 from ml.directional_features import load_directional_panel
 from ml.fundamentals import list_universe
 from ml.job_runner import JobRegistry
+from ml.yahoo_history import ingest_symbols
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULTS = {
@@ -95,6 +96,26 @@ def create_app(deps=None):
             return jsonify({'error': 'MT5_DISCONNECTED'}), 503
         report = backfill_symbols(cfg['db_path'], symbols, client)
         return jsonify(report)
+
+    @app.post('/ml/yahoo-backfill')
+    def yahoo_backfill():
+        """Ingere histórico D1 estendido do Yahoo (15-26 anos vs ~5 do MT5).
+
+        Sob demanda e explícito: a API do Yahoo é não-oficial e não pode estar
+        no caminho crítico de nenhuma tela. Relatório POR SÍMBOLO — os 9
+        tickers sem cobertura lá aparecem em `failed`, nunca somem em silêncio.
+        """
+        try:
+            symbols = symbols_from(request.get_json(silent=True))
+        except InvalidSymbolsError as exc:
+            return jsonify({'error': 'INVALID_SYMBOLS', 'detail': str(exc)}), 400
+        relatorio = ingest_symbols(cfg['db_path'], symbols)
+        return jsonify({
+            'ok': relatorio['ok'],
+            'failed': {k: 'sem cobertura no Yahoo' for k in relatorio['failed']},
+            'okCount': len(relatorio['ok']),
+            'failedCount': len(relatorio['failed']),
+        })
 
     # -----------------------------------------------------------------
     # Item C — treino assíncrono, cancelável de verdade. Cada job roda em
