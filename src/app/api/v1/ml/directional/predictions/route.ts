@@ -102,6 +102,7 @@ export async function POST(request: Request): Promise<Response> {
       count: dtos.length,
       highConfidence: dtos.filter((p) => p.signal !== 'NEUTRO').length,
       saved: result.saved,
+      excludedFromUniverse: result.excludedFromUniverse,
       generatedAt: result.generatedAt,
       universeDigest: result.universeDigest,
       modelVersion: result.modelVersion,

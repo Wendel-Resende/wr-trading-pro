@@ -467,6 +467,17 @@ export default function DirectionalSignalsView(): React.ReactElement {
           </div>
         </div>
 
+        {Array.isArray(predictionsMeta.excludedFromUniverse) &&
+          (predictionsMeta.excludedFromUniverse as string[]).length > 0 && (
+            <p className="text-[11px] text-yellow-400/90 bg-yellow-500/5 border border-yellow-500/20 rounded p-2">
+              {(predictionsMeta.excludedFromUniverse as string[]).length} empresa(s) ficaram FORA do ranking
+              por não pertencerem ao universo em que este modelo foi validado —{' '}
+              <span className="font-mono">{(predictionsMeta.excludedFromUniverse as string[]).join(', ')}</span>.
+              Elas têm fundamentos, mas não têm série de preços que permita medir o resultado, então
+              ranqueá-las junto daria a elas o mesmo peso das validadas.
+            </p>
+          )}
+
         {activeModels.length > 0 && (
           <p className="text-xs text-gray-500">
             <span className="text-gray-300 font-semibold">{highConfidence.length}</span> empresas nos quintis

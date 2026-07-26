@@ -53,6 +53,8 @@ export const DirectionalPredictResponseSchema = z
     modelVersion: z.string().regex(HEX64),
     universeDigest: z.string().regex(HEX64),
     generatedAt: z.string().min(1).max(64),
+    /** Empresas com fundamentos, mas fora do universo validado do modelo. */
+    excludedFromUniverse: z.array(z.string().max(20)).max(500).optional(),
     predictions: z
       .array(
         z
@@ -102,6 +104,7 @@ export interface DirectionalPredictResponse {
   readonly modelVersion: string;
   readonly universeDigest: string;
   readonly generatedAt: string;
+  readonly excludedFromUniverse?: readonly string[];
   readonly predictions: readonly DirectionalPredictionRow[];
 }
 

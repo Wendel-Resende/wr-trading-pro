@@ -205,7 +205,8 @@ def test_training_publishes_artifact():
     assert os.path.getmtime(os.path.join(out_dir, 'model.json')) == mtime
 
     model = CompositeFactorScore.load(os.path.join(out_dir, 'model.json'))
-    preds = predict_latest(panel, model)
+    preds, cobertura = predict_latest(panel, model)
+    assert cobertura['universeSize'] > 0, 'o artefato precisa carregar o universo validado'
     assert len(preds) == len(_TICKERS)
     assert set(preds['signal']) <= {SIGNAL_BUY, SIGNAL_SELL, SIGNAL_NEUTRAL}
     assert ((preds['percentile'] >= 0) & (preds['percentile'] <= 1)).all()
@@ -439,6 +440,42 @@ def test_artefato_do_escore_e_a_lista_de_features():
     print('  test_artefato_do_escore_e_a_lista_de_features: OK')
 
 
+
+def test_previsao_restrita_ao_universo_validado():
+    """REGRESSÃO (bug real, teste do usuário em 2026-07-26).
+
+    O escore só precisa de fundamentos, então uma empresa SEM série de preços é
+    pontuável — e 9 delas entraram no ranking da plataforma, quatro nos quintis
+    extremos, sem que o modelo jamais tivesse sido validado nelas. Pior: elas
+    deslocam empresas reais dos extremos, porque o quintil é calculado sobre
+    quem está na seção transversal.
+    """
+    panel = _synthetic_panel()
+    labeled = _labeled_absolute(panel)
+    modelo = CompositeFactorScore().fit(labeled)
+
+    assert modelo.universe, 'o ajuste tem de registrar em quem foi validado'
+    assert set(modelo.universe) <= set(_TICKERS)
+
+    # Empresa com fundamentos mas FORA do universo (sem preço, nunca rotulada).
+    intrusa = panel[panel['ticker'] == _TICKERS[0]].copy()
+    intrusa['ticker'] = 'XXXX9'
+    ampliado = pd.concat([panel, intrusa], ignore_index=True)
+
+    preds, cobertura = predict_latest(ampliado, modelo)
+    assert 'XXXX9' not in set(preds['ticker']), 'empresa fora do universo nao pode ser ranqueada'
+    assert 'XXXX9' in cobertura['excluded'], 'exclusao tem de ser REPORTADA, nunca silenciosa'
+    assert len(preds) == len(modelo.universe)
+
+    # Artefato antigo (sem universo gravado) não filtra — e não quebra.
+    antigo = CompositeFactorScore().fit(labeled)
+    antigo.universe = []
+    preds_antigo, cob_antigo = predict_latest(ampliado, antigo)
+    assert 'XXXX9' in set(preds_antigo['ticker'])
+    assert cob_antigo['excluded'] == []
+    print('  test_previsao_restrita_ao_universo_validado: OK')
+
+
 def _metrics_cache() -> dict:
     """Walk-forward completo é caro — roda uma vez e reusa entre os testes."""
     if 'metrics' not in _CACHE:
@@ -460,5 +497,6 @@ if __name__ == '__main__':
     test_walk_forward_no_lookahead()
     test_entry_lag_guard_discards_stale_labels()
     test_sector_relative_target_removes_the_common_factor()
+    test_previsao_restrita_ao_universo_validado()
     test_training_publishes_artifact()
     print('test_directional_classifier: OK')

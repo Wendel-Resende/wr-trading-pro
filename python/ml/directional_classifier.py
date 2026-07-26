@@ -407,6 +407,9 @@ class CompositeFactorScore:
         self.min_periods = min_periods
         self.selected: list[str] = []
         self.feature_ic: dict[str, dict] = {}
+        #: Empresas que de fato entraram no ajuste — as únicas em que o modelo
+        #: foi validado. Ver `predict_latest`.
+        self.universe: list[str] = []
 
     def fit(self, train: pd.DataFrame) -> 'CompositeFactorScore':
         """Seleciona features pelo IC no TREINO — jamais olhando o teste.
@@ -435,6 +438,7 @@ class CompositeFactorScore:
                 self.selected.append(feature)
         if not self.selected:
             raise ValueError('INSUFFICIENT_DATA: nenhuma feature atingiu significancia no treino')
+        self.universe = sorted(train['ticker'].unique().tolist())
         return self
 
     def score(self, df: pd.DataFrame) -> pd.Series:
@@ -464,7 +468,8 @@ class CompositeFactorScore:
         """O artefato é a lista de features e seus ICs — não há pesos treinados."""
         with open(path, 'w', encoding='utf-8') as fh:
             json.dump({'selected': self.selected, 'featureIc': self.feature_ic,
-                       'minTStat': self.min_tstat, 'candidates': self.candidate_features}, fh, indent=2)
+                       'minTStat': self.min_tstat, 'candidates': self.candidate_features,
+                       'universe': self.universe}, fh, indent=2)
 
     @classmethod
     def load(cls, path: str) -> 'CompositeFactorScore':
@@ -473,6 +478,9 @@ class CompositeFactorScore:
         obj = cls(min_tstat=blob['minTStat'], features=blob.get('candidates'))
         obj.selected = blob['selected']
         obj.feature_ic = blob['featureIc']
+        # Artefato anterior à correção de 2026-07-26 não tem universo: fica
+        # vazio, e `predict_latest` trata isso como "sem restrição conhecida".
+        obj.universe = list(blob.get('universe') or [])
         return obj
 
 
@@ -833,17 +841,30 @@ def _publish_artifact(models_dir: str, model_version: str, model: CompositeFacto
         raise
 
 
-def predict_latest(panel: pd.DataFrame, model: CompositeFactorScore, top_n: int = 3) -> pd.DataFrame:
-    """Ranking do trimestre mais recente já publicado de cada empresa.
+def predict_latest(panel: pd.DataFrame, model: CompositeFactorScore,
+                   top_n: int = 3) -> tuple[pd.DataFrame, dict]:
+    """Ranking do trimestre mais recente, RESTRITO ao universo validado.
+
+    Devolve `(previsoes, relatorio)`.
+
+    Por que restringir (bug real encontrado em 2026-07-26, num teste do
+    usuário na plataforma): o escore só precisa de fundamentos, então uma
+    empresa SEM série de preços é perfeitamente pontuável — e 9 delas
+    apareceram no ranking, quatro nos quintis extremos (GUAR3, NEOE3 e STBP3
+    em COMPRA; SRNA3 em VENDA). Mas o modelo nunca foi validado nelas, não há
+    como medir o resultado depois, e elas DESLOCAM empresas reais dos
+    extremos, porque o quintil é calculado sobre quem está na seção.
+
+    Empresas fora do universo saem do ranking e vão para o relatório —
+    nunca somem em silêncio nem entram valendo o mesmo que as validadas.
 
     Diferente do treino, NÃO exige alvo (o retorno de 60 pregões ainda não
-    existe) — é exatamente a previsão viva. O escore só tem significado DENTRO
-    de uma seção transversal, então todas as empresas são pontuadas juntas e o
-    percentil/quintil sai dessa comparação.
+    existe) — é exatamente a previsão viva.
     """
+    vazio = pd.DataFrame(columns=['ticker', 'cdCvm', 'signal', 'score', 'percentile',
+                                  'quantile', 'knowledgeDate', 'topFeatures'])
     if panel.empty:
-        return pd.DataFrame(columns=['ticker', 'cdCvm', 'signal', 'score', 'percentile',
-                                     'quantile', 'knowledgeDate', 'topFeatures'])
+        return vazio, {'excluded': [], 'reason': 'painel vazio'}
 
     latest = (panel.sort_values('knowledge_date')
                    .groupby('ticker', as_index=False)
@@ -851,12 +872,26 @@ def predict_latest(panel: pd.DataFrame, model: CompositeFactorScore, top_n: int 
                    .sort_values('ticker')
                    .reset_index(drop=True))
 
+    excluidas: list[str] = []
+    if model.universe:
+        validas = set(model.universe)
+        excluidas = sorted(set(latest['ticker']) - validas)
+        latest = latest[latest['ticker'].isin(validas)].reset_index(drop=True)
+
+    relatorio = {
+        'excluded': excluidas,
+        'universeSize': len(model.universe),
+        'reason': 'fora do universo validado no treino' if excluidas else '',
+    }
+    if latest.empty:
+        return vazio, relatorio
+
     escore = model.score(latest)
     percentil = escore.rank(pct=True)
     quantil = assign_quantiles(escore, QUANTILES)
     top = model.top_features(top_n)
 
-    return pd.DataFrame({
+    previsoes = pd.DataFrame({
         'ticker': latest['ticker'],
         'cdCvm': latest['cd_cvm'].astype(str),
         'signal': [classify_signal(q) for q in quantil],
@@ -866,3 +901,4 @@ def predict_latest(panel: pd.DataFrame, model: CompositeFactorScore, top_n: int 
         'knowledgeDate': pd.to_datetime(latest['knowledge_date']).dt.strftime('%Y-%m-%d'),
         'topFeatures': [json.dumps(top)] * len(latest),
     })
+    return previsoes, relatorio

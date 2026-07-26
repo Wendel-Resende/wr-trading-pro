@@ -300,7 +300,10 @@ def create_app(deps=None):
         if panel.empty:
             return jsonify({'error': 'INSUFFICIENT_DATA', 'detail': 'painel fundamentalista vazio'}), 422
 
-        preds = predict_latest(panel, model)
+        preds, cobertura = predict_latest(panel, model)
+        if preds.empty:
+            return jsonify({'error': 'INSUFFICIENT_DATA',
+                            'detail': 'nenhuma empresa do universo validado tem painel'}), 422
         universe_digest = hashlib.sha256(
             json.dumps(sorted(preds['ticker'].tolist()), separators=(',', ':')).encode()).hexdigest()
 
@@ -308,6 +311,9 @@ def create_app(deps=None):
             'modelVersion': model_version,
             'universeDigest': universe_digest,
             'generatedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            # Empresas com fundamentos mas FORA do universo em que o modelo foi
+            # validado. Reportadas, nunca ranqueadas junto — ver `predict_latest`.
+            'excludedFromUniverse': cobertura['excluded'],
             'predictions': [
                 {'ticker': r['ticker'], 'cdCvm': r['cdCvm'], 'signal': r['signal'],
                  # `confidence` é a distância da mediana da seção transversal

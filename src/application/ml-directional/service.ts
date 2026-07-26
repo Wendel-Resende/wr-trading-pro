@@ -49,6 +49,12 @@ export interface GenerateDirectionalPredictionsResult {
   readonly generatedAt: string;
   readonly saved: number;
   readonly predictions: readonly DirectionalPrediction[];
+  /**
+   * Empresas com fundamentos que ficaram FORA do ranking por não pertencerem
+   * ao universo validado do modelo. Exposto de propósito: sumir com elas em
+   * silêncio esconderia que a cobertura do sinal é menor que o universo CVM.
+   */
+  readonly excludedFromUniverse: readonly string[];
 }
 
 export class DirectionalService {
@@ -246,6 +252,7 @@ export class DirectionalService {
       generatedAt: response.generatedAt,
       saved,
       predictions,
+      excludedFromUniverse: response.excludedFromUniverse ?? [],
     };
   }
 
