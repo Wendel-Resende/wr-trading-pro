@@ -14,6 +14,7 @@ import { buildAgentActionTools } from './tools/agent-actions';
 import { buildPortfolioTools } from './tools/portfolio';
 import { buildMarketLiveTools } from './tools/market-live';
 import { buildTradeTools } from './tools/trade';
+import { buildMlDirectionalTools } from './tools/ml-directional';
 import { createBridgeClient } from './clients/mt5-bridge';
 import { Mt5DemoBroker } from './execution/mt5-demo-broker';
 import { createBridgeSnapshot } from './execution/bridge-snapshot';
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
     ...buildAgentActionTools(next),
     ...buildPortfolioTools(bridge),
     ...buildMarketLiveTools(spread, volatility),
+    ...buildMlDirectionalTools(prisma),
     ...buildTradeTools(tradeService),
   ];
   const handle = await startPilotServer(prisma, config, extraTools);

@@ -150,7 +150,7 @@ async with streamablehttp_client(
         tools = await session.list_tools()
 ```
 
-## 7. Catálogo de tools (36 no total, 4 gated)
+## 7. Catálogo de tools (39 no total, 4 gated)
 
 Todas as tools são `privilege: 'free'` exceto as 4 do trilho de trade
 (`trade.*`), que são `privilege: 'gated'` — as únicas do catálogo (ver
@@ -181,8 +181,24 @@ free): `portfolio.get_positions`, `portfolio.get_account`,
 tools, free): `market.scan_options`, `market.find_spread_pairs`,
 `market.get_volatility`
 
-**ML in-process** (`ml.ts`, 2 tools, free): `ml.run_prediction`,
-`ml.run_backtest`
+**Escore de fator direcional** (`ml-directional.ts`, 5 tools, free):
+`ml.directional_ranking`, `ml.directional_model`, `ml.cost_profiles`,
+`ml.directional_train`, `ml.training_status`
+
+> Substituem `ml.run_prediction`/`ml.run_backtest`, removidas junto com o motor
+> híbrido (rodavam heurísticas MA Crossover / Regressão Linear que se
+> apresentavam como ML). Diferente das demais tools proxy, estas falam com a
+> camada de APLICAÇÃO diretamente — `resolveRequestedBy` deriva o principal do
+> cookie de sessão e o piloto autentica por Bearer, então as rotas
+> `/api/v1/ml/*` responderiam `UNAUTHENTICATED`. `requestedBy` é fixado como
+> `mcp:hermes`, como no trilho de trade.
+>
+> `ml.directional_train` NÃO é `gated`: neste catálogo `gated` significa
+> "passa pelo trilho propose/approve com código de confirmação", e o treino não
+> passa. Suas guardas reais são outras — exige `costProfileId` de um perfil
+> ativo (nenhum custo default é aceito), só um treino ativo por vez
+> (`TRAINING_RUN_ALREADY_ACTIVE`), roda em processo separado cancelável e fica
+> auditável em `MlTrainingRun` sob `mcp:hermes`.
 
 **Trilho de trade governado** (`trade.ts`, 4 tools, **gated**):
 `trade.propose`, `trade.approve`, `trade.reject`, `trade.status`

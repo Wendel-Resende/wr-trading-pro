@@ -15,6 +15,7 @@ import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
 import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
 import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
 import { buildTradeTools } from '../../src/mcp/pilot/tools/trade';
+import { buildMlDirectionalTools } from '../../src/mcp/pilot/tools/ml-directional';
 import { Mt5DemoBroker } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createBridgeSnapshot } from '../../src/mcp/pilot/execution/bridge-snapshot';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
@@ -335,6 +336,54 @@ async function marketLiveMt5DisconnectedTests(): Promise<void> {
     assert.match(result.content[0].text, /MT5 não disponível\/conectado/);
     console.log('market.scan_options sem MT5: OK (503 MT5_DISCONNECTED vira isError UPSTREAM_ERROR)');
   } finally { stub.close(); }
+}
+
+
+/**
+ * Tools de ML no piloto. Repõem a superfície que ficou vazia quando o motor
+ * híbrido saiu — o agente estava sem acesso nenhum ao escore de fator.
+ */
+async function mlDirectionalToolsTests(prisma: PrismaClient): Promise<void> {
+  const tools = buildMlDirectionalTools(prisma);
+  const nomes = tools.map((t) => t.name).sort();
+  assert.deepEqual(nomes, [
+    'ml.cost_profiles', 'ml.directional_model', 'ml.directional_ranking',
+    'ml.directional_train', 'ml.training_status',
+  ]);
+
+  // Nenhuma é `gated`: neste catálogo `gated` significa "passa pelo trilho
+  // propose/approve com código de confirmação", e só trade.* passa.
+  assert.ok(tools.every((t) => t.privilege === 'free'),
+    'tools de ML não podem se rotular gated — não passam pelo trilho de confirmação');
+
+  // Sem modelo ativo: estado honesto, com aviso explícito, nunca ranking vazio mudo.
+  const semModelo = await tools.find((t) => t.name === 'ml.directional_ranking')!.handler({});
+  const rankingVazio = JSON.parse(semModelo.content[0].text) as { ranking: unknown[]; aviso?: string };
+  assert.equal(rankingVazio.ranking.length, 0);
+  assert.match(rankingVazio.aviso ?? '', /Nenhum modelo ativo/);
+  assert.match(rankingVazio.aviso ?? '', /não invente/i);
+
+  const semModeloInfo = await tools.find((t) => t.name === 'ml.directional_model')!.handler({});
+  const info = JSON.parse(semModeloInfo.content[0].text) as { active: unknown; aviso?: string };
+  assert.equal(info.active, null);
+  assert.match(info.aviso ?? '', /não emite sinal/i);
+
+  // Treino exige perfil de custo existente — nunca custo default.
+  const treinar = tools.find((t) => t.name === 'ml.directional_train')!;
+  const semPerfil = await treinar.handler({ costProfileId: 'nao-existe' });
+  assert.equal(semPerfil.isError, true);
+  assert.match(semPerfil.content[0].text, /COST_PROFILE_NOT_FOUND/);
+
+  // Zod rejeita entrada malformada antes de qualquer efeito.
+  const semArgumento = await treinar.handler({});
+  assert.equal(semArgumento.isError, true);
+
+  // Status sem nenhum treino registrado falha explícito.
+  const status = await tools.find((t) => t.name === 'ml.training_status')!.handler({});
+  assert.equal(status.isError, true);
+  assert.match(status.content[0].text, /TRAINING_RUN_NOT_FOUND/);
+
+  console.log('tools ml.* (ranking/model/cost_profiles/train/status): OK (5 free, guardas verificadas)');
 }
 
 /** Broker fake — grava toda chamada; nunca deve ser acionado em caminho de falha do gate. */
@@ -857,6 +906,7 @@ async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
     ...buildAgentActionTools(createHttpJson('http://127.0.0.1:1')),
     ...buildPortfolioTools(stubBridge),
     ...buildMarketLiveTools(createHttpJson('http://127.0.0.1:1'), createHttpJson('http://127.0.0.1:1')),
+    ...buildMlDirectionalTools(prisma),
     ...buildTradeTools(tradeService),
   ];
   const handle = await startPilotServer(prisma, cfg, extraTools);
@@ -868,7 +918,7 @@ async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
     await client.connect(transport);
     const tools = await client.listTools();
     const gated = tools.tools.filter((t) => (extraTools.find((e) => e.name === t.name)?.privilege ?? 'free') === 'gated');
-    assert.ok(tools.tools.length >= 25, `catálogo completo deveria ter bastante tools, achou ${tools.tools.length}`);
+    assert.ok(tools.tools.length >= 30, `catálogo completo deveria ter bastante tools, achou ${tools.tools.length}`);
     assert.equal(gated.length, 4, `deve haver exatamente 4 tools gated, achou ${gated.length}`);
     for (const name of ['trade.propose', 'trade.approve', 'trade.reject', 'trade.status']) {
       assert.ok(tools.tools.some((t) => t.name === name), `tool ${name} deveria estar no catálogo`);
@@ -896,7 +946,8 @@ async function main(): Promise<void> {
   try {
     await serverTests(prisma);
     await mcpTradeServiceTests(prisma);
-    await fullCatalogTests(prisma);
+    await mlDirectionalToolsTests(prisma);
+  await fullCatalogTests(prisma);
   } finally { await prisma.$disconnect(); }
   console.log('MCP Piloto — Task 2: TODOS OS TESTES PASSARAM');
 }
