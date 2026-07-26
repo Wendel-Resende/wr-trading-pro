@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-26 (escore composto + universo validado)
+Última atualização: 2026-07-26 (escore composto + MCP do fator)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,55 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-26 (cont.) — MCP: escore de fator exposto ao agente
+
+Commit `24aed12`. O usuário perguntou se o MCP englobava Previsões ML. Não
+englobava — e a causa era uma metade de escopo perdida.
+
+### A lacuna
+
+A spec §5 mandava remover `ml_run_prediction`/`ml_run_backtest`, e o §10 só
+cobrava a remoção no critério de aceitação. O plano no vault dizia
+"remover **E substituir** por tool nova". A remoção foi feita e marcada como
+cumprida; a substituição sumiu ao longo das viradas do motor. O agente ficou
+sem superfície nenhuma de ML — regressão em relação ao estado anterior.
+
+### 5 tools novas (`src/mcp/pilot/tools/ml-directional.ts`, todas free)
+
+    ml.directional_ranking   ranking + EVIDÊNCIA (IC, t-stat, spread, ressalvas)
+    ml.directional_model     modelo ativo e conferência dos 5 gates
+    ml.cost_profiles         perfis ativos (necessário para treinar)
+    ml.directional_train     dispara treino
+    ml.training_status       acompanha o desfecho
+
+A evidência viaja JUNTO com o ranking de propósito: em tool separada, o agente
+repassaria a lista como verdade e consultaria as ressalvas só se lembrasse.
+Sem modelo ativo, resposta é aviso explícito, nunca lista vazia muda.
+
+### ARMADILHA: MCP não consegue chamar `/api/v1/*`
+
+`resolveRequestedBy` deriva o principal do **cookie de sessão**; o piloto
+autentica por **Bearer** (`WR_SERVICE_TOKEN`). Toda rota que chama
+`requireKnownPrincipal` responde `UNAUTHENTICATED` para o agente. Por isso
+estas tools falam com a camada de APLICAÇÃO direto, como `trade.*`, com
+`requestedBy` fixado em `mcp:hermes`.
+
+**Vai expor outra rota `/api/v1/*` ao MCP? Ela não vai funcionar por HTTP.**
+Ou chame o serviço direto, ou resolva o escopo do service token (já registrado
+no backlog do MCP Piloto).
+
+### Por que o treino NÃO é `gated`
+
+Neste catálogo `gated` significa "passa pelo trilho propose/approve com código
+de confirmação", e há invariante testada de que são exatamente as 4 tools
+`trade.*`. O treino não passa por esse trilho — rotulá-lo gated daria impressão
+de proteção inexistente. Guardas reais: `costProfileId` de perfil ativo
+obrigatório, um treino por vez (`TRAINING_RUN_ALREADY_ACTIVE`), processo
+separado cancelável, auditável em `MlTrainingRun` sob `mcp:hermes`.
+
+`docs/MCP_PILOT.md` estava desatualizado desde a remoção do híbrido (listava as
+2 tools mortas) — catálogo corrigido para 39 tools.
 
 ## Sessão 2026-07-26 — Primeiro uso real + correção do universo (branch `main`)
 
