@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (motor = escore composto de fator)
+Última atualização: 2026-07-26 (escore composto + universo validado)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,49 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-26 — Primeiro uso real + correção do universo (branch `main`)
+
+Commit `e604724`. O usuário treinou pela plataforma e o resultado expôs um bug
+que nenhum teste pegaria.
+
+### O treino funcionou
+
+    run       SUCCEEDED
+    modelo    ab236072... ACTIVE, nenhuma falha de gate
+    sinais    28 COMPRA · 82 NEUTRO · 28 VENDA (quintis 28/27/28/27/28)
+    fatores   delta_margem_liquida · delta_roe · crescimento_lucro_yoy
+
+### O bug: ranking incluía empresas fora do universo validado
+
+**9 empresas sem NENHUMA série de preços entraram no ranking**, quatro nos
+extremos: GUAR3, NEOE3, STBP3 (COMPRA) e SRNA3 (VENDA).
+
+O escore composto precisa só de fundamentos, então essas empresas eram
+pontuáveis — mas o modelo nunca foi validado nelas, não há preço para medir o
+resultado depois, e elas DESLOCAVAM empresas reais dos extremos (o quintil é
+calculado sobre quem está na seção transversal).
+
+### Correção
+
+- `CompositeFactorScore.fit` registra `self.universe`; o artefato JSON carrega.
+- `predict_latest` agora devolve **`(previsoes, relatorio)`** — assinatura
+  mudou. Filtra pelo universo e reporta as excluídas.
+- `excludedFromUniverse` propagado por endpoint → port → service → rota → UI.
+  A tela mostra quais ficaram de fora e por quê.
+- Artefato SEM universo gravado (treinado antes desta correção) não filtra e
+  não quebra — há teste.
+
+Verificado nos dados reais: 129 ranqueadas, 9 excluídas, **zero sem série de
+preços** (antes: 9). STBP3 saiu do topo, CXSE3 entrou.
+
+### Lição para quem retomar
+
+Esse defeito não veio de teste automatizado nem de revisão de código: veio de
+RODAR e OLHAR o resultado. Nenhum dos 40+ testes o pegaria, porque todos usam
+universo sintético em que toda empresa tem preço. **Ao mexer na saída do
+modelo, rode na plataforma e confira a lista de empresas** — cobertura de teste
+não substitui uso real.
 
 ## Sessão 2026-07-25 (cont. 14) — Motor trocado: escore composto (branch `main`)
 
