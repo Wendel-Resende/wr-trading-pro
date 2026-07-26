@@ -2307,3 +2307,23 @@ Nesta retomada não houve alteração de código do app. Foram apenas lidos os a
 ## Regra de handoff
 
 Ao terminar qualquer sessão ou tarefa, atualize este arquivo com o novo estado. Ele é a memória operacional que o Codex deve ler no início de cada nova sessão.
+
+## Retomada 2026-07-26 — certificação do banco CVM WR 138 empresas
+
+### O que foi feito
+
+- Certificado o banco local `data/cvm/cvm_fundamentos.db` da WR Trading Pro contra a certificação Guardião de 138 empresas.
+- Criado gate read-only versionado em `scripts/verify_wr_cvm_db_certification.py`.
+- Criado relatório em `docs/wr-cvm-db-certification-2026-07-26.md`.
+- Verificado guardrail Localiza: `RENT3` = `019739` / `16.670.085/0001-55`; `024813` tem zero linhas nas tabelas principais.
+
+### Verificações executadas
+
+- `python3 scripts/verify_wr_cvm_db_certification.py`: PASS.
+- `python3 -m py_compile scripts/verify_wr_cvm_db_certification.py`: PASS.
+- O gate confirmou 138 empresas, zero divergências de `cd_cvm`, zero divergências de CNPJ preenchido, zero linhas órfãs e cobertura de 138 `cd_cvm` nas tabelas principais.
+
+### Observações
+
+- As 58 empresas `CERTIFICADO_CVM_MAPPING_RI_INCONCLUSIVO` seguem com ressalva apenas de RI/PDF/release textual; não indicam empresa diferente na extração CVM.
+- O arquivo local não rastreado `docs/fundamentals-indicators-formulas-31.md` já existia no worktree e não faz parte deste commit.
