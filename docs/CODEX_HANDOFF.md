@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-25 (Item D — conclusão negativa após COTAHIST)
+Última atualização: 2026-07-25 (Item D encerrado — pendências resolvidas)
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
@@ -58,6 +58,42 @@ Vibe-A, o B ainda **não tem spec dedicada aprovada** pelo Guardião — só a
 descrição de alto nível no plano da fila. Pelo processo multiagente, um item novo
 passa por spec → revisão do Guardião → implementação em worktree, sem commit/push
 até revisão do diff, sem `OrderIntent`, mantendo MT5/CVM point-in-time e os gates.
+
+## Sessão 2026-07-25 (cont. 12) — Pendências técnicas resolvidas (branch `main`)
+
+Commit `aa90b9f`. Fecha as duas pendências que sobravam do Item D.
+
+### Prova econômica: excesso líquido de custos (não `runGoverned`)
+
+`runGoverned` NÃO foi ligado ao motor direcional, e a decisão está registrada no
+próprio método. Ele foi desenhado para sequências de trades BUY/HOLD por
+instrumento com horizonte de 10 pregões (motor híbrido); o direcional produz
+ordenação da seção transversal com posição mantida por um trimestre. Ligá-lo
+exigiria readicionar os dois endpoints Python removidos na Fatia 6b, para servir
+um caminho que nenhum modelo ACTIVE alcança — e responderia à pergunta errada.
+
+`src/application/ml-directional/costs.ts`: custo de ida-e-volta
+= 2 × (spread + slippage + emolumentos), descontado do excesso por quintil; o
+spread topo-fundo desconta o DOBRO (duas pontas). O gate passa a avaliar o
+LÍQUIDO — aprovar pelo bruto seria aprovar o que a corretagem come antes de
+chegar ao usuário. Métricas brutas ficam lado a lado de propósito.
+
+**Buraco fechado junto:** o `BacktestCostProfile` era obrigatório no treino,
+validado e gravado na proveniência, e não alimentava cálculo nenhum. Agora
+alimenta o gate. Corretagem FIXA segue de fora (depende do tamanho da carteira,
+que o modelo não conhece) — omissão declarada no código, não esquecimento.
+
+### Fase `BACKTESTS` removida
+
+Fora de `MlTrainingRunPhase`. Continua ACEITA na leitura do repositório: runs do
+motor híbrido a têm persistida e a auditoria precisa seguir legível.
+
+### Nota de ambiente
+
+`test:ml-training-run` abortou uma vez com erro de nível de SO (`3221226505`,
+0xC0000409) e passou limpa na reexecução. Não referencia `BACKTESTS`; parece
+flakiness do Prisma/Node no Windows sob invocações repetidas. Se reaparecer com
+frequência, investigar antes de culpar a mudança de turno.
 
 ## Sessão 2026-07-25 (cont. 11) — COTAHIST 15 anos: HIPÓTESE REJEITADA (spike)
 
@@ -415,16 +451,16 @@ não os 15 que a spec assumia.
   segundo reencontrar a versão ativa do primeiro.
 - `npm run build` type-checa `scripts/`, `tsc --noEmit` não — rodar os dois.
 
-### Pendências registradas (NÃO feitas)
+### Pendências registradas — TODAS RESOLVIDAS depois (ver sessões cont. 9-12)
 
-1. **Treino direcional não gera `BacktestRun`.** A infra existe (`runGoverned`)
-   mas ninguém a chama: um modelo aprovado hoje teria prova estatística, não
-   econômica. Próxima fatia natural se algum modelo passar no gate.
-2. **`MlTrainingRun.phase` ainda tem `BACKTESTS`** no vocabulário, agora
-   inalcançável.
-3. **Calibração de probabilidade** (isotônica/Platt) — ataque direto ao Brier;
-   é o caminho nº 1 para o modelo virar utilizável.
-4. **Backfill de barras pré-2021** — triplicaria a janela de walk-forward.
+1. ~~Treino direcional não gera `BacktestRun`~~ **Resolvido em `aa90b9f`** pelo
+   instrumento certo: excesso por quintil LÍQUIDO de custos, não backtest por
+   instrumento (ver cont. 12).
+2. ~~`MlTrainingRun.phase` com `BACKTESTS` inalcançável~~ **Removida** (`aa90b9f`).
+3. ~~Calibração de probabilidade~~ **Feita** (`9973f71`, cont. 9) — revelou que a
+   confiança de 95% não existia.
+4. ~~Backfill de barras pré-2021~~ **Feito como spike e REJEITADO** (cont. 11):
+   com 15 anos o sinal desaparece.
 
 ## Sessão 2026-07-25 (cont. 7) — Painel Fundamentalista fatia 5: seletor as-of — PAINEL COMPLETO (branch `main`)
 
