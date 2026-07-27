@@ -56,8 +56,11 @@ export interface CvmQuarter {
   lucroLiquido: number | null;
   // BPA / BPP
   ativoTotal: number | null;
+  ativoCirculante: number | null;
   caixa: number | null;
   patrimonioLiquido: number | null;
+  passivoCirculante: number | null;
+  passivoNaoCirc: number | null;
   dividaCp: number | null;
   dividaLp: number | null;
   // DFC
@@ -65,6 +68,7 @@ export interface CvmQuarter {
   capex: number | null;
   fcf: number | null;
   dividendosPagos: number | null;
+  jcpPagos: number | null;
   // Indicadores calculados
   margemBruta: number | null;
   margemEbit: number | null;
@@ -83,6 +87,10 @@ export interface CvmShareCapital {
   acoesTotal: number | null;
   acoesOn: number | null;
   acoesPn: number | null;
+  qtOn: number | null;
+  qtPn: number | null;
+  qtTotal: number | null;
+  qtTesouraria: number | null;
 }
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -133,14 +141,18 @@ export function getQuarters(cdCvm: string): CvmQuarter[] {
         ebitda: null,
         lucroLiquido: null,
         ativoTotal: null,
+        ativoCirculante: null,
         caixa: null,
         patrimonioLiquido: null,
+        passivoCirculante: null,
+        passivoNaoCirc: null,
         dividaCp: null,
         dividaLp: null,
         fco: null,
         capex: null,
         fcf: null,
         dividendosPagos: null,
+        jcpPagos: null,
         margemBruta: null,
         margemEbit: null,
         margemEbitda: null,
@@ -171,27 +183,30 @@ export function getQuarters(cdCvm: string): CvmQuarter[] {
   }
 
   for (const r of d
-    .prepare('SELECT ano, trimestre, ativo_total, caixa FROM bpa_trimestral WHERE cd_cvm = ?')
+    .prepare('SELECT ano, trimestre, ativo_total, ativo_circulante, caixa FROM bpa_trimestral WHERE cd_cvm = ?')
     .all(cdCvm) as Record<string, unknown>[]) {
     const q = ensure(Number(r.ano), Number(r.trimestre));
     q.ativoTotal = num(r.ativo_total);
+    q.ativoCirculante = num(r.ativo_circulante);
     q.caixa = num(r.caixa);
   }
 
   for (const r of d
     .prepare(
-      'SELECT ano, trimestre, patrimonio_liquido, divida_cp, divida_lp FROM bpp_trimestral WHERE cd_cvm = ?'
+      'SELECT ano, trimestre, patrimonio_liquido, passivo_circulante, passivo_nao_circ, divida_cp, divida_lp FROM bpp_trimestral WHERE cd_cvm = ?'
     )
     .all(cdCvm) as Record<string, unknown>[]) {
     const q = ensure(Number(r.ano), Number(r.trimestre));
     q.patrimonioLiquido = num(r.patrimonio_liquido);
+    q.passivoCirculante = num(r.passivo_circulante);
+    q.passivoNaoCirc = num(r.passivo_nao_circ);
     q.dividaCp = num(r.divida_cp);
     q.dividaLp = num(r.divida_lp);
   }
 
   for (const r of d
     .prepare(
-      'SELECT ano, trimestre, fco, capex, fcf, dividendos_pagos FROM dfc_trimestral WHERE cd_cvm = ?'
+      'SELECT ano, trimestre, fco, capex, fcf, dividendos_pagos, jcp_pagos FROM dfc_trimestral WHERE cd_cvm = ?'
     )
     .all(cdCvm) as Record<string, unknown>[]) {
     const q = ensure(Number(r.ano), Number(r.trimestre));
@@ -199,6 +214,7 @@ export function getQuarters(cdCvm: string): CvmQuarter[] {
     q.capex = num(r.capex);
     q.fcf = num(r.fcf);
     q.dividendosPagos = num(r.dividendos_pagos);
+    q.jcpPagos = num(r.jcp_pagos);
   }
 
   for (const r of d
@@ -226,7 +242,7 @@ export function getQuarters(cdCvm: string): CvmQuarter[] {
 export function getShareCapital(cdCvm: string): CvmShareCapital[] {
   const rows = getDb()
     .prepare(
-      'SELECT ano, trimestre, acoes_total, acoes_on, acoes_pn FROM capital_social WHERE cd_cvm = ? ORDER BY ano, trimestre'
+      'SELECT ano, trimestre, acoes_total, acoes_on, acoes_pn, qt_on, qt_pn, qt_total, qt_tesouraria FROM capital_social WHERE cd_cvm = ? ORDER BY ano, trimestre'
     )
     .all(cdCvm) as Record<string, unknown>[];
   return rows.map((r) => ({
@@ -235,5 +251,9 @@ export function getShareCapital(cdCvm: string): CvmShareCapital[] {
     acoesTotal: num(r.acoes_total),
     acoesOn: num(r.acoes_on),
     acoesPn: num(r.acoes_pn),
+    qtOn: num(r.qt_on),
+    qtPn: num(r.qt_pn),
+    qtTotal: num(r.qt_total),
+    qtTesouraria: num(r.qt_tesouraria),
   }));
 }

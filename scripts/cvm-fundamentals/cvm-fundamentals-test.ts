@@ -4,13 +4,35 @@ import { cashConversion, knowledgeDateFor, LEGAL_LAG_RULE, dupontFactors, median
 import { buildFundamentalSheet } from '../../src/lib/server/cvm-fundamentals-sheet';
 import { listCompanies } from '../../src/lib/server/cvm-legacy-db';
 import { listSectors, sectorRanking, indicatorCatalog } from '../../src/lib/server/cvm-sector-ranking';
+import {
+  ttm12m,
+  last4Quarters,
+  resolveShareCount,
+  combineProventos,
+  closeAsOf,
+  safeRatio,
+  lucroPorAcao,
+  valorPatrimonialPorAcao,
+  precoLucro,
+  precoValorPatrimonial,
+  precoReceita,
+  precoEbit,
+  precoAtivo,
+  precoAtivoCirculanteLiquido,
+  precoCapitalGiro,
+  dividendYield,
+  dividaLiquida,
+  dividaLiquidaSobreEbit,
+  dividaLiquidaSobrePl,
+  passivoSobreAtivo,
+} from '../../src/lib/server/cvm-fundamentals-indicators-31';
 
 function assertLog(cond: unknown, msg: string): void {
   assert.ok(cond, msg);
   console.log(`ok: ${msg}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   // --- conversão de caixa (derivada no WR) ---
   assertLog(cashConversion(120, 100).value === 1.2, 'fco/lucro = 1.2 quando ambos positivos');
   const neg = cashConversion(80, -50);
@@ -70,11 +92,122 @@ function main(): void {
   assertLog(impliedFairPrice(null, 12, 9).fairPrice === null, 'sem preço → null');
   assertLog(impliedFairPrice(24, 0, 9).fairPrice === null, 'múltiplo atual não-positivo → null (não divide)');
 
+  // --- TTM 12M (novos 31 indicadores) — calendar-aware, nunca soma parcial ---
+  const ttmMap = new Map<string, number | null>([
+    ['2024T1', 10],
+    ['2024T2', 20],
+    ['2024T3', 30],
+    ['2024T4', 40],
+    ['2025T1', 50],
+  ]);
+  assertLog(ttm12m(ttmMap, 2024, 4).value === 100, '4 trimestres consecutivos: soma 10+20+30+40=100');
+  const ttm3 = new Map<string, number | null>([
+    ['2024T2', 20],
+    ['2024T3', 30],
+    ['2024T4', 40],
+  ]);
+  assertLog(
+    ttm12m(ttm3, 2024, 4).value === null && ttm12m(ttm3, 2024, 4).note === 'HISTORICO_INSUFICIENTE',
+    'só 3 trimestres disponíveis → null + HISTORICO_INSUFICIENTE',
+  );
+  const ttmGap = new Map<string, number | null>([
+    ['2024T1', 1],
+    ['2024T2', 2],
+    ['2024T4', 4],
+    ['2025T1', 5],
+  ]); // 2024T3 ausente
+  assertLog(ttm12m(ttmGap, 2025, 1).value === null, 'buraco de calendário (2024T3 ausente) → null, não soma parcial (calendar-aware)');
+  assertLog(
+    JSON.stringify(last4Quarters(2024, 1)) ===
+      JSON.stringify([
+        { ano: 2023, trimestre: 2 },
+        { ano: 2023, trimestre: 3 },
+        { ano: 2023, trimestre: 4 },
+        { ano: 2024, trimestre: 1 },
+      ]),
+    'last4Quarters: rollover de ano correto',
+  );
+
+  // --- contagem de ações point-in-time (capital_social é esparso) ---
+  const shareRows = [
+    { ano: 2023, trimestre: 4, qtTotal: null, acoesTotal: 1000 },
+    { ano: 2024, trimestre: 4, qtTotal: 2000, acoesTotal: null },
+  ];
+  assertLog(resolveShareCount(shareRows, 2024, 4).value === 2000, 'linha exata, prefere qtTotal');
+  assertLog(resolveShareCount(shareRows, 2024, 2).value === 1000, 'sem linha no período, usa a mais recente anterior');
+  assertLog(resolveShareCount(shareRows, 2023, 4).value === 1000, 'fallback qtTotal→acoesTotal quando qtTotal ausente');
+  assertLog(resolveShareCount(shareRows, 2020, 1).note === 'CONTAGEM_ACOES_INDISPONIVEL', 'sem linha anterior ao alvo → null + nota');
+  assertLog(
+    resolveShareCount([{ ano: 2024, trimestre: 1, qtTotal: 0, acoesTotal: null }], 2024, 1).value === null,
+    'contagem <= 0 → null',
+  );
+
+  // --- proventos combinados: jcp_pagos não segue sinal consistente na fonte ---
+  assertLog(combineProventos(-100, -50) === 150, 'sinais negativos normais: abs+abs');
+  assertLog(combineProventos(-100, 50) === 150, 'sinais opostos NÃO cancelam (jcp_pagos sem sinal consistente na fonte)');
+  assertLog(combineProventos(null, null) === null, 'ambos ausentes → null, nunca zero');
+  assertLog(combineProventos(null, 30) === 30, 'um ausente → usa só o presente');
+
+  // --- fechamento de mercado point-in-time (busca binária sobre série ordenada) ---
+  const closes = [
+    { time: new Date('2024-01-10'), close: 10 },
+    { time: new Date('2024-02-10'), close: 20 },
+    { time: new Date('2024-03-10'), close: 30 },
+  ];
+  assertLog(closeAsOf(closes, new Date('2024-02-10')) === 20, 'alvo exato retorna o fechamento do dia');
+  assertLog(closeAsOf(closes, new Date('2024-02-20')) === 20, 'alvo entre candles retorna o anterior');
+  assertLog(closeAsOf(closes, new Date('2024-01-01')) === null, 'alvo antes do 1º candle → null');
+  assertLog(closeAsOf([], new Date('2024-01-01')) === null, 'série vazia → null');
+
+  // --- divisão null-safe com duas regras nomeadas ---
+  assertLog(safeRatio(10, -2, 'denominator-must-be-positive') === null, 'denominador negativo nulo na regra padrão');
+  assertLog(safeRatio(10, -2, 'denominator-nonzero-any-sign') === -5, 'denominador negativo permitido na regra alternativa (só zero nula)');
+  assertLog(safeRatio(10, 0, 'denominator-nonzero-any-sign') === null, 'denominador exatamente zero nula nas duas regras');
+  assertLog(safeRatio(null, 5) === null, 'numerador ausente propaga null');
+
+  // --- 1.11/1.12 LPA e VPA ---
+  assertLog(lucroPorAcao(-500, 100).value === -5, 'LPA negativo é permitido (prejuízo é válido mostrar)');
+  assertLog(lucroPorAcao(500, 0).note === 'CONTAGEM_ACOES_INDISPONIVEL', 'LPA: sem contagem de ações → null');
+  assertLog(valorPatrimonialPorAcao(-100, 10).note === 'PL_NAO_POSITIVO', 'VPA: PL<=0 → null');
+  assertLog(valorPatrimonialPorAcao(1000, 100).value === 10, 'VPA normal');
+
+  // --- 1.1-1.3, 1.7-1.8 múltiplos de preço ---
+  assertLog(precoLucro(20, 2).value === 10, 'P/L normal');
+  assertLog(precoLucro(20, -1).note === 'LPA_NAO_POSITIVO', 'P/L: LPA<=0 → null (prejuízo)');
+  assertLog(precoValorPatrimonial(20, -1).note === 'VPA_NAO_POSITIVO', 'P/VP: VPA<=0 → null');
+  assertLog(precoReceita(10, 0, 100).note === 'RECEITA_NAO_POSITIVA', 'PSR: receita<=0 → null');
+  assertLog(precoEbit(10, -1, 100).note === 'EBIT_NAO_POSITIVO', 'P/EBIT: EBIT<=0 → null');
+  assertLog(precoAtivo(10, -1, 100).note === 'ATIVO_NAO_POSITIVO', 'P/Ativo: ativo<=0 → null');
+
+  // --- 1.9 vs 1.10: mesma fórmula (ACL), regra de nulidade OPOSTA por decisão do doc-fonte ---
+  const aclNegativo = precoAtivoCirculanteLiquido(10, 50, 80, 100); // ACL = 50-80 = -30
+  assertLog(aclNegativo.value !== null && aclNegativo.value < 0, 'P/ACL (1.9): ACL negativo retorna valor real (permitido pelo doc)');
+  const capGiroNegativo = precoCapitalGiro(10, 50, 80, 100); // mesmo ACL = -30
+  assertLog(
+    capGiroNegativo.value === null && capGiroNegativo.note === 'CAPITAL_GIRO_NAO_POSITIVO',
+    'P/CapGiro (1.10): mesmo valor negativo → null (regra oposta, intencional, não é bug)',
+  );
+
+  // --- 4.1 DY ---
+  const dy = dividendYield(1000, 100, 20);
+  assertLog(dy.value !== null && Math.abs(dy.value - 0.5) < 1e-9, 'DY = (proventos/ações)/preço');
+  assertLog(dividendYield(1000, 100, 0).note === 'PRECO_INDISPONIVEL', 'DY: sem preço → null');
+
+  // --- 5.2-5.4, 5.7 endividamento ---
+  assertLog(dividaLiquida(100, 50, 30) === 120, 'dívida líquida = bruta - caixa');
+  assertLog(dividaLiquida(10, 10, 100) === -80, 'dívida líquida pode ser negativa (caixa líquido)');
+  const dlEbitNeg = dividaLiquidaSobreEbit(-80, 40);
+  assertLog(dlEbitNeg.value === -2, 'dívida líquida negativa (caixa líquido) sobre EBIT positivo → razão real negativa, não null');
+  assertLog(dividaLiquidaSobreEbit(100, -5).note === 'EBIT_NAO_POSITIVO', 'Dívida Líq/EBIT: EBIT<=0 → null');
+  assertLog(dividaLiquidaSobrePl(100, -5).note === 'PL_NAO_POSITIVO', 'Dívida Líq/PL: PL<=0 → null');
+  assertLog(passivoSobreAtivo(60, 40, 100).value === 1, 'Passivo/Ativo normal (circulante+não circulante / ativo)');
+  assertLog(passivoSobreAtivo(60, 40, 0).note === 'ATIVO_NAO_POSITIVO', 'Passivo/Ativo: ativo<=0 → null');
+
   // --- smoke read-only do assembler (só se o banco existir no ambiente) ---
   if (existsSync('data/cvm/cvm_fundamentos.db')) {
     const first = listCompanies()[0];
     assertLog(first !== undefined, 'banco CVM tem ao menos uma empresa');
-    const sheet = buildFundamentalSheet(process.env.CVM_TEST_CDCVM ?? first.cdCvm);
+    const sheet = await buildFundamentalSheet(process.env.CVM_TEST_CDCVM ?? first.cdCvm);
     assertLog(sheet !== null, 'ficha montada p/ cd_cvm de teste');
     if (sheet) {
       assertLog(Array.isArray(sheet.series.conversaoCaixa) && sheet.series.conversaoCaixa.length > 0, 'série conversaoCaixa presente e não vazia');
@@ -86,6 +219,41 @@ function main(): void {
       assertLog(sheet.series.conversaoCaixa.every((p) => p.value === null || Number.isFinite(p.value)), 'conversaoCaixa é número finito ou null explícito');
       const withNote = sheet.series.conversaoCaixa.filter((p) => p.note);
       assertLog(withNote.every((p) => p.value === null), 'todo ponto de conversaoCaixa com nota tem value null (nunca fabricado)');
+
+      // --- smoke dos 31 indicadores: as ~20 chaves novas existem e ficam alinhadas ---
+      const novasChaves = [
+        'margemEbit',
+        'giroAtivos',
+        'plAtivos',
+        'dividaLiquidaEbit',
+        'dividaLiquidaPl',
+        'passivoAtivo',
+        'lpa',
+        'vpa',
+        'precoLucro',
+        'precoVp',
+        'psr',
+        'pEbit',
+        'pAtivo',
+        'pAtivoCircLiq',
+        'pCapitalGiro',
+        'dividendYield',
+        'cagrReceita5a',
+        'cagrLucro5a',
+        'crescimentoReceitaYoy',
+        'crescimentoLucroYoy',
+      ];
+      for (const chave of novasChaves) {
+        assertLog(Array.isArray(sheet.series[chave]) && sheet.series[chave].length === sheet.series.roe.length, `série ${chave} presente e alinhada com as demais`);
+      }
+      assertLog(sheet.series.lpa.every((p) => p.unit === 'currency') && sheet.series.vpa.every((p) => p.unit === 'currency'), 'LPA/VPA marcados com unit "currency"');
+      assertLog(sheet.series.margemEbit.every((p) => p.source === 'pipeline-cvm'), 'margemEbit marcada pipeline-cvm (já vem do pipeline)');
+      assertLog(sheet.series.precoLucro.every((p) => p.source === 'derivado-wr'), 'precoLucro marcada derivado-wr (novo no WR)');
+      const primeiroLpa = sheet.series.lpa[0];
+      assertLog(
+        primeiroLpa !== undefined && (primeiroLpa.value !== null || primeiroLpa.note === 'HISTORICO_INSUFICIENTE' || primeiroLpa.note === 'CONTAGEM_ACOES_INDISPONIVEL'),
+        'primeiro período de LPA: valor real ou null com motivo — nunca fabricado (regra dispara contra dado real quando faltam trimestres)',
+      );
       // DuPont: bloco presente; onde há os 3 fatores + ROE do pipeline, a reconstrução deve ser majoritariamente consistente
       assertLog(Array.isArray(sheet.dupont) && sheet.dupont.length > 0, 'bloco dupont presente e não vazio');
       const checaveis = sheet.dupont.filter((d) => d.consistente !== null);
@@ -132,7 +300,7 @@ function main(): void {
     // --- smoke do as-of por prazo legal ---
     if (sheet) {
       const cut = '2020-01-01';
-      const past = buildFundamentalSheet(sheet.company.cdCvm, cut);
+      const past = await buildFundamentalSheet(sheet.company.cdCvm, cut);
       assertLog(past !== null && past.asOf === cut, 'ficha as-of ecoa a data de corte');
       if (past) {
         assertLog(past.series.roe.length < sheet.series.roe.length, 'as-of antigo tem menos períodos que a ficha completa');
@@ -155,4 +323,7 @@ function main(): void {
 
   console.log('cvm-fundamentals: TODOS OS TESTES PASSARAM');
 }
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

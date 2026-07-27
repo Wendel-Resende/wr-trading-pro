@@ -130,7 +130,7 @@ const fmtPct = (v: number | null): string => (v === null ? "—" : `${v.toFixed(
 interface FundamentalPoint {
   period: { ano: number; trimestre: number };
   value: number | null;
-  unit: "percent" | "ratio" | "multiple";
+  unit: "percent" | "ratio" | "multiple" | "currency";
   source: "pipeline-cvm" | "derivado-wr";
   dataRef: string | null;
   knowledgeDate: string;
@@ -196,6 +196,39 @@ interface SectorRanking {
   comparable: boolean;
   rows: SectorRankRow[];
   stats: { n: number; median: number | null; p25: number | null; p75: number | null; mean: number | null };
+}
+
+/**
+ * Botão (?) com a fórmula do indicador (docs/fundamentals-indicators-formulas-31.md).
+ * Mostra no hover (CSS group-hover) e fica preso ao clicar (útil em touch) —
+ * clicar de novo fecha. Definido fora do componente principal para não
+ * remontar (e perder o estado de aberto) a cada render da aba.
+ */
+function InfoTooltip({ formula }: { formula: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex group align-middle">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="ml-1 w-3.5 h-3.5 rounded-full border border-gray-500 text-gray-400 text-[0.55rem] leading-none flex items-center justify-center hover:border-cyber-cyan hover:text-cyber-cyan transition-colors"
+        aria-label="Fórmula do indicador"
+      >
+        ?
+      </button>
+      <span
+        role="tooltip"
+        className={`absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 rounded-lg border border-cyber-border bg-cyber-dark px-2.5 py-2 text-[0.65rem] leading-snug text-gray-200 font-space normal-case shadow-lg transition-opacity pointer-events-none ${
+          open ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+        }`}
+      >
+        {formula}
+      </span>
+    </span>
+  );
 }
 
 export default function CvmFundamentalsTab() {
@@ -354,6 +387,28 @@ export default function CvmFundamentalsTab() {
     });
   }, [sheet]);
   const sheetStamp = sheet?.series.roe?.[sheet.series.roe.length - 1] ?? null;
+  // Último ponto de qualquer série da ficha (pode ser null — mostrado como "—",
+  // nunca fabricado) — usado pelos grids de stat-tiles dos 31 indicadores.
+  const latestOf = (key: string): FundamentalPoint | null => {
+    const s = sheet?.series[key];
+    return s && s.length > 0 ? s[s.length - 1] : null;
+  };
+  const fmtPoint = (p: FundamentalPoint | null, format: (v: number) => string): string =>
+    p?.value === null || p?.value === undefined ? "—" : format(p.value);
+  const renderTile = (label: string, key: string, format: (v: number) => string, formula: string) => {
+    const p = latestOf(key);
+    return (
+      <div key={key} className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+        <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+          {label}
+          <InfoTooltip formula={formula} />
+        </p>
+        <p className={`text-lg font-bold font-space mt-1 ${p?.value === null || p?.value === undefined ? "text-gray-500" : "text-white"}`}>
+          {fmtPoint(p, format)}
+        </p>
+      </div>
+    );
+  };
   const dupontRows = useMemo(() => (sheet?.dupont ?? []).slice(-8).reverse(), [sheet]);
   const dupontLatest = useMemo(() => {
     const d = sheet?.dupont ?? [];
@@ -371,8 +426,8 @@ export default function CvmFundamentalsTab() {
         <p className="text-yellow-400 text-sm font-space">
           <span className="font-bold">Fonte:</span>{" "}
           {detail?.provenance.source ?? "CVM (derivado — pipeline do lab, snapshot 2026-07-14)"}.
-          Valores derivados/normalizados, sem point-in-time (sem protocolo, publicação ou
-          versionamento de retificação).
+          Indicadores do pipeline são derivados/normalizados sem point-in-time.
+          Indicadores com <span className="text-cyber-cyan">derivado no WR</span> usam point-in-time (knowledgeDate CVM + fechamento de mercado MT5/Yahoo).
         </p>
       </div>
 
@@ -951,7 +1006,7 @@ export default function CvmFundamentalsTab() {
                       </ResponsiveContainer>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Alavancagem — Dívida/PL & Dívida Líq./EBITDA (x)</p>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Alavancagem — Dívida/PL, Dívida Líq./EBITDA, /EBIT, /PL (x)</p>
                       <ResponsiveContainer width="100%" height={220}>
                         <LineChart data={sheetChart}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
@@ -962,6 +1017,42 @@ export default function CvmFundamentalsTab() {
                           <ReferenceLine y={0} stroke="#475569" />
                           <Line type="monotone" dataKey="dividaBrutaPl" name="Dívida/PL" stroke="#f59e0b" dot={false} strokeWidth={2} connectNulls />
                           <Line type="monotone" dataKey="dividaLiquidaEbitda" name="Dív. Líq./EBITDA" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="dividaLiquidaEbit" name="Dív. Líq./EBIT" stroke="#f472b6" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="dividaLiquidaPl" name="Dív. Líq./PL" stroke="#fbbf24" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">Margens — Bruta / EBITDA / EBIT / Líquida (%)</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`${Number(v).toFixed(2)}%`]} />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#475569" />
+                          <Line type="monotone" dataKey="margemBruta" name="Bruta" stroke="#34d399" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="margemEbitda" name="EBITDA" stroke="#22d3ee" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="margemEbit" name="EBIT" stroke="#f59e0b" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="margemLiquida" name="Líquida" stroke="#ec4899" dot={false} strokeWidth={2} connectNulls />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-2">
+                        LPA & VPA (R$/ação) · <span className="text-cyber-cyan">derivado no WR</span>
+                      </p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={sheetChart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                          <XAxis dataKey="periodo" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#e2e8f0" }} formatter={(v: number) => [`R$ ${Number(v).toFixed(2)}`]} />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#475569" />
+                          <Line type="monotone" dataKey="lpa" name="LPA" stroke="#a855f7" dot={false} strokeWidth={2} connectNulls />
+                          <Line type="monotone" dataKey="vpa" name="VPA" stroke="#22d3ee" dot={false} strokeWidth={2} connectNulls />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
@@ -1076,6 +1167,87 @@ export default function CvmFundamentalsTab() {
                       </div>
                     </div>
                   )}
+
+                  {/* Valuation Ampliada — múltiplos de preço adicionais (31 indicadores) */}
+                  <div className="border-t border-cyber-border/40 pt-5 space-y-3">
+                    <div>
+                      <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider">
+                        Valuation Ampliada · <span className="text-cyber-cyan">derivado no WR</span>
+                      </p>
+                      <p className="text-[0.65rem] text-gray-500 font-space mt-1">
+                        Usa fechamento de mercado (MT5/Yahoo) point-in-time por trimestre — pode ficar ausente
+                        fora da cobertura do histórico de candles do ticker.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {renderTile("P/L", "precoLucro", (v) => `${v.toFixed(1)}×`, "P/L = Preço Atual / LPA (Lucro por Ação)")}
+                      {renderTile("P/VP", "precoVp", (v) => `${v.toFixed(1)}×`, "P/VP = Preço Atual / VPA (Valor Patrimonial por Ação)")}
+                      {renderTile("PSR", "psr", (v) => `${v.toFixed(1)}×`, "PSR = Preço Atual / RPA (Receita Líquida 12M / Nº de ações)")}
+                      {renderTile("P/EBIT", "pEbit", (v) => `${v.toFixed(1)}×`, "P/EBIT = Preço Atual / (EBIT 12M / Nº de ações)")}
+                      {renderTile("P/Ativo", "pAtivo", (v) => `${v.toFixed(1)}×`, "P/Ativo = Preço Atual / (Ativo Total / Nº de ações)")}
+                      {renderTile(
+                        "P/Ativo Circ. Líq.",
+                        "pAtivoCircLiq",
+                        (v) => `${v.toFixed(1)}×`,
+                        "P/ACL = Preço Atual / [(Ativo Circulante − Passivo Circulante) / Nº de ações]. Resultado negativo é permitido.",
+                      )}
+                      {renderTile(
+                        "P/Capital de Giro",
+                        "pCapitalGiro",
+                        (v) => `${v.toFixed(1)}×`,
+                        "P/Capital de Giro = Preço Atual / [(Ativo Circulante − Passivo Circulante) / Nº de ações]. Capital de Giro ≤ 0 → não calculado.",
+                      )}
+                      {renderTile("Dividend Yield", "dividendYield", (v) => `${v.toFixed(1)}%`, "DY = Proventos Pagos (12 meses) / Nº de ações / Preço Atual")}
+                    </div>
+                  </div>
+
+                  {/* Estrutura Patrimonial — por ação + identidade contábil */}
+                  <div className="border-t border-cyber-border/40 pt-5 space-y-3">
+                    <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider">
+                      Estrutura Patrimonial · <span className="text-cyber-cyan">pipeline + derivado no WR</span>
+                    </p>
+                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                      {renderTile("LPA", "lpa", (v) => `R$ ${v.toFixed(2)}`, "LPA = Lucro Líquido (12M) / Nº de ações em circulação")}
+                      {renderTile("VPA", "vpa", (v) => `R$ ${v.toFixed(2)}`, "VPA = Patrimônio Líquido / Nº de ações em circulação")}
+                      {renderTile("Giro de Ativos", "giroAtivos", (v) => `${v.toFixed(2)}×`, "Giro de Ativos = Receita Líquida (12M) / Ativo Total")}
+                      {renderTile("PL/Ativos", "plAtivos", (v) => v.toFixed(2), "PL/Ativos = Patrimônio Líquido / Ativo Total")}
+                      {renderTile("Passivo/Ativos", "passivoAtivo", (v) => v.toFixed(2), "Passivo/Ativos = Passivo Total / Ativo Total")}
+                    </div>
+                    <p className="text-[0.65rem] text-gray-500 font-space">PL/Ativo + Passivo/Ativo ≈ 1,0 (identidade contábil)</p>
+                  </div>
+
+                  {/* Crescimento — CAGR 5 anos (pipeline) */}
+                  <div className="border-t border-cyber-border/40 pt-5 space-y-3">
+                    <p className="text-xs text-gray-400 font-orbitron uppercase tracking-wider">
+                      Crescimento (CAGR 5 anos) · <span className="text-cyber-cyan">pipeline CVM</span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                        <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                          CAGR Receita 5a
+                          <InfoTooltip formula="CAGR Receita = (Receita Líquida Hoje / Receita Líquida há 5 anos)^(1/5) − 1" />
+                        </p>
+                        <p className="text-lg font-bold font-space mt-1 text-white">
+                          {fmtPoint(latestOf("cagrReceita5a"), (v) => `${v.toFixed(1)}%`)}
+                        </p>
+                        <p className="text-[0.65rem] text-gray-500 font-space mt-0.5">
+                          YoY: {fmtPoint(latestOf("crescimentoReceitaYoy"), (v) => `${v.toFixed(1)}%`)}
+                        </p>
+                      </div>
+                      <div className="border border-cyber-border rounded-lg p-3 bg-cyber-dark/50">
+                        <p className="text-[0.65rem] text-gray-400 font-orbitron uppercase tracking-wider">
+                          CAGR Lucro 5a
+                          <InfoTooltip formula="CAGR Lucro = (Lucro Líquido Hoje / Lucro Líquido há 5 anos)^(1/5) − 1" />
+                        </p>
+                        <p className="text-lg font-bold font-space mt-1 text-white">
+                          {fmtPoint(latestOf("cagrLucro5a"), (v) => `${v.toFixed(1)}%`)}
+                        </p>
+                        <p className="text-[0.65rem] text-gray-500 font-space mt-0.5">
+                          YoY: {fmtPoint(latestOf("crescimentoLucroYoy"), (v) => `${v.toFixed(1)}%`)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
 
                   {/* Valuation — bandas de múltiplos + preço-justo implícito */}
                   <div className="border-t border-cyber-border/40 pt-5 space-y-4">

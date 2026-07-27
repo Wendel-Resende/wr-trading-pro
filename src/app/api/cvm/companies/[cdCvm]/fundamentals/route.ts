@@ -24,7 +24,7 @@ export async function GET(
       }
       asOf = asOfRaw;
     }
-    const sheet = buildFundamentalSheet(cdCvm, asOf);
+    const sheet = await buildFundamentalSheet(cdCvm, asOf);
     if (!sheet) {
       return NextResponse.json({ error: 'Empresa não encontrada.' }, { status: 404 });
     }

@@ -11,7 +11,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { getCompany, getQuarters, CVM_LEGACY_PROVENANCE } from './cvm-legacy-db';
+import { prisma } from '@/lib/prisma';
+import { getCompany, getQuarters, getShareCapital, CVM_LEGACY_PROVENANCE } from './cvm-legacy-db';
 import {
   cashConversion,
   knowledgeDateFor,
@@ -22,8 +23,29 @@ import {
   median,
   type MultipleBand,
 } from './cvm-fundamentals-derive';
+import {
+  ttm12m,
+  resolveShareCount,
+  combineProventos,
+  closeAsOf,
+  lucroPorAcao,
+  valorPatrimonialPorAcao,
+  precoLucro,
+  precoValorPatrimonial,
+  precoReceita,
+  precoEbit,
+  precoAtivo,
+  precoAtivoCirculanteLiquido,
+  precoCapitalGiro,
+  dividendYield,
+  dividaLiquida,
+  dividaLiquidaSobreEbit,
+  dividaLiquidaSobrePl,
+  passivoSobreAtivo,
+  type DailyClose,
+} from './cvm-fundamentals-indicators-31';
 
-export type Unit = 'percent' | 'ratio' | 'multiple';
+export type Unit = 'percent' | 'ratio' | 'multiple' | 'currency';
 
 export interface FundamentalPointV1 {
   period: { ano: number; trimestre: number };
@@ -114,6 +136,7 @@ interface FiRow {
   trimestre: number;
   dataRef: string | null;
   margemBruta: number | null;
+  margemEbit: number | null;
   margemEbitda: number | null;
   margemLiquida: number | null;
   roe: number | null;
@@ -128,13 +151,17 @@ interface FiRow {
   pEbitda: number | null;
   evEbitda: number | null;
   evEbit: number | null;
+  cagr5yReceita: number | null;
+  cagr5yLucro: number | null;
+  crescimentoReceitaYoy: number | null;
+  crescimentoLucroYoy: number | null;
 }
 
 function getFundamentalIndicators(cdCvm: string): FiRow[] {
   return (
     getDb()
       .prepare(
-        'SELECT ano, trimestre, data_ref, margem_bruta, margem_ebitda, margem_liquida, roe, roa, roic, giro_ativos, pl_ativos, divida_bruta_pl, divida_liquida_ebitda, payout_ratio, preco_ref, p_ebitda, ev_ebitda, ev_ebit FROM fundamental_indicators WHERE cd_cvm = ?',
+        'SELECT ano, trimestre, data_ref, margem_bruta, margem_ebit, margem_ebitda, margem_liquida, roe, roa, roic, giro_ativos, pl_ativos, divida_bruta_pl, divida_liquida_ebitda, payout_ratio, preco_ref, p_ebitda, ev_ebitda, ev_ebit, cagr5y_receita, cagr5y_lucro, crescimento_receita_yoy, crescimento_lucro_yoy FROM fundamental_indicators WHERE cd_cvm = ?',
       )
       .all(cdCvm) as Record<string, unknown>[]
   ).map((r) => ({
@@ -142,6 +169,7 @@ function getFundamentalIndicators(cdCvm: string): FiRow[] {
     trimestre: Number(r.trimestre),
     dataRef: typeof r.data_ref === 'string' && r.data_ref.length > 0 ? r.data_ref : null,
     margemBruta: num(r.margem_bruta),
+    margemEbit: num(r.margem_ebit),
     margemEbitda: num(r.margem_ebitda),
     margemLiquida: num(r.margem_liquida),
     roe: num(r.roe),
@@ -156,17 +184,58 @@ function getFundamentalIndicators(cdCvm: string): FiRow[] {
     pEbitda: num(r.p_ebitda),
     evEbitda: num(r.ev_ebitda),
     evEbit: num(r.ev_ebit),
+    cagr5yReceita: num(r.cagr5y_receita),
+    cagr5yLucro: num(r.cagr5y_lucro),
+    crescimentoReceitaYoy: num(r.crescimento_receita_yoy),
+    crescimentoLucroYoy: num(r.crescimento_lucro_yoy),
   }));
 }
 
 /** Multiplica por 100 preservando `null` (decimal → percentual para exibição). */
 const pct = (v: number | null): number | null => (v === null ? null : v * 100);
 
-export function buildFundamentalSheet(cdCvm: string, asOf?: string): FundamentalSheetV1 | null {
+/**
+ * Quando o indicador caiu no motivo genérico `DADO_AUSENTE` só porque o TTM
+ * de entrada já veio `null` com um motivo mais específico (ex.:
+ * `HISTORICO_INSUFICIENTE`), prefere esse motivo — nunca esconde a razão real
+ * atrás de um genérico.
+ */
+const preferUpstreamNote = (note: string | undefined, upstream?: string): string | undefined =>
+  note === 'DADO_AUSENTE' && upstream ? upstream : note;
+
+export async function buildFundamentalSheet(cdCvm: string, asOf?: string): Promise<FundamentalSheetV1 | null> {
   const company = getCompany(cdCvm);
   if (!company) return null;
 
   const quarters = getQuarters(cdCvm);
+
+  // Fechamento de mercado point-in-time (MT5/Yahoo, mesma tabela HistoricalCandle,
+  // uma query por empresa — não por período). Ticker fora da cobertura do
+  // backfill (ou período anterior ao 1º candle) -> closeAsOf retorna null,
+  // nunca fabricado. Fonte distinta de `fundamental_indicators.preco_ref`
+  // (estático), usado apenas pelos indicadores NOVOS desta ficha — o bloco
+  // `valuation` (EV/EBITDA etc.) continua com preco_ref, pipeline-computado.
+  const candleRows = await prisma.historicalCandle.findMany({
+    where: { symbol: company.ticker, timeframe: 'D1' },
+    orderBy: { time: 'asc' },
+    select: { time: true, close: true },
+  });
+  const closes: DailyClose[] = candleRows.map((c) => ({ time: c.time, close: c.close }));
+
+  // Mapas TTM sobre o histórico NÃO filtrado (TTM de um período pode depender
+  // de trimestres antes do corte as-of, igual a `getQuarters` já retorna hoje).
+  const receitaByPeriod = new Map(quarters.map((q) => [`${q.ano}T${q.trimestre}`, q.receitaLiquida]));
+  const lucroByPeriod = new Map(quarters.map((q) => [`${q.ano}T${q.trimestre}`, q.lucroLiquido]));
+  const ebitByPeriod = new Map(quarters.map((q) => [`${q.ano}T${q.trimestre}`, q.ebit]));
+  const proventosByPeriod = new Map(
+    quarters.map((q) => [`${q.ano}T${q.trimestre}`, combineProventos(q.dividendosPagos, q.jcpPagos)]),
+  );
+  const shareRows = getShareCapital(cdCvm).map((r) => ({
+    ano: r.ano,
+    trimestre: r.trimestre,
+    qtTotal: r.qtTotal,
+    acoesTotal: r.acoesTotal,
+  }));
 
   const point = (
     ano: number,
@@ -204,19 +273,39 @@ export function buildFundamentalSheet(cdCvm: string, asOf?: string): Fundamental
   const dupont: DupontPointV1[] = [];
   const series: Record<string, FundamentalPointV1[]> = {
     margemBruta: [],
+    margemEbit: [],
     margemEbitda: [],
     margemLiquida: [],
     roe: [],
     roa: [],
     roic: [],
+    giroAtivos: [],
+    plAtivos: [],
     dividaBrutaPl: [],
     dividaLiquidaEbitda: [],
+    dividaLiquidaEbit: [],
+    dividaLiquidaPl: [],
+    passivoAtivo: [],
     liquidezCorrente: [],
     payoutRatio: [],
     conversaoCaixa: [],
     evEbitda: [],
     pEbitda: [],
     evEbit: [],
+    lpa: [],
+    vpa: [],
+    precoLucro: [],
+    precoVp: [],
+    psr: [],
+    pEbit: [],
+    pAtivo: [],
+    pAtivoCircLiq: [],
+    pCapitalGiro: [],
+    dividendYield: [],
+    cagrReceita5a: [],
+    cagrLucro5a: [],
+    crescimentoReceitaYoy: [],
+    crescimentoLucroYoy: [],
   };
 
   // Acumuladores de valuation (ordem cronológica das keys).
@@ -237,23 +326,75 @@ export function buildFundamentalSheet(cdCvm: string, asOf?: string): Fundamental
     // As-of por prazo legal: períodos ainda não conhecidos na data de corte
     // ficam FORA de tudo (séries, DuPont, bandas, preço, mediana setorial —
     // que usa lastEvPeriod, também filtrado aqui).
-    if (asOf && knowledgeDateFor(dr, ano, trimestre).iso > asOf) continue;
+    const knowledgeDateIso = knowledgeDateFor(dr, ano, trimestre).iso;
+    if (asOf && knowledgeDateIso > asOf) continue;
 
     // Indicadores: fonte única `fundamental_indicators` (decimal, 12M);
     // percentuais convertidos ×100 para exibição, razões em decimal.
     series.margemBruta.push(point(ano, trimestre, dr, pct(f?.margemBruta ?? null), 'percent', 'pipeline-cvm'));
+    series.margemEbit.push(point(ano, trimestre, dr, pct(f?.margemEbit ?? null), 'percent', 'pipeline-cvm'));
     series.margemEbitda.push(point(ano, trimestre, dr, pct(f?.margemEbitda ?? null), 'percent', 'pipeline-cvm'));
     series.margemLiquida.push(point(ano, trimestre, dr, pct(f?.margemLiquida ?? null), 'percent', 'pipeline-cvm'));
     series.roe.push(point(ano, trimestre, dr, pct(f?.roe ?? null), 'percent', 'pipeline-cvm'));
     series.roa.push(point(ano, trimestre, dr, pct(f?.roa ?? null), 'percent', 'pipeline-cvm'));
     series.roic.push(point(ano, trimestre, dr, pct(f?.roic ?? null), 'percent', 'pipeline-cvm'));
+    series.giroAtivos.push(point(ano, trimestre, dr, f?.giroAtivos ?? null, 'ratio', 'pipeline-cvm'));
+    series.plAtivos.push(point(ano, trimestre, dr, f?.plAtivos ?? null, 'ratio', 'pipeline-cvm'));
     series.dividaBrutaPl.push(point(ano, trimestre, dr, f?.dividaBrutaPl ?? null, 'ratio', 'pipeline-cvm'));
     series.dividaLiquidaEbitda.push(point(ano, trimestre, dr, f?.dividaLiquidaEbitda ?? null, 'ratio', 'pipeline-cvm'));
     // Liquidez corrente só existe em `indicadores` — é uma razão (escala segura).
     series.liquidezCorrente.push(point(ano, trimestre, dr, q?.liquidezCorrente ?? null, 'ratio', 'pipeline-cvm'));
     series.payoutRatio.push(point(ano, trimestre, dr, pct(f?.payoutRatio ?? null), 'percent', 'pipeline-cvm'));
+    series.cagrReceita5a.push(point(ano, trimestre, dr, pct(f?.cagr5yReceita ?? null), 'percent', 'pipeline-cvm'));
+    series.cagrLucro5a.push(point(ano, trimestre, dr, pct(f?.cagr5yLucro ?? null), 'percent', 'pipeline-cvm'));
+    series.crescimentoReceitaYoy.push(point(ano, trimestre, dr, pct(f?.crescimentoReceitaYoy ?? null), 'percent', 'pipeline-cvm'));
+    series.crescimentoLucroYoy.push(point(ano, trimestre, dr, pct(f?.crescimentoLucroYoy ?? null), 'percent', 'pipeline-cvm'));
     const cc = cashConversion(q?.fco ?? null, q?.lucroLiquido ?? null);
     series.conversaoCaixa.push(point(ano, trimestre, dr, cc.value, 'ratio', 'derivado-wr', cc.note));
+
+    // --- 31 indicadores: preço de fechamento point-in-time + derivados no WR ---
+    // (docs/fundamentals-indicators-formulas-31.md — LPA/VPA, múltiplos de
+    // preço, DY, dívida líquida/EBIT/PL, passivo/ativo; nunca fabricado.)
+    const receitaTtm = ttm12m(receitaByPeriod, ano, trimestre);
+    const lucroTtm = ttm12m(lucroByPeriod, ano, trimestre);
+    const ebitTtm = ttm12m(ebitByPeriod, ano, trimestre);
+    const proventosTtm = ttm12m(proventosByPeriod, ano, trimestre);
+    const shares = resolveShareCount(shareRows, ano, trimestre);
+    const preco = closeAsOf(closes, new Date(`${knowledgeDateIso}T00:00:00.000Z`));
+    const dividaLiq = dividaLiquida(q?.dividaCp ?? null, q?.dividaLp ?? null, q?.caixa ?? null);
+
+    const lpaR = lucroPorAcao(lucroTtm.value, shares.value);
+    series.lpa.push(point(ano, trimestre, dr, lpaR.value, 'currency', 'derivado-wr', preferUpstreamNote(lpaR.note, lucroTtm.note)));
+    const vpaR = valorPatrimonialPorAcao(q?.patrimonioLiquido ?? null, shares.value);
+    series.vpa.push(point(ano, trimestre, dr, vpaR.value, 'currency', 'derivado-wr', vpaR.note));
+
+    const plR = precoLucro(preco, lpaR.value);
+    series.precoLucro.push(point(ano, trimestre, dr, plR.value, 'multiple', 'derivado-wr', plR.note));
+    const pvpR = precoValorPatrimonial(preco, vpaR.value);
+    series.precoVp.push(point(ano, trimestre, dr, pvpR.value, 'multiple', 'derivado-wr', pvpR.note));
+    const psrR = precoReceita(preco, receitaTtm.value, shares.value);
+    series.psr.push(point(ano, trimestre, dr, psrR.value, 'multiple', 'derivado-wr', preferUpstreamNote(psrR.note, receitaTtm.note)));
+    const pEbitR = precoEbit(preco, ebitTtm.value, shares.value);
+    series.pEbit.push(point(ano, trimestre, dr, pEbitR.value, 'multiple', 'derivado-wr', preferUpstreamNote(pEbitR.note, ebitTtm.note)));
+    const pAtivoR = precoAtivo(preco, q?.ativoTotal ?? null, shares.value);
+    series.pAtivo.push(point(ano, trimestre, dr, pAtivoR.value, 'multiple', 'derivado-wr', pAtivoR.note));
+    const pAclR = precoAtivoCirculanteLiquido(preco, q?.ativoCirculante ?? null, q?.passivoCirculante ?? null, shares.value);
+    series.pAtivoCircLiq.push(point(ano, trimestre, dr, pAclR.value, 'multiple', 'derivado-wr', pAclR.note));
+    const pCapGiroR = precoCapitalGiro(preco, q?.ativoCirculante ?? null, q?.passivoCirculante ?? null, shares.value);
+    series.pCapitalGiro.push(point(ano, trimestre, dr, pCapGiroR.value, 'multiple', 'derivado-wr', pCapGiroR.note));
+    const dyR = dividendYield(proventosTtm.value, shares.value, preco);
+    series.dividendYield.push(
+      point(ano, trimestre, dr, pct(dyR.value), 'percent', 'derivado-wr', preferUpstreamNote(dyR.note, proventosTtm.note)),
+    );
+
+    const dlEbitR = dividaLiquidaSobreEbit(dividaLiq, ebitTtm.value);
+    series.dividaLiquidaEbit.push(
+      point(ano, trimestre, dr, dlEbitR.value, 'ratio', 'derivado-wr', preferUpstreamNote(dlEbitR.note, ebitTtm.note)),
+    );
+    const dlPlR = dividaLiquidaSobrePl(dividaLiq, q?.patrimonioLiquido ?? null);
+    series.dividaLiquidaPl.push(point(ano, trimestre, dr, dlPlR.value, 'ratio', 'derivado-wr', dlPlR.note));
+    const paR = passivoSobreAtivo(q?.passivoCirculante ?? null, q?.passivoNaoCirc ?? null, q?.ativoTotal ?? null);
+    series.passivoAtivo.push(point(ano, trimestre, dr, paR.value, 'ratio', 'derivado-wr', paR.note));
 
     // Múltiplos de valuation (pipeline, decimal — exibidos como múltiplo mesmo).
     series.evEbitda.push(point(ano, trimestre, dr, f?.evEbitda ?? null, 'multiple', 'pipeline-cvm'));
@@ -347,7 +488,17 @@ export function buildFundamentalSheet(cdCvm: string, asOf?: string): Fundamental
     valuation,
     provenance: {
       db: 'data/cvm/cvm_fundamentos.db',
-      tables: ['fundamental_indicators', 'indicadores', 'dre_trimestral', 'dfc_trimestral', 'empresas'],
+      tables: [
+        'fundamental_indicators',
+        'indicadores',
+        'dre_trimestral',
+        'bpa_trimestral',
+        'bpp_trimestral',
+        'dfc_trimestral',
+        'capital_social',
+        'empresas',
+        'HistoricalCandle',
+      ],
       legalLagRule: LEGAL_LAG_RULE,
       base: CVM_LEGACY_PROVENANCE,
       generatedAt: new Date().toISOString(),
