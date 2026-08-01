@@ -44,10 +44,27 @@ export async function GET() {
       }
     }
 
+    // Defaults são nomes de modelos, nunca credenciais ou endpoints.
+    const modelDefaults: Record<string, string | null> = {};
+    await Promise.all(
+      providers.map(async (provider) => {
+        if (
+          provider !== 'OPENAI' &&
+          provider !== 'DEEPSEEK' &&
+          provider !== 'LM_STUDIO' &&
+          provider !== 'OPENROUTER' &&
+          provider !== 'ANTHROPIC'
+        ) return;
+        const resolved = await resolveProviderCredential(provider);
+        modelDefaults[provider] = resolved.model ?? null;
+      })
+    );
+
     return NextResponse.json({
       providers,
       ollama: { models: ollamaModels, defaultModel: getOllamaDefaultModel() },
       lmStudio: { models: lmStudioModels, defaultModel: lmStudioDefaultModel ?? null },
+      modelDefaults,
     });
   } catch (error) {
     console.error('[api/llm/providers]', error);

@@ -127,6 +127,8 @@ const TICKER_INPUT_RE = /^[A-Za-z]{4}\d{1,2}$/;
 interface LlmProviders {
   providers: string[];
   ollama: { models: string[]; defaultModel: string };
+  lmStudio: { models: string[]; defaultModel: string | null };
+  modelDefaults: Record<string, string | null>;
 }
 
 export default function AgentRunsPanel() {
@@ -333,21 +335,34 @@ export default function AgentRunsPanel() {
               ))}
             </select>
           </div>
-          {provider === "OLLAMA" && (llmInfo?.ollama.models.length ?? 0) > 0 && (
+          {provider && (
             <div>
               <label className="block text-xs text-gray-400 font-orbitron uppercase tracking-wider mb-1">
                 Modelo
               </label>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
-              >
-                <option value="">{llmInfo?.ollama.defaultModel} (padrão)</option>
-                {llmInfo?.ollama.models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+              {provider === "OLLAMA" || provider === "LM_STUDIO" ? (
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+                >
+                  <option value="">
+                    {(provider === "OLLAMA" ? llmInfo?.ollama.defaultModel : llmInfo?.lmStudio.defaultModel) ?? "padrão do servidor"}
+                    {" (padrão)"}
+                  </option>
+                  {(provider === "OLLAMA" ? llmInfo?.ollama.models : llmInfo?.lmStudio.models)?.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={llmInfo?.modelDefaults?.[provider] ?? "modelo padrão do servidor"}
+                  className="w-52 bg-cyber-dark/50 border border-cyber-border rounded-lg px-3 py-2 text-sm text-white font-space outline-none focus:border-cyber-pink"
+                />
+              )}
             </div>
           )}
           <div>
