@@ -13,6 +13,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { MT5ServiceSingleton } from '@/services/mt5Service';
+import LlmInlineProviderConfig from './LlmInlineProviderConfig';
 
 interface OperationSuggestion {
   action: 'BUY' | 'SELL' | 'HOLD' | 'NO_DECISION';
@@ -46,6 +47,15 @@ const LLM_MODE_LABELS: Record<AgentLlmMode, string> = {
   lm_studio: 'LM Studio',
 };
 
+/** Modo do painel (minúsculo) -> código de provider server-side (maiúsculo). */
+const LLM_MODE_TO_PROVIDER: Partial<Record<AgentLlmMode, string>> = {
+  openai: 'OPENAI',
+  deepseek: 'DEEPSEEK',
+  openrouter: 'OPENROUTER',
+  anthropic: 'ANTHROPIC',
+  lm_studio: 'LM_STUDIO',
+};
+
 interface MarketData {
   price: number;
   bid: number;
@@ -72,20 +82,32 @@ export default function AgentPanel() {
   const [remoteModel, setRemoteModel] = useState('');
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [lmStudioModels, setLmStudioModels] = useState<string[]>([]);
+  const [providerConfigured, setProviderConfigured] = useState<Record<string, boolean>>({});
   const [showSettings, setShowSettings] = useState(false);
+  // Incrementado para forçar a expansão do formulário inline de configuração
+  // quando "Analisar" é bloqueado por provider remoto não configurado.
+  const [configOpenSignal, setConfigOpenSignal] = useState(0);
 
   const currentSymbolRef = useRef<string | null>(null);
 
-  // Modelos realmente instalados no Ollama/LM Studio locais (via servidor)
-  useEffect(() => {
+  // Modelos realmente instalados no Ollama/LM Studio locais e status de
+  // configuração de cada provider (via servidor) — refeito após salvar/
+  // limpar chave no widget inline, sem reload nem logout/login.
+  const refreshLlmInfo = () => {
     fetch('/api/llm/providers')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data) return;
         if (data.ollama) setOllamaModels(data.ollama.models ?? []);
         if (data.lmStudio) setLmStudioModels(data.lmStudio.models ?? []);
+        if (data.providerConfigured) setProviderConfigured(data.providerConfigured);
       })
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    refreshLlmInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Modelos do modo local selecionado (Ollama ou LM Studio)
@@ -194,6 +216,16 @@ export default function AgentPanel() {
   const runAnalysis = async () => {
     if (!ticker || !marketData || marketData.price === 0) {
       setError('Digite um ativo valido e aguarde os dados carregarem');
+      return;
+    }
+
+    const selectedProviderCode = LLM_MODE_TO_PROVIDER[llmMode];
+    if (selectedProviderCode && providerConfigured[selectedProviderCode] === false) {
+      setError(
+        `${LLM_MODE_LABELS[llmMode]} ainda não está configurado. Abra "Configurar LLM" e informe a chave — a análise não é enviada sem isso, e nenhum outro provider é usado no lugar.`
+      );
+      setShowSettings(true);
+      setConfigOpenSignal((n) => n + 1);
       return;
     }
 
@@ -330,15 +362,23 @@ export default function AgentPanel() {
             </>
           )}
 
-          {/* Remote providers: chave configurada no servidor, modelo opcional */}
+          {/* Remote providers: configuração inline (sem sair do painel) + modelo opcional */}
           {REMOTE_LLM_MODES.includes(llmMode) && (
             <>
               <p className="text-xs text-gray-500">
                 <Key className="w-3 h-3 inline mr-1" />
-                A chave é configurada no servidor (.env ou Configurações de IA &gt; Provedores de LLM), nunca no navegador.
+                A chave nunca é digitada no navegador de forma persistida — o botão abaixo salva
+                direto no servidor (cifrado), sem localStorage/URL/log.
               </p>
+              {LLM_MODE_TO_PROVIDER[llmMode] && (
+                <LlmInlineProviderConfig
+                  provider={LLM_MODE_TO_PROVIDER[llmMode]!}
+                  onChanged={refreshLlmInfo}
+                  forceOpenSignal={configOpenSignal}
+                />
+              )}
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Modelo (opcional)</label>
+                <label className="block text-xs text-gray-400 mb-1">Modelo (opcional, para esta análise)</label>
                 <input
                   type="text"
                   value={remoteModel}
@@ -348,6 +388,13 @@ export default function AgentPanel() {
                 />
               </div>
             </>
+          )}
+          {llmMode === 'lm_studio' && (
+            <LlmInlineProviderConfig
+              provider="LM_STUDIO"
+              onChanged={refreshLlmInfo}
+              forceOpenSignal={configOpenSignal}
+            />
           )}
 
           <button

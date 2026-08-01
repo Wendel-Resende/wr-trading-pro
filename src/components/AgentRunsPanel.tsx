@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Play, RefreshCw, XCircle, AlertTriangle, GitBranch } from "lucide-react";
+import LlmInlineProviderConfig from "./LlmInlineProviderConfig";
 
 type RunStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 type NodeType = "INPUT" | "AGENT" | "EVIDENCE" | "SYNTHESIS" | "OUTPUT";
@@ -145,15 +146,24 @@ export default function AgentRunsPanel() {
   const [error, setError] = useState("");
   const [template, setTemplate] = useState<"SIMPLES" | "COMITE">("SIMPLES");
   const [ticker, setTicker] = useState("");
+  // Incrementado para forçar a expansão do formulário inline de configuração
+  // (ex.: quando o envio é bloqueado por provider não configurado).
+  const [configOpenSignal, setConfigOpenSignal] = useState(0);
+
+  const refreshLlmInfo = useCallback(async () => {
+    try {
+      const r = await fetch("/api/llm/providers");
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data?.providers) setLlmInfo(data);
+    } catch {
+      // catálogo indisponível — seletor mantém a última lista conhecida
+    }
+  }, []);
 
   useEffect(() => {
-    fetch("/api/llm/providers")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data?.providers) setLlmInfo(data);
-      })
-      .catch(() => {});
-  }, []);
+    void refreshLlmInfo();
+  }, [refreshLlmInfo]);
 
   const refresh = useCallback(async () => {
     try {
@@ -193,7 +203,8 @@ export default function AgentRunsPanel() {
       return;
     }
     if (provider && llmInfo?.providerConfigured?.[provider] === false) {
-      setError("Este provider ainda não está configurado. Use o link Configurações de IA abaixo do seletor.");
+      setError('Este provider ainda não está configurado. Configure a chave em "Configurar" abaixo do seletor de provedor — o run não é enviado sem isso, e nenhum outro provider é usado no seu lugar.');
+      setConfigOpenSignal((n) => n + 1);
       return;
     }
     setSubmitting(true);
@@ -259,7 +270,10 @@ export default function AgentRunsPanel() {
           Runtime governado: os nós AGENT/SYNTHESIS usam o <span className="font-bold">LLM do
           servidor</span> (Ollama/OpenAI/etc., com fallback) e o custo do orçamento é em tokens.
           Sem provedor disponível, a execução cai para o modo simulado — sempre marcado como tal
-          no detalhe de cada nó. Propostas nunca geram ordens, por construção.
+          no detalhe de cada nó. Propostas nunca geram ordens, por construção. Escolha o provedor
+          abaixo e use &quot;Configurar&quot; para informar a chave sem sair desta tela — a visão
+          geral de todos os provedores continua em{" "}
+          <a href="/settings" className="underline hover:text-white">Configurações de IA</a>.
         </p>
       </div>
 
@@ -341,10 +355,13 @@ export default function AgentRunsPanel() {
                 </option>
               ))}
             </select>
-            {provider && llmInfo?.providerConfigured?.[provider] === false && (
-              <a href="/settings" className="block text-[0.65rem] text-cyber-cyan hover:underline mt-1">
-                Configurar provider em Configurações de IA
-              </a>
+            {provider && (
+              <LlmInlineProviderConfig
+                provider={provider}
+                onChanged={refreshLlmInfo}
+                forceOpenSignal={configOpenSignal}
+                className="mt-1"
+              />
             )}
           </div>
           {provider && (

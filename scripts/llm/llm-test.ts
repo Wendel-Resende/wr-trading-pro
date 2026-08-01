@@ -797,6 +797,52 @@ async function allProvidersVisibleInRouteTests(): Promise<void> {
   console.log('/api/llm/providers lista todos os providers suportados com status correto: OK');
 }
 
+// ─── 15. Configuração inline (AgentPanel/AgentRunsPanel): salvar via
+// /api/llm/config e ver o refresh refletido imediatamente em
+// /api/llm/providers — exatamente o fluxo que o novo widget inline usa
+// (POST salvar/limpar seguido de novo GET no mesmo processo, sem reiniciar
+// o servidor nem logout/login). Também confirma que nenhuma resposta em
+// nenhuma das duas rotas nunca carrega a chave salva.
+
+async function inlineConfigRefreshTests(): Promise<void> {
+  resetLlmEnv();
+  process.env.WR_LLM_CONFIG_ENCRYPTION_KEY = 'd'.repeat(32);
+  const SECRET = '[REDACTED]-anthropic-key';
+
+  const before = await (await providersGet()).json();
+  assert.equal(before.providerConfigured.ANTHROPIC, false, 'ANTHROPIC deveria começar não configurado');
+
+  const saveReq = new NextRequest('http://localhost/api/llm/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'ANTHROPIC', action: 'save', apiKey: SECRET, model: 'claude-3-5-haiku-latest' }),
+  });
+  const saveBody = await (await configPost(saveReq)).json();
+  assert.equal(saveBody.data.configured, true);
+  assert.ok(!JSON.stringify(saveBody).includes(SECRET), 'resposta do save nunca deveria ecoar a chave');
+
+  // Mesmo processo, sem restart: /api/llm/providers já reflete o save —
+  // é exatamente o que o botão "Salvar" do widget inline dispara em seguida.
+  const afterSave = await providersGet();
+  const afterSaveBody = await afterSave.json();
+  assert.equal(afterSaveBody.providerConfigured.ANTHROPIC, true, 'refresh imediato: providerConfigured deveria virar true sem restart');
+  assert.equal(afterSaveBody.modelDefaults.ANTHROPIC, 'claude-3-5-haiku-latest');
+  assert.ok(!JSON.stringify(afterSaveBody).includes(SECRET), '/api/llm/providers nunca deveria expor a chave salva');
+
+  const clearReq = new NextRequest('http://localhost/api/llm/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'ANTHROPIC', action: 'clear' }),
+  });
+  await configPost(clearReq);
+
+  const afterClear = await (await providersGet()).json();
+  assert.equal(afterClear.providerConfigured.ANTHROPIC, false, 'refresh imediato: providerConfigured deveria voltar a false após limpar, sem restart');
+
+  resetLlmEnv();
+  console.log('refresh imediato (config inline -> /api/llm/providers, sem restart/logout): OK, nunca expõe a chave');
+}
+
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -812,6 +858,7 @@ async function main(): Promise<void> {
   await legacyProvidersRegressionTests();
   await noFallbackTests();
   await allProvidersVisibleInRouteTests();
+  await inlineConfigRefreshTests();
 
   const prisma = new PrismaClient();
   try {
