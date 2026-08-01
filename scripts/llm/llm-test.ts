@@ -43,6 +43,8 @@ import {
 } from '../../src/lib/server/llm-secure-store';
 import { POST as chatPost, GET as chatGet } from '../../src/app/api/llm/chat/route';
 import { GET as configGet, POST as configPost } from '../../src/app/api/llm/config/route';
+import { GET as providersGet } from '../../src/app/api/llm/providers/route';
+import { serverLlmAgentAdapter } from '../../src/adapters/llm/server-llm-agent';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -687,6 +689,114 @@ async function legacyProvidersRegressionTests(): Promise<void> {
   console.log('regressão de providers legados (DeepSeek/Ollama/Qwen/Groq/Manus) no schema do chat: OK');
 }
 
+// ─── 13. noFallback: Runs Governados nunca trocam de provider em silêncio ─
+//
+// Reproduz o bug relatado: usuário escolhe um provider explícito (ex.: nos
+// Runs Governados) que está configurado mas cuja chamada falha, enquanto
+// outro provider (Ollama, sempre "configurado" via endpoint default) está
+// disponível. Sem noFallback, serverLlmService.chat() tentaria o Ollama
+// silenciosamente. Com noFallback (o que ServerLlmAgentAdapter agora sempre
+// ativa quando um provider é pedido), o erro do provider pedido é propagado.
+
+async function noFallbackTests(): Promise<void> {
+  resetLlmEnv();
+
+  // Sem config.provider, noFallback é uma configuração inválida (o chamador
+  // não pode pedir "modo estrito" sem dizer qual provider é obrigatório).
+  await assert.rejects(
+    serverLlmService.chat({ messages: [{ role: 'user', content: 'oi' }], config: { noFallback: true } }),
+    /noFallback exige um provider explícito/,
+    'noFallback sem provider deveria rejeitar imediatamente'
+  );
+
+  // Provider explícito e reconhecido, porém não configurado (nenhuma env
+  // var setada) — deveria rejeitar com mensagem clara, NUNCA usar Ollama
+  // (que está sempre "configurado" por ter endpoint default).
+  await assert.rejects(
+    serverLlmService.chat({ messages: [{ role: 'user', content: 'oi' }], config: { provider: 'ANTHROPIC', noFallback: true } }),
+    /Provider ANTHROPIC não está configurado/,
+    'provider explícito não configurado, em modo noFallback, deveria rejeitar sem tentar outro provider'
+  );
+
+  // O MESMO cenário via o adapter real usado pelo runtime AgentRun
+  // (/api/v1/agent-runs/[id]/advance injeta exatamente este adapter).
+  await assert.rejects(
+    serverLlmAgentAdapter.complete([{ role: 'user', content: 'oi' }], { provider: 'ANTHROPIC' }),
+    /Provider ANTHROPIC não está configurado/,
+    'ServerLlmAgentAdapter.complete com provider explícito não configurado deveria rejeitar (Governed Runs)'
+  );
+
+  // Provider explícito CONFIGURADO mas cuja chamada falha (500), com outro
+  // provider (Ollama) disponível e funcionando — o erro do provider pedido
+  // deve propagar; Ollama NUNCA deve ser usado silenciosamente no lugar.
+  await withMockServer(jsonHandler(500, { error: { message: 'lm studio fora do ar' } }), async (lmPort) => {
+    await withMockServer(jsonHandler(200, { message: { content: 'resposta do ollama (não deveria aparecer)' } }), async (ollamaPort) => {
+      process.env.LM_STUDIO_ENDPOINT = `http://127.0.0.1:${lmPort}`;
+      process.env.LM_STUDIO_DEFAULT_MODEL = 'lm-test-model';
+      process.env.OLLAMA_ENDPOINT = `http://127.0.0.1:${ollamaPort}`;
+
+      // noFallback=true (Governed Runs com provider explícito): propaga o erro do LM Studio.
+      await assert.rejects(
+        serverLlmService.chat({ messages: [{ role: 'user', content: 'oi' }], config: { provider: 'LM_STUDIO', noFallback: true } }),
+        /LM_STUDIO/,
+        'provider explícito configurado mas com falha, em modo noFallback, deveria propagar o erro (nunca trocar de provider)'
+      );
+      await assert.rejects(
+        serverLlmAgentAdapter.complete([{ role: 'user', content: 'oi' }], { provider: 'LM_STUDIO' }),
+        /LM_STUDIO/,
+        'adapter real (Governed Runs) com provider explícito com falha deveria rejeitar, nunca usar Ollama silenciosamente'
+      );
+
+      // Mesmo cenário SEM noFallback (comportamento legado do AIChat/painel
+      // legado): cai para o próximo provider configurado (Ollama) — contraste
+      // deliberado provando que o fallback continua existindo para quem não
+      // pediu modo estrito.
+      const legacyFallback = await serverLlmService.chat({
+        messages: [{ role: 'user', content: 'oi' }],
+        config: { provider: 'LM_STUDIO' },
+      });
+      assert.equal(legacyFallback.provider, 'OLLAMA', 'sem noFallback, o comportamento de fallback legado deveria continuar disponível');
+
+      // Adapter em modo Auto (sem preferência) também deve poder cair para Ollama.
+      const autoAdapter = await serverLlmAgentAdapter.complete([{ role: 'user', content: 'oi' }]);
+      assert.equal(autoAdapter.provider, 'OLLAMA', 'Governed Runs em modo Auto (sem provider) deveria manter o fallback normal');
+
+      resetLlmEnv();
+    });
+  });
+
+  console.log('noFallback (Runs Governados): OK (provider explícito nunca é trocado em silêncio; modo Auto preserva fallback)');
+}
+
+// ─── 14. /api/llm/providers lista TODOS os providers suportados ──────────
+
+async function allProvidersVisibleInRouteTests(): Promise<void> {
+  resetLlmEnv();
+
+  const res = await providersGet();
+  const body = await res.json();
+
+  for (const p of LLM_PROVIDERS) {
+    assert.ok(body.providers.includes(p), `providers deveria incluir ${p} mesmo não configurado`);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(body.providerConfigured, p),
+      `providerConfigured deveria ter uma entrada para ${p}`
+    );
+  }
+  assert.equal(body.providerConfigured.OLLAMA, true, 'OLLAMA é sempre "configurado" (endpoint local default)');
+  assert.equal(body.providerConfigured.LM_STUDIO, true, 'LM_STUDIO é sempre "configurado" (endpoint local default)');
+  assert.equal(body.providerConfigured.ANTHROPIC, false, 'ANTHROPIC sem chave deveria aparecer como não configurado');
+  assert.equal(body.providerConfigured.QWEN, false, 'QWEN sem chave deveria aparecer como não configurado (não só os 5 da UI)');
+
+  process.env.QWEN_API_KEY = '[REDACTED]';
+  const res2 = await providersGet();
+  const body2 = await res2.json();
+  assert.equal(body2.providerConfigured.QWEN, true, 'QWEN com chave setada deveria virar configurado');
+
+  resetLlmEnv();
+  console.log('/api/llm/providers lista todos os providers suportados com status correto: OK');
+}
+
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -700,6 +810,8 @@ async function main(): Promise<void> {
   await noPublicPrefixTests();
   await adversarialHttpHandlerTests();
   await legacyProvidersRegressionTests();
+  await noFallbackTests();
+  await allProvidersVisibleInRouteTests();
 
   const prisma = new PrismaClient();
   try {

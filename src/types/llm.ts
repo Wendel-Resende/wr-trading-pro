@@ -48,6 +48,15 @@ export interface LLMConfig {
   maxTokens?: number;
   /** Limite da chamada em ms; clampado server-side (default 120s, teto 600s). */
   timeoutMs?: number;
+  /**
+   * Campo INTERNO — nunca aceito no schema estrito do proxy HTTP (client
+   * jamais pode setá-lo). Quando true, exige `provider` explícito e nunca
+   * substitui silenciosamente por outro provider em caso de falha/indisponibilidade:
+   * a chamada rejeita imediatamente. Usado pelo adapter de Runs Governados
+   * (ServerLlmAgentAdapter) quando o usuário escolheu um provider específico —
+   * ver ServerLLMService.chat() em llm-providers.ts.
+   */
+  noFallback?: boolean;
 }
 
 export interface LLMResponse {

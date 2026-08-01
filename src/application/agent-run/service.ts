@@ -13,6 +13,7 @@ import type {
 import { InvalidAgentRunDagError, validateAndSortDag } from '../../domain/v1/models/agent-run';
 import type { AgentRunRepository } from '../../domain/v1/ports/agent-run-repository';
 import type { AgentLlmPort } from '../../domain/v1/ports/agent-llm';
+import { LLM_PROVIDERS, LLM_MODEL_ID_PATTERN } from '../../types/llm';
 import { compareInstants, parseInstant } from '../../domain/v1/time';
 import { ReadModelError } from '../read-models-v1/errors';
 import { buildPromptContext, buildSingleTickerContext } from '../../lib/agent-data-context';
@@ -194,12 +195,21 @@ interface NodeExecution {
 
 /**
  * Preferência de provedor/modelo vinda do input do run (auditável na linha
- * persistida). Sanitizada aqui; provedores/modelos inválidos são ignorados
- * pelo adapter, caindo no fallback do proxy.
+ * persistida). Validada aqui contra a enum fechada de providers e o regex
+ * de model id compartilhado (mesmos usados no proxy /api/llm/chat) — nunca
+ * uma string arbitrária chega ao adapter. Provider reconhecido mas não
+ * configurado NÃO cai em fallback silencioso: o adapter (ServerLlmAgentAdapter)
+ * roda em modo estrito (noFallback) sempre que um provider é pedido
+ * explicitamente — ver src/adapters/llm/server-llm-agent.ts.
  */
 function llmPreferences(input: Record<string, unknown>): { provider?: string; model?: string } {
-  const provider = typeof input.llmProvider === 'string' && input.llmProvider.length <= 20 ? input.llmProvider : undefined;
-  const model = typeof input.llmModel === 'string' && input.llmModel.length <= 64 ? input.llmModel : undefined;
+  const rawProvider = typeof input.llmProvider === 'string' ? input.llmProvider.trim().toUpperCase() : undefined;
+  const provider =
+    rawProvider && (LLM_PROVIDERS as readonly string[]).includes(rawProvider) ? rawProvider : undefined;
+
+  const rawModel = typeof input.llmModel === 'string' ? input.llmModel.trim() : undefined;
+  const model = rawModel && LLM_MODEL_ID_PATTERN.test(rawModel) ? rawModel : undefined;
+
   return { provider, model };
 }
 

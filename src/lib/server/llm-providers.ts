@@ -518,6 +518,23 @@ class ServerLLMService {
       enhancedMessages = [systemMessage, ...messages];
     }
 
+    // noFallback: o chamador (ex.: Runs Governados, quando o usuário escolheu
+    // um provider explícito) exige que ESTE provider seja usado — ou a
+    // chamada falha de forma clara. Nunca substitui silenciosamente por
+    // outro provider configurado; isso evita que um nó "AGENT/SYNTHESIS"
+    // pareça ter usado o provider pedido quando na verdade usou outro.
+    if (config?.noFallback) {
+      const requestedProvider = config.provider;
+      if (!requestedProvider) {
+        throw new Error('noFallback exige um provider explícito em config.provider');
+      }
+      const requested = providers.get(requestedProvider);
+      if (!requested?.isConfigured()) {
+        throw new Error(`Provider ${requestedProvider} não está configurado`);
+      }
+      return await requested.chat(enhancedMessages, config);
+    }
+
     const preferredProvider = config?.provider || this.fallbackOrder[0];
 
     const preferred = providers.get(preferredProvider);

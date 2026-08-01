@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { serverLlmService, discoverLmStudioModels } from '@/lib/server/llm-providers';
 import { getOllamaEndpoint, getOllamaDefaultModel, resolveProviderCredential } from '@/lib/server/llm-config';
+import { LLM_PROVIDERS } from '@/types/llm';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,11 +19,13 @@ export async function GET() {
       allProviders.map((p) => serverLlmService.isProviderConfigured(p))
     );
     const providers = allProviders.filter((_, i) => configuredFlags[i]);
-    const configurableProviders = ['OPENAI', 'DEEPSEEK', 'OPENROUTER', 'ANTHROPIC', 'LM_STUDIO'] as const;
+    // Todos os 9 providers suportados aparecem sempre (configurados ou não) —
+    // Runs Governados precisa mostrar status real de cada um, não só dos 5
+    // com card na UI de Configurações (os outros 4 são .env-only).
     const providerConfigured: Record<string, boolean> = Object.fromEntries(
-      configurableProviders.map((provider) => [provider, providers.includes(provider)])
+      LLM_PROVIDERS.map((provider) => [provider, providers.includes(provider)])
     );
-    const visibleProviders = Array.from(new Set([...configurableProviders, ...providers]));
+    const visibleProviders = Array.from(new Set([...LLM_PROVIDERS, ...providers]));
 
     let ollamaModels: string[] = [];
     if (providers.includes('OLLAMA')) {
