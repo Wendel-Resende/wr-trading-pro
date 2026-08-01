@@ -18,6 +18,11 @@ export async function GET() {
       allProviders.map((p) => serverLlmService.isProviderConfigured(p))
     );
     const providers = allProviders.filter((_, i) => configuredFlags[i]);
+    const configurableProviders = ['OPENAI', 'DEEPSEEK', 'OPENROUTER', 'ANTHROPIC', 'LM_STUDIO'] as const;
+    const providerConfigured: Record<string, boolean> = Object.fromEntries(
+      configurableProviders.map((provider) => [provider, providers.includes(provider)])
+    );
+    const visibleProviders = Array.from(new Set([...configurableProviders, ...providers]));
 
     let ollamaModels: string[] = [];
     if (providers.includes('OLLAMA')) {
@@ -61,7 +66,8 @@ export async function GET() {
     );
 
     return NextResponse.json({
-      providers,
+      providers: visibleProviders,
+      providerConfigured,
       ollama: { models: ollamaModels, defaultModel: getOllamaDefaultModel() },
       lmStudio: { models: lmStudioModels, defaultModel: lmStudioDefaultModel ?? null },
       modelDefaults,

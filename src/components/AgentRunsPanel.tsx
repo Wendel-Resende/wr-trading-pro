@@ -126,6 +126,7 @@ const TICKER_INPUT_RE = /^[A-Za-z]{4}\d{1,2}$/;
 
 interface LlmProviders {
   providers: string[];
+  providerConfigured: Record<string, boolean>;
   ollama: { models: string[]; defaultModel: string };
   lmStudio: { models: string[]; defaultModel: string | null };
   modelDefaults: Record<string, string | null>;
@@ -189,6 +190,10 @@ export default function AgentRunsPanel() {
   const submit = async () => {
     if (template === "COMITE" && !TICKER_INPUT_RE.test(ticker.trim())) {
       setError("O comitê delibera sobre 1 ativo: informe um ticker B3 válido (ex.: WEGE3).");
+      return;
+    }
+    if (provider && llmInfo?.providerConfigured?.[provider] === false) {
+      setError("Este provider ainda não está configurado. Use o link Configurações de IA abaixo do seletor.");
       return;
     }
     setSubmitting(true);
@@ -331,9 +336,16 @@ export default function AgentRunsPanel() {
             >
               <option value="">Auto (fallback)</option>
               {(llmInfo?.providers ?? []).map((p) => (
-                <option key={p} value={p}>{p}</option>
+                <option key={p} value={p}>
+                  {p}{llmInfo?.providerConfigured?.[p] === false ? " (não configurado)" : ""}
+                </option>
               ))}
             </select>
+            {provider && llmInfo?.providerConfigured?.[provider] === false && (
+              <a href="/settings" className="block text-[0.65rem] text-cyber-cyan hover:underline mt-1">
+                Configurar provider em Configurações de IA
+              </a>
+            )}
           </div>
           {provider && (
             <div>
