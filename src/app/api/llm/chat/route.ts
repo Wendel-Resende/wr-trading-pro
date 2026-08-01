@@ -11,15 +11,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { serverLlmService } from '@/lib/server/llm-providers';
+import { LLM_PROVIDERS, LLM_MODEL_ID_PATTERN } from '@/types/llm';
 
 const llmMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string().min(1).max(20_000),
 }).strict();
 
+// Enum fechada: qualquer provider fora da lista é rejeitado antes de
+// qualquer chamada upstream. `model` aceita apenas o charset seguro
+// (sem espaço, URL, ou controle de header) — inclui '/' para ids no
+// formato OpenRouter (ex.: "openrouter/free").
 const llmConfigSchema = z.object({
-  provider: z.enum(['OPENAI', 'DEEPSEEK', 'OLLAMA', 'QWEN', 'GROQ', 'MANUS']).optional(),
-  model: z.string().trim().regex(/^[\w][\w.\-:/]{0,63}$/, 'Modelo inválido').optional(),
+  provider: z.enum(LLM_PROVIDERS).optional(),
+  model: z.string().trim().regex(LLM_MODEL_ID_PATTERN, 'Modelo inválido').optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().max(32_000).optional(),
 }).strict();
@@ -59,7 +64,7 @@ export async function GET() {
   return NextResponse.json({
     success: true,
     data: {
-      providers: serverLlmService.getAvailableProviders(),
+      providers: await serverLlmService.getAvailableProviders(),
       timestamp: new Date().toISOString(),
     },
   });

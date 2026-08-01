@@ -1132,3 +1132,26 @@ model DirectionalPrediction {
   @@unique([modelVersion, cdCvm, generatedAt])
   @@index([modelVersion, generatedAt])
 }
+
+// ---------------------------------------------------------------------------
+// Expansão de provedores LLM (spec
+// docs/architecture/2026-07-31-llm-providers-expansion.md, §"Configuração
+// pela plataforma"). Uma linha por provider configurável pela UI de
+// Configurações de IA (OPENAI, DEEPSEEK, OPENROUTER, ANTHROPIC, LM_STUDIO).
+//
+// `ciphertext`/`nonce`/`tag` guardam o JSON { apiKey?, model?, endpoint? }
+// cifrado com AES-256-GCM sob WR_LLM_CONFIG_ENCRYPTION_KEY (server-side,
+// mínimo 32 caracteres) — NUNCA plaintext. Sem a chave de proteção
+// configurada, o servidor falha fechado: não lê nem grava este modelo (ver
+// src/lib/server/llm-secure-store.ts). Substitui o padrão anterior de chave
+// em texto puro removido em 20260714184514_drop_plaintext_secret_models.
+// ---------------------------------------------------------------------------
+model LlmProviderConfig {
+  id         String   @id @default(cuid())
+  provider   String   @unique
+  ciphertext String
+  nonce      String
+  tag        String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}

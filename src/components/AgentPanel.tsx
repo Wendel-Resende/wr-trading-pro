@@ -27,7 +27,24 @@ interface OperationSuggestion {
   timestamp: string;
   mode?: 'live' | 'degraded' | 'mock';
   eligibleForExecution?: boolean;
+  providerUsed?: string;
+  modelUsed?: string;
 }
+
+type AgentLlmMode = 'mock' | 'openai' | 'deepseek' | 'openrouter' | 'anthropic' | 'local' | 'lm_studio';
+
+const LOCAL_LLM_MODES: readonly AgentLlmMode[] = ['local', 'lm_studio'];
+const REMOTE_LLM_MODES: readonly AgentLlmMode[] = ['openai', 'deepseek', 'openrouter', 'anthropic'];
+
+const LLM_MODE_LABELS: Record<AgentLlmMode, string> = {
+  mock: 'Mock',
+  openai: 'OpenAI',
+  deepseek: 'DeepSeek',
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+  local: 'Ollama',
+  lm_studio: 'LM Studio',
+};
 
 interface MarketData {
   price: number;
@@ -47,28 +64,37 @@ export default function AgentPanel() {
   const [mt5Connected, setMt5Connected] = useState(false);
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
 
-  // Settings — chaves de API e endpoint Ollama vivem SOMENTE no servidor (.env)
-  const [llmMode, setLlmMode] = useState<'mock' | 'openai' | 'deepseek' | 'local'>('mock');
+  // Settings — chaves de API e endpoints locais vivem SOMENTE no servidor
+  // (.env ou Configurações de IA > Provedores de LLM). Nada disto é
+  // persistido em localStorage.
+  const [llmMode, setLlmMode] = useState<AgentLlmMode>('mock');
   const [localModel, setLocalModel] = useState('');
-  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [remoteModel, setRemoteModel] = useState('');
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [lmStudioModels, setLmStudioModels] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
 
   const currentSymbolRef = useRef<string | null>(null);
 
-  // Modelos realmente instalados no Ollama local (via servidor)
+  // Modelos realmente instalados no Ollama/LM Studio locais (via servidor)
   useEffect(() => {
     fetch('/api/llm/providers')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!data?.ollama) return;
-        setLocalModels(data.ollama.models ?? []);
-        setLocalModel((prev) => {
-          if (prev && (data.ollama.models ?? []).includes(prev)) return prev;
-          return data.ollama.defaultModel ?? prev;
-        });
+        if (!data) return;
+        if (data.ollama) setOllamaModels(data.ollama.models ?? []);
+        if (data.lmStudio) setLmStudioModels(data.lmStudio.models ?? []);
       })
       .catch(() => {});
   }, []);
+
+  // Modelos do modo local selecionado (Ollama ou LM Studio)
+  const localModels = llmMode === 'lm_studio' ? lmStudioModels : ollamaModels;
+
+  useEffect(() => {
+    setLocalModel((prev) => (prev && localModels.includes(prev) ? prev : localModels[0] ?? prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [llmMode, localModels.join(',')]);
 
   // Load saved settings
   useEffect(() => {
@@ -76,11 +102,13 @@ export default function AgentPanel() {
     localStorage.removeItem('agent-api-key');
     localStorage.removeItem('agent-local-url');
 
-    const savedLlmMode = localStorage.getItem('agent-llm-mode') || 'local';
-    const savedLocalModel = localStorage.getItem('agent-local-model');
+    localStorage.removeItem('agent-local-model');
 
-    setLlmMode(savedLlmMode as any);
-    if (savedLocalModel) setLocalModel(savedLocalModel);
+    const VALID_MODES: readonly AgentLlmMode[] = ['mock', 'openai', 'deepseek', 'openrouter', 'anthropic', 'local', 'lm_studio'];
+    const savedLlmMode = localStorage.getItem('agent-llm-mode');
+    if (savedLlmMode && (VALID_MODES as readonly string[]).includes(savedLlmMode)) {
+      setLlmMode(savedLlmMode as AgentLlmMode);
+    }
   }, []);
 
   // MT5 connection listener
@@ -182,7 +210,8 @@ export default function AgentPanel() {
           ticker: ticker.toUpperCase(),
           market_data: marketData,
           llm_mode: llmMode,
-          local_model: localModel,
+          local_model: localModel || undefined,
+          model: REMOTE_LLM_MODES.includes(llmMode) && remoteModel.trim() ? remoteModel.trim() : undefined,
         }),
       });
 
@@ -261,18 +290,21 @@ export default function AgentPanel() {
             <label className="block text-xs text-gray-400 mb-1">Modo</label>
             <select
               value={llmMode}
-              onChange={(e) => setLlmMode(e.target.value as any)}
+              onChange={(e) => setLlmMode(e.target.value as AgentLlmMode)}
               className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
             >
-              <option value="local">Ollama Local</option>
+              <option value="local">Ollama (Local)</option>
+              <option value="lm_studio">LM Studio (Local)</option>
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="anthropic">Anthropic (Claude)</option>
               <option value="mock">Mock (Teste)</option>
             </select>
           </div>
 
-          {/* Local Model Selection */}
-          {llmMode === 'local' && (
+          {/* Local Model Selection (Ollama / LM Studio) */}
+          {LOCAL_LLM_MODES.includes(llmMode) && (
             <>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Modelo Local</label>
@@ -282,7 +314,7 @@ export default function AgentPanel() {
                   className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
                 >
                   {localModels.length === 0 && (
-                    <option value={localModel}>{localModel || 'Ollama indisponível'}</option>
+                    <option value={localModel}>{localModel || 'Nenhum modelo detectado'}</option>
                   )}
                   {localModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
@@ -291,23 +323,36 @@ export default function AgentPanel() {
               </div>
               <p className="text-xs text-gray-500">
                 <Server className="w-3 h-3 inline mr-1" />
-                Endpoint do Ollama configurado no servidor (OLLAMA_ENDPOINT no .env).
+                {llmMode === 'lm_studio'
+                  ? 'Endpoint do LM Studio configurado no servidor (LM_STUDIO_ENDPOINT no .env ou Configurações de IA).'
+                  : 'Endpoint do Ollama configurado no servidor (OLLAMA_ENDPOINT no .env).'}
               </p>
             </>
           )}
 
-          {/* OpenAI: chave configurada no servidor */}
-          {llmMode === 'openai' && (
-            <p className="text-xs text-gray-500">
-              <Key className="w-3 h-3 inline mr-1" />
-              A chave da OpenAI é configurada no servidor (OPENAI_API_KEY no .env), nunca no navegador.
-            </p>
+          {/* Remote providers: chave configurada no servidor, modelo opcional */}
+          {REMOTE_LLM_MODES.includes(llmMode) && (
+            <>
+              <p className="text-xs text-gray-500">
+                <Key className="w-3 h-3 inline mr-1" />
+                A chave é configurada no servidor (.env ou Configurações de IA &gt; Provedores de LLM), nunca no navegador.
+              </p>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Modelo (opcional)</label>
+                <input
+                  type="text"
+                  value={remoteModel}
+                  onChange={(e) => setRemoteModel(e.target.value)}
+                  placeholder="Vazio usa o modelo padrão configurado no servidor"
+                  className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
+                />
+              </div>
+            </>
           )}
 
           <button
             onClick={() => {
               localStorage.setItem('agent-llm-mode', llmMode);
-              localStorage.setItem('agent-local-model', localModel);
               setShowSettings(false);
             }}
             className="w-full bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm"
@@ -379,7 +424,7 @@ export default function AgentPanel() {
                 {status === 'running' ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Analisando com {llmMode === 'local' ? localModel : llmMode === 'openai' ? 'OpenAI' : llmMode === 'deepseek' ? 'DeepSeek' : 'Mock'}...
+                    Analisando com {LOCAL_LLM_MODES.includes(llmMode) && localModel ? localModel : LLM_MODE_LABELS[llmMode]}...
                   </>
                 ) : (
                   <>
@@ -411,7 +456,15 @@ export default function AgentPanel() {
           {/* Header */}
           <div className="bg-gray-800 px-4 py-3 flex items-center justify-between">
             <span className="text-sm font-medium text-white">Sugestao de Operacao</span>
-            <span className="text-xs text-gray-400">{new Date(result.timestamp).toLocaleTimeString('pt-BR')}</span>
+            <div className="text-right">
+              <span className="text-xs text-gray-400 block">{new Date(result.timestamp).toLocaleTimeString('pt-BR')}</span>
+              {(result.providerUsed || result.modelUsed) && (
+                <span className="text-xs text-purple-400/80 block">
+                  {result.providerUsed}
+                  {result.modelUsed ? ` · ${result.modelUsed}` : ''}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Action Badge */}

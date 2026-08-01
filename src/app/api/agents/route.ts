@@ -14,7 +14,8 @@ import { join } from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { z } from 'zod';
-import { getOllamaEndpoint } from '@/lib/server/llm-config';
+import { serverLlmService } from '@/lib/server/llm-providers';
+import { LLM_MODEL_ID_PATTERN, type LLMProvider } from '@/types/llm';
 
 const agentState = {
   director: { status: 'ready' as const, lastRun: null as string | null },
@@ -40,8 +41,13 @@ const agentsRequestSchema = z.object({
   ticker: z.string().trim().regex(/^[A-Z0-9]{3,12}$/i, 'Ticker inválido').transform(v => v.toUpperCase()).optional(),
   thesis: z.string().max(4000).optional(),
   market_data: marketDataSchema.optional(),
-  llm_mode: z.enum(['mock', 'openai', 'deepseek', 'local']).optional(),
-  local_model: z.string().trim().regex(/^[\w][\w.\-:]{0,63}$/, 'Modelo inválido').optional(),
+  // 'local' = Ollama; 'lm_studio' = LM Studio local; demais são remotos.
+  llm_mode: z.enum(['mock', 'openai', 'deepseek', 'openrouter', 'anthropic', 'local', 'lm_studio']).optional(),
+  // Modelo para os modos locais (Ollama/LM Studio) — descoberto via /api/llm/providers.
+  local_model: z.string().trim().regex(LLM_MODEL_ID_PATTERN, 'Modelo inválido').optional(),
+  // Modelo opcional para provedores remotos (openai/deepseek/openrouter/anthropic);
+  // ausente usa o default configurado no servidor. Validado no servidor.
+  model: z.string().trim().regex(LLM_MODEL_ID_PATTERN, 'Modelo inválido').max(128).optional(),
 }).strict();
 
 interface OperationSuggestion {
@@ -57,6 +63,9 @@ interface OperationSuggestion {
   timestamp: string;
   mode?: 'live' | 'degraded' | 'mock';
   eligibleForExecution?: boolean;
+  /** Provedor/modelo efetivamente usados (pode diferir do solicitado em caso de fallback). */
+  providerUsed?: string;
+  modelUsed?: string;
 }
 
 interface MarketData {
@@ -137,15 +146,22 @@ function getMockSuggestion(ticker: string, marketData: MarketData): OperationSug
 /**
  * Generate real suggestion using LLM (single call)
  */
+const AGENT_PANEL_PROVIDER_BY_MODE: Record<string, LLMProvider> = {
+  openai: 'OPENAI',
+  deepseek: 'DEEPSEEK',
+  openrouter: 'OPENROUTER',
+  anthropic: 'ANTHROPIC',
+  local: 'OLLAMA',
+  lm_studio: 'LM_STUDIO',
+};
+
 async function getLlmSuggestion(
   ticker: string,
   marketData: MarketData,
   llmMode: string,
-  localModel: string
+  localModel: string,
+  remoteModel?: string
 ): Promise<OperationSuggestion> {
-  // Credenciais e endpoint vêm SOMENTE do servidor — nunca do cliente
-  const apiKey = process.env.OPENAI_API_KEY?.trim() || '';
-  const localUrl = getOllamaEndpoint();
   const price = marketData.price || 38.50;
   const change = marketData.changePercent || 0;
   const bid = marketData.bid || price;
@@ -183,128 +199,42 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
   "rationale": "explicacao em portugues com sua analise"
 }`;
 
-  let response;
-
-  if (llmMode === 'openai') {
-    if (!apiKey) {
-      return getNoDecision(ticker, 'OPENAI_API_KEY não configurada no servidor — nenhuma decisão gerada.');
-    }
-
-    response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content || '{}';
-
-    try {
-      const parsed = JSON.parse(content);
-      return {
-        ...parsed,
-        ticker,
-        timestamp: new Date().toISOString(),
-        mode: 'live',
-        eligibleForExecution: false,
-      };
-    } catch {
-      return getNoDecision(ticker, 'Resposta do OpenAI inválida — nenhuma decisão gerada.');
-    }
-
-  } else if (llmMode === 'deepseek') {
-    // Sem fallback NEXT_PUBLIC_: prefixo público do Next vaza para o bundle
-    // do cliente (regra da Fase 0, item 7) — a chave vive em DEEPSEEK_API_KEY.
-    const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || '';
-    if (!deepseekKey) {
-      return getNoDecision(ticker, 'DEEPSEEK_API_KEY não configurada no servidor — nenhuma decisão gerada.');
-    }
-
-    response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${deepseekKey}`,
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: 1200,
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      throw new Error(`DeepSeek API error: ${response.status}${errText ? ' — ' + errText.slice(0, 200) : ''}`);
-    }
-
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content || '{}';
-
-    try {
-      const parsed = JSON.parse(content);
-      return {
-        ...parsed,
-        ticker,
-        timestamp: new Date().toISOString(),
-        mode: 'live',
-        eligibleForExecution: false,
-      };
-    } catch {
-      return getNoDecision(ticker, 'Resposta do DeepSeek inválida — nenhuma decisão gerada.');
-    }
-
-  } else if (llmMode === 'local') {
-    response = await fetch(`${localUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: localModel || 'ministral-3:8b',
-        messages: [{ role: 'user', content: prompt }],
-        stream: false,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    let content = data.message?.content || '{}';
-
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      content = jsonMatch[0];
-    }
-
-    try {
-      const parsed = JSON.parse(content);
-      return {
-        ...parsed,
-        ticker,
-        timestamp: new Date().toISOString(),
-        mode: 'live',
-        eligibleForExecution: false,
-      };
-    } catch (parseError) {
-      console.error('Failed to parse LLM response');
-      return getNoDecision(ticker, 'Resposta do modelo local inválida — nenhuma decisão gerada.');
-    }
+  const provider = AGENT_PANEL_PROVIDER_BY_MODE[llmMode];
+  if (!provider) {
+    return getNoDecision(ticker, 'Modo de LLM inválido — nenhuma decisão gerada.');
   }
 
-  return getNoDecision(ticker, 'Nenhum provedor LLM válido configurado — nenhuma decisão gerada.');
+  // Modos locais (Ollama/LM Studio) usam o modelo selecionado na UI a partir
+  // da descoberta em /api/llm/providers; modos remotos usam o modelo opcional
+  // informado (validado pelo schema) ou o default configurado no servidor.
+  const model = provider === 'OLLAMA' || provider === 'LM_STUDIO' ? localModel || undefined : remoteModel || undefined;
+
+  // Toda credencial/endpoint vem do serverLlmService (persistência segura + .env)
+  // — nada é lido diretamente de process.env aqui, e nenhum segredo passa pelo cliente.
+  try {
+    const completion = await serverLlmService.chat({
+      messages: [{ role: 'user', content: prompt }],
+      config: { provider, model, temperature: 0.3, maxTokens: 1200 },
+    });
+
+    const raw = completion.content || '{}';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const jsonText = jsonMatch ? jsonMatch[0] : raw;
+
+    const parsed = JSON.parse(jsonText);
+    return {
+      ...parsed,
+      ticker,
+      timestamp: new Date().toISOString(),
+      mode: 'live',
+      eligibleForExecution: false,
+      providerUsed: completion.provider,
+      modelUsed: completion.model,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'erro desconhecido';
+    return getNoDecision(ticker, `LLM (${provider}) indisponível ou resposta inválida: ${reason}. Nenhuma decisão gerada.`);
+  }
 }
 
 /**
@@ -471,7 +401,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { action, ticker, market_data, llm_mode, local_model } = parsedBody.data;
+    const { action, ticker, market_data, llm_mode, local_model, model } = parsedBody.data;
 
     // Status check
     if (action === 'status') {
@@ -480,7 +410,7 @@ export async function POST(request: NextRequest) {
         data: {
           status: 'ready',
           llm_mode: llm_mode || 'mock',
-          available_models: ['mock', 'openai', 'deepseek', 'local'],
+          available_models: ['mock', 'openai', 'deepseek', 'openrouter', 'anthropic', 'local', 'lm_studio'],
           available_pipelines: ['single', 'multi-agent'],
           timestamp: new Date().toISOString(),
         },
@@ -516,7 +446,8 @@ export async function POST(request: NextRequest) {
             ticker,
             marketData,
             mode,
-            local_model || 'ministral-3:8b'
+            local_model || 'ministral-3:8b',
+            model
           );
         } catch (error: any) {
           suggestion = getNoDecision(
@@ -590,7 +521,7 @@ export async function GET() {
     success: true,
     data: {
       status: 'ready',
-      modes: ['mock', 'openai', 'local'],
+      modes: ['mock', 'openai', 'deepseek', 'openrouter', 'anthropic', 'local', 'lm_studio'],
       pipelines: ['single', 'multi-agent'],
       default_local_model: 'ministral-3:8b',
       available_local_models: ['ministral-3:8b', 'gemma4:e2b', 'qwen3.5:0.8b'],

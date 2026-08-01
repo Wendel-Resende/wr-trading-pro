@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Settings, ChevronDown } from 'lucide-react';
 import { llmService, buildMarketContext } from '@/services/llmService';
-import { LLMProvider, LLMMessage } from '@/types/llm';
+import { LLMProvider, LLMMessage, LLM_PROVIDER_DISPLAY_NAMES } from '@/types/llm';
 import { MT5AccountInfo, MT5Tick } from '@/types/mt5';
 
 interface Message {
@@ -12,6 +12,7 @@ interface Message {
   content: string;
   timestamp: Date;
   provider?: LLMProvider;
+  model?: string;
 }
 
 interface AIChatProps {
@@ -34,6 +35,7 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
   const [selectedProvider, setSelectedProvider] = useState<LLMProvider>('OPENAI');
   const [showProviderMenu, setShowProviderMenu] = useState(false);
   const [availableProviders, setAvailableProviders] = useState<LLMProvider[]>([]);
+  const [modelOverride, setModelOverride] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -93,6 +95,7 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
         messages: llmMessages,
         config: {
           provider: selectedProvider,
+          model: modelOverride.trim() || undefined,
           temperature: 0.7,
           maxTokens: 2000,
         },
@@ -105,6 +108,7 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
         content: response.content,
         timestamp: new Date(),
         provider: response.provider,
+        model: response.model,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -140,15 +144,7 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
   };
 
   const getProviderDisplayName = (provider: LLMProvider): string => {
-    const names: Record<LLMProvider, string> = {
-      'OPENAI': 'OpenAI',
-      'DEEPSEEK': 'Deepseek',
-      'OLLAMA': 'Ollama',
-      'QWEN': 'Qwen',
-      'GROQ': 'Groq',
-      'MANUS': 'Manus',
-    };
-    return names[provider] || provider;
+    return LLM_PROVIDER_DISPLAY_NAMES[provider] || provider;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -198,6 +194,18 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
                   Nenhum provedor configurado
                 </div>
               )}
+              <div className="border-t border-cyber-border px-3 py-2">
+                <label className="block text-[10px] text-gray-500 mb-1">
+                  Modelo (opcional — vazio usa o default do servidor)
+                </label>
+                <input
+                  type="text"
+                  value={modelOverride}
+                  onChange={(e) => setModelOverride(e.target.value)}
+                  placeholder="ex.: openrouter/free"
+                  className="w-full bg-cyber-dark border border-cyber-border rounded px-2 py-1 text-xs text-white"
+                />
+              </div>
             </div>
           )}
         </div>
@@ -240,6 +248,7 @@ export default function AIChat({ accountInfo, tickData, selectedSymbol = 'PETR4'
                 {message.provider && (
                   <span className="text-xs text-cyber-cyan/70 font-space">
                     {getProviderDisplayName(message.provider)}
+                    {message.model ? ` · ${message.model}` : ''}
                   </span>
                 )}
               </div>

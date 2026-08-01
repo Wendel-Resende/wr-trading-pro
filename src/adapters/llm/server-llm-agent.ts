@@ -7,12 +7,12 @@
  * cliente chega aqui (Fase 0, itens 5-7).
  */
 
-import type { LLMProvider } from '../../types/llm';
+import { LLM_PROVIDERS, LLM_MODEL_ID_PATTERN, type LLMProvider } from '../../types/llm';
 import type { AgentLlmCompletion, AgentLlmMessage, AgentLlmOptions, AgentLlmPort } from '../../domain/v1/ports/agent-llm';
 import { serverLlmService } from '../../lib/server/llm-providers';
 
-const KNOWN_PROVIDERS: readonly LLMProvider[] = ['OPENAI', 'DEEPSEEK', 'QWEN', 'GROQ', 'OLLAMA', 'MANUS'];
-const MODEL_NAME_PATTERN = /^[\w][\w.\-:]{0,63}$/;
+const KNOWN_PROVIDERS: readonly LLMProvider[] = LLM_PROVIDERS;
+const MODEL_NAME_PATTERN = LLM_MODEL_ID_PATTERN;
 
 function normalizeProvider(value: string | undefined): LLMProvider | undefined {
   if (!value) return undefined;

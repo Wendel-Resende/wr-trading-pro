@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": [
+    "llm-test.ts",
+    "../../src/lib/server/**/*.ts",
+    "../../src/lib/prisma.ts",
+    "../../src/types/llm.ts",
+    "../../src/app/api/llm/**/*.ts"
+  ]
+}
