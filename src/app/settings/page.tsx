@@ -1,17 +1,9 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { Key, Server, RefreshCw, ShieldCheck, Save, Trash2, AlertTriangle, Plug, Power } from 'lucide-react';
+import { Key, Server, RefreshCw, ShieldCheck, Save, Trash2, AlertTriangle } from 'lucide-react';
 import { LLMProvider, LlmProviderStatus, LlmUiConfigurableProvider } from '@/types/llm';
 import { llmService } from '@/services/llmService';
-
-interface Mt5ConnectionProfile {
-  id: string;
-  name: string;
-  endpoint: string;
-  isActive: boolean;
-  updatedAt: string;
-}
 
 interface ProviderInfo {
   provider: LLMProvider;
@@ -105,92 +97,8 @@ export default function SettingsPage() {
     }
   };
 
-  const [mt5Profiles, setMt5Profiles] = useState<Mt5ConnectionProfile[]>([]);
-  const [isLoadingMt5, setIsLoadingMt5] = useState(true);
-  const [mt5Form, setMt5Form] = useState({ name: '', endpoint: 'http://127.0.0.1:22346/mcp', apiKey: '' });
-  const [mt5Message, setMt5Message] = useState<{ text: string; isError: boolean } | null>(null);
-  const [mt5Busy, setMt5Busy] = useState(false);
-
-  const loadMt5Profiles = async () => {
-    setIsLoadingMt5(true);
-    try {
-      const res = await fetch('/api/mt5/connections');
-      const data = await res.json().catch(() => null);
-      if (data?.success) setMt5Profiles(data.data.profiles ?? []);
-    } catch {
-      // status indisponível — lista fica vazia
-    } finally {
-      setIsLoadingMt5(false);
-    }
-  };
-
-  const addMt5Profile = async () => {
-    if (!mt5Form.name.trim() || !mt5Form.endpoint.trim() || !mt5Form.apiKey.trim()) {
-      setMt5Message({ text: 'Preencha nome, endpoint e API key.', isError: true });
-      return;
-    }
-    setMt5Busy(true);
-    setMt5Message(null);
-    try {
-      const res = await fetch('/api/mt5/connections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: mt5Form.name.trim(),
-          endpoint: mt5Form.endpoint.trim(),
-          apiKey: mt5Form.apiKey.trim(),
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.success) {
-        setMt5Message({ text: data?.error || `Falha ao cadastrar (HTTP ${res.status}).`, isError: true });
-        return;
-      }
-      setMt5Form({ name: '', endpoint: 'http://127.0.0.1:22346/mcp', apiKey: '' });
-      setMt5Message({ text: 'Perfil cadastrado.', isError: false });
-      await loadMt5Profiles();
-    } catch (err) {
-      setMt5Message({ text: err instanceof Error ? err.message : 'Erro ao cadastrar.', isError: true });
-    } finally {
-      setMt5Busy(false);
-    }
-  };
-
-  const activateMt5Profile = async (id: string) => {
-    setMt5Busy(true);
-    setMt5Message(null);
-    try {
-      const res = await fetch(`/api/mt5/connections/${id}/activate`, { method: 'POST' });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.success) {
-        setMt5Message({ text: data?.error || 'Falha ao ativar perfil.', isError: true });
-        return;
-      }
-      setMt5Message({ text: 'Perfil ativado — conecte novamente na aba Admin.', isError: false });
-      await loadMt5Profiles();
-    } finally {
-      setMt5Busy(false);
-    }
-  };
-
-  const deleteMt5Profile = async (id: string) => {
-    setMt5Busy(true);
-    setMt5Message(null);
-    try {
-      const res = await fetch(`/api/mt5/connections/${id}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.success) {
-        setMt5Message({ text: data?.error || 'Falha ao remover perfil.', isError: true });
-        return;
-      }
-      await loadMt5Profiles();
-    } finally {
-      setMt5Busy(false);
-    }
-  };
-
   const refreshAll = async () => {
-    await Promise.all([loadProviders(), loadUiConfig(), loadMt5Profiles()]);
+    await Promise.all([loadProviders(), loadUiConfig()]);
   };
 
   useEffect(() => {
@@ -292,139 +200,6 @@ export default function SettingsPage() {
             </div>
           </div>
         )}
-
-        <div className="bg-cyber-card/50 border border-cyber-border rounded-lg p-6 mb-6">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <Plug className="w-6 h-6 text-cyber-cyan" />
-              <h2 className="font-orbitron text-xl font-bold text-white">
-                Contas MT5 (MCP nativo)
-              </h2>
-            </div>
-            <button
-              onClick={loadMt5Profiles}
-              disabled={isLoadingMt5 || mt5Busy}
-              className="cyber-button cyber-button-primary px-6 py-2 flex items-center gap-2"
-            >
-              <RefreshCw className={`w-4 h-4 ${isLoadingMt5 ? 'animate-spin' : ''}`} />
-              Atualizar
-            </button>
-          </div>
-
-          <div className="mb-6 p-3 bg-cyber-cyan/10 border border-cyber-cyan/30 rounded-lg flex items-start gap-2">
-            <ShieldCheck className="w-5 h-5 text-cyber-cyan mt-0.5 flex-shrink-0" />
-            <div className="text-sm text-gray-300 font-space">
-              <p className="mb-1">
-                Cadastre uma conta MT5 por corretora/mercado (ex.: &quot;B3 - XP Demo&quot;, &quot;Forex -
-                Corretora X&quot;). O endpoint/API key são gerados no próprio terminal, em{' '}
-                <code>Tools &gt; Options &gt; MCP &gt; Generate</code> — copie os dois pra cá. Só um terminal MT5
-                fica aberto por vez na máquina, então o endpoint geralmente é o mesmo
-                (<code>http://127.0.0.1:22346/mcp</code>); o que muda é a API key de cada terminal.
-              </p>
-              <p>
-                A API key é cifrada em repouso (AES-256-GCM) e nunca é exibida de volta. Ative o perfil da conta
-                que quer usar e conecte pela aba Admin — sem perfil ativo, a WR cai no <code>.env</code>{' '}
-                (<code>MT5_MCP_ENDPOINT</code>/<code>MT5_MCP_API_KEY</code>), se configurado.
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-3 mb-6">
-            {isLoadingMt5 ? (
-              <p className="text-sm text-gray-500 font-space">Carregando perfis...</p>
-            ) : mt5Profiles.length === 0 ? (
-              <p className="text-sm text-gray-500 font-space">Nenhum perfil cadastrado ainda.</p>
-            ) : (
-              mt5Profiles.map((profile) => (
-                <div
-                  key={profile.id}
-                  className={`flex items-center justify-between bg-cyber-dark/50 border rounded-lg p-3 ${
-                    profile.isActive ? 'border-green-500/40' : 'border-cyber-border'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-orbitron text-sm font-bold text-white">{profile.name}</h4>
-                      {profile.isActive && (
-                        <span className="text-xs font-space px-2 py-0.5 rounded bg-green-500/20 text-green-400">
-                          ATIVO
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 font-space mt-1">{profile.endpoint}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => activateMt5Profile(profile.id)}
-                      disabled={mt5Busy || profile.isActive}
-                      className="cyber-button px-3 py-1.5 text-xs flex items-center gap-1.5 border border-cyber-cyan/40 text-cyber-cyan hover:bg-cyber-cyan/10 disabled:opacity-50"
-                    >
-                      <Power className="w-3.5 h-3.5" /> {profile.isActive ? 'Ativo' : 'Ativar'}
-                    </button>
-                    <button
-                      onClick={() => deleteMt5Profile(profile.id)}
-                      disabled={mt5Busy}
-                      className="cyber-button px-3 py-1.5 text-xs flex items-center gap-1.5 border border-red-500/40 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" /> Remover
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Nome</label>
-              <input
-                type="text"
-                value={mt5Form.name}
-                onChange={(e) => setMt5Form((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="Ex: B3 - XP Demo"
-                disabled={mt5Busy}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white text-sm disabled:opacity-50"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Endpoint</label>
-              <input
-                type="text"
-                value={mt5Form.endpoint}
-                onChange={(e) => setMt5Form((prev) => ({ ...prev, endpoint: e.target.value }))}
-                placeholder="http://127.0.0.1:22346/mcp"
-                disabled={mt5Busy}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white text-sm disabled:opacity-50"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">API key</label>
-              <input
-                type="password"
-                autoComplete="off"
-                value={mt5Form.apiKey}
-                onChange={(e) => setMt5Form((prev) => ({ ...prev, apiKey: e.target.value }))}
-                placeholder="••••••••••••"
-                disabled={mt5Busy}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-white text-sm disabled:opacity-50"
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={addMt5Profile}
-              disabled={mt5Busy}
-              className="cyber-button cyber-button-primary px-4 py-1.5 text-sm flex items-center gap-1.5 disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" /> Cadastrar conta
-            </button>
-            {mt5Message && (
-              <span className={`text-xs font-space ${mt5Message.isError ? 'text-red-400' : 'text-green-400'}`}>
-                {mt5Message.text}
-              </span>
-            )}
-          </div>
-        </div>
 
         <div className="bg-cyber-card/50 border border-cyber-border rounded-lg p-6 mb-6">
           <div className="flex items-center justify-between mb-6">
