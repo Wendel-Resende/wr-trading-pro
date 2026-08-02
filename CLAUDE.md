@@ -67,7 +67,20 @@ src/lib/server/mt5-mcp-tools.ts    # mapeamento capability → tool name real + 
 src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, orders, rates, tick, symbols...)
 ```
 
-- Config: `MT5_MCP_ENDPOINT` (default `http://127.0.0.1:22346/mcp`) + `MT5_MCP_API_KEY` no `.env`.
+- **Múltiplas contas/corretoras (2026-08-02):** o endpoint/API key não são mais só do `.env` — o usuário
+  cadastra "perfis de conexão" (nome, endpoint, API key) em **Configurações > Contas MT5** e ativa qual
+  quiser (ex.: "B3 - XP Demo", "Forex - Corretora X"). Precedência em `getMt5McpConfig()`
+  (`src/lib/server/mt5-mcp-config.ts`): **perfil ativo persistido > `.env`** (fallback/bootstrap).
+  - `src/lib/server/mt5-connection-store.ts`: CRUD + ativação, API key cifrada em repouso (AES-256-GCM,
+    reaproveita `WR_LLM_CONFIG_ENCRYPTION_KEY` já usada pelos providers de LLM — não exige outra chave).
+  - Rotas: `GET/POST /api/mt5/connections`, `PATCH/DELETE /api/mt5/connections/[id]`,
+    `POST /api/mt5/connections/[id]/activate`, `POST /api/mt5/connections/deactivate`.
+  - Trocar de perfil invalida o client MCP e o cache de nomes de tool descobertos
+    (`__resetMt5McpClientForTests`/`__resetMt5McpToolCacheForTests` — nomes de teste, mas chamados também
+    em produção pelas rotas de ativação/edição/remoção).
+  - `getMt5McpConfig()` **passou a ser assíncrona** (lê o DB) — todo chamador precisa `await`.
+- Config sem perfil ativo (fallback): `MT5_MCP_ENDPOINT` (default `http://127.0.0.1:22346/mcp`) +
+  `MT5_MCP_API_KEY` no `.env`.
 - **Envio/alteração/cancelamento/fechamento de ordem foi HABILITADO em 2026-08-02** (decisão explícita do
   usuário — a WR é para o usuário E para um agente de IA executarem operações, não só consumir dados):
   - **UI manual:** `OrderForm.tsx` (mercado/limite/stop) e `OpenPositions.tsx` (botão Fechar) chamam

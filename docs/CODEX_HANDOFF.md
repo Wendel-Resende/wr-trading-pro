@@ -1,8 +1,63 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-02 (execução de ordem HABILITADA — UI manual + agente de IA governado)
+Última atualização: 2026-08-02 (múltiplas contas MT5 — perfis de conexão dinâmicos)
 
-## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO, trading HABILITADO por decisão do usuário: ponte Python/WS removida; leituras via MCP nativo com nomes reais (build 6090); envio/modificação/cancelamento/fechamento de ordem ligados (UI manual + fluxo governado do agente de IA `trade.propose/approve`, `WR_TRADING_ENABLED=true`); commit pendente nesta sessão.
+## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO, trading HABILITADO, MÚLTIPLAS CONTAS MT5 suportadas: ponte Python/WS removida; leituras via MCP nativo com nomes reais (build 6090); envio/modificação/cancelamento/fechamento de ordem ligados (UI manual + fluxo governado do agente de IA `trade.propose/approve`, `WR_TRADING_ENABLED=true`); endpoint/API key não são mais fixos no `.env` — usuário cadastra e troca perfis de conexão (B3, Forex, etc.) em Configurações; commit pendente nesta sessão.
+
+## Sessão 2026-08-02 (cont.) — Múltiplas contas MT5: perfis de conexão dinâmicos
+
+Motivação do usuário: tem duas contas MT5 na mesma máquina — uma na B3 (XP demo) e outra de Forex, em
+corretoras diferentes — e quer trocar entre elas pela WR sem editar `.env` e reiniciar. Confirmado com o
+usuário: só um terminal MT5 fica aberto por vez (não precisa suportar dois servidores MCP simultâneos em
+portas diferentes); e o fluxo desejado é uma tela de Configurações para cadastrar perfis (nome + endpoint +
+API key) e trocar qual está ativo — não redigitar a cada conexão.
+
+### O que foi construído
+
+- **`prisma/schema.prisma`**: novo modelo `Mt5ConnectionProfile` (id, name, endpoint, isActive,
+  apiKeyCiphertext/Nonce/Tag, timestamps). Migration `20260802212644_add_mt5_connection_profile`
+  (aditiva). `isActive` único-ativo-por-vez é invariante de CÓDIGO (transação), não constraint do SQLite.
+- **`src/lib/server/mt5-connection-store.ts`** (novo): CRUD + `setActiveMt5ConnectionProfile`/
+  `clearActiveMt5ConnectionProfile`/`getActiveMt5ConnectionSecrets`. AES-256-GCM com AAD = id do perfil
+  (registro não pode ser "movido" para outro perfil mesmo com acesso direto ao banco). **Reaproveita
+  `getEncryptionKey()` de `llm-secure-store.ts`** (mesma `WR_LLM_CONFIG_ENCRYPTION_KEY` já usada pelos
+  providers de LLM) — decisão deliberada para não exigir mais uma env var de configuração.
+- **`src/lib/server/mt5-mcp-config.ts`**: `getMt5McpConfig()` **virou async**. Precedência: perfil ativo no
+  banco (endpoint revalidado contra a MESMA allowlist SSRF de sempre — loopback ou 172.16-31.x/WSL) >
+  `.env` (bootstrap/compat, comportamento antigo preservado se nenhum perfil existir).
+- **16 rotas + `mt5-mcp-client.ts`** atualizadas para `await getMt5McpConfig()` (era síncrono).
+- **Novas rotas de gestão de perfil** (únicas sob `/api/mt5/**` que escrevem CONFIGURAÇÃO, não trading):
+  `GET/POST /api/mt5/connections`, `PATCH/DELETE /api/mt5/connections/[id]`,
+  `POST /api/mt5/connections/[id]/activate`, `POST /api/mt5/connections/deactivate`. Ativar/editar/remover
+  o perfil ativo invalida o client MCP e o cache de tool names descobertos — senão a chamada seguinte
+  continuaria na sessão/API key antiga até uma falha forçar reconexão.
+- **UI**: nova seção "Contas MT5 (MCP nativo)" em `/settings`, no mesmo padrão visual/UX da seção de
+  providers de LLM já existente (lista + formulário + ativar/remover, API key nunca ecoada de volta).
+
+### Armadilha encontrada e corrigida: efeito colateral do Prisma nos testes
+
+Ao rodar `test:mcp-pilot`/`test:mt5-mcp` após a mudança, um teste que assumia "sem `MT5_MCP_API_KEY` no
+processo" começou a falhar de forma incoerente (`MT5_MCP_UNREACHABLE` em vez de `MT5_MCP_NOT_CONFIGURED`)
+em execuções via `npm run` (mas passava limpo rodando o binário compilado direto) — rastreado a
+interferência de OUTROS processos node concorrentes/travados desta sessão de depuração, não um bug real
+de produto: reproduzido 2x isolado (DB SQLite temporário fresco, processo único) com 100% de sucesso.
+**Lição:** ao investigar teste que só falha via `npm run` mas passa isolado, suspeitar de processos
+`node.exe` remanescentes disputando o mesmo recurso antes de assumir bug de lógica.
+
+### Teste pré-existente corrigido de passagem (não relacionado a esta sessão)
+
+`scripts/mt5-mcp/mt5-mcp-test.ts`: `ordersTests`/`ordersRouteTests` ainda mockavam uma tool `get_orders`/
+`list_orders` que não existe mais desde a sessão anterior (quando `getOrders()` passou a usar a capability
+`positions` com `include_orders:true`, sem tool dedicada). Renomeados os mocks para `get_positions`/
+`get_trading_open_positions` (candidatos reais da capability `positions`) — dívida técnica da sessão
+anterior, só descoberta agora por rodar a suíte completa.
+
+### Verificação
+
+`npm run build`, `tsc --noEmit`, `test:mcp-pilot` (39 tools, 4 gated, fluxo completo `propose→approve→
+EXECUTED`) e `test:mt5-mcp` (fundação MT5 MCP nativo, incluindo `orders` corrigido) — todos verdes.
+Fluxo completo testado manualmente (fora dos testes automatizados): criar perfil → ativar → `getMt5McpConfig()`
+resolve pro perfil → desativar → volta pro `.env`.
 
 ## Sessão 2026-08-02 (cont.) — Execução de ordem habilitada (UI manual + agente de IA)
 

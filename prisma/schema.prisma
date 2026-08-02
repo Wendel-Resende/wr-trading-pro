@@ -1155,3 +1155,36 @@ model LlmProviderConfig {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
+
+// ---------------------------------------------------------------------------
+// Perfis de conexão MT5 MCP nativo (2026-08-02) — permite o usuário cadastrar
+// várias contas/corretoras MT5 (ex.: "B3 - XP Demo", "Forex - Corretora X")
+// e trocar qual está ativa, em vez de um endpoint/chave fixos no .env. Só um
+// terminal MT5 fica aberto por vez na máquina do usuário, então `endpoint`
+// tipicamente repete o padrão loopback (127.0.0.1:22346) — o que muda entre
+// perfis é a API key, gerada de novo em Tools > Options > MCP a cada
+// terminal.
+//
+// `apiKeyCiphertext`/`apiKeyNonce`/`apiKeyTag` guardam a API key cifrada com
+// AES-256-GCM sob a MESMA WR_LLM_CONFIG_ENCRYPTION_KEY já usada pelos
+// providers de LLM (ver src/lib/server/llm-secure-store.ts:getEncryptionKey)
+// — reaproveitada de propósito para não exigir outra chave de config; AAD
+// inclui o `id` do perfil, então um registro não pode ser "movido" para
+// outro perfil mesmo com acesso de escrita direto ao banco. Sem a chave de
+// criptografia, o servidor falha fechado: não lê nem grava este modelo.
+//
+// `isActive`: só um perfil pode estar true por vez — invariante mantida em
+// código (src/lib/server/mt5-connection-store.ts:setActiveProfile), não é
+// unique constraint do SQLite.
+// ---------------------------------------------------------------------------
+model Mt5ConnectionProfile {
+  id               String   @id @default(cuid())
+  name             String
+  endpoint         String
+  isActive         Boolean  @default(false)
+  apiKeyCiphertext String
+  apiKeyNonce      String
+  apiKeyTag        String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

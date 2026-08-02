@@ -214,7 +214,7 @@ async function withMockServer<T>(options: MockServerOptions, run: (handle: MockS
 
 // ─── 1. Config: allowlist + fail-closed ────────────────────────────────────
 
-function configTests(): void {
+async function configTests(): Promise<void> {
   resetEnv();
 
   assert.ok(isAllowedMt5McpHost('127.0.0.1'));
@@ -229,27 +229,27 @@ function configTests(): void {
   assert.ok(!isAllowedMt5McpHost('evil.example.com'), 'host remoto deveria ser rejeitado (SSRF)');
 
   // Sem MT5_MCP_API_KEY: fail-closed, nunca infere config parcial.
-  assert.equal(getMt5McpConfig(), null);
+  assert.equal(await getMt5McpConfig(), null);
 
   process.env.MT5_MCP_API_KEY = '[REDACTED]';
-  const cfg = getMt5McpConfig();
+  const cfg = await getMt5McpConfig();
   assert.ok(cfg);
   assert.equal(cfg!.endpoint, 'http://127.0.0.1:22346/mcp', 'default deveria ser o loopback direto, sem proxy WSL');
   assert.equal(cfg!.pollIntervalMs, 1500);
 
   // Endpoint remoto: cai no default local (fail-closed), nunca conecta em host arbitrário.
   process.env.MT5_MCP_ENDPOINT = 'http://evil.example.com:22346/mcp';
-  assert.equal(getMt5McpConfig()!.endpoint, 'http://127.0.0.1:22346/mcp');
+  assert.equal((await getMt5McpConfig())!.endpoint, 'http://127.0.0.1:22346/mcp');
 
   // Endpoint na faixa WSL é aceito (cenário de desenvolvimento documentado).
   process.env.MT5_MCP_ENDPOINT = 'http://172.28.64.1:22347/mcp';
-  assert.equal(getMt5McpConfig()!.endpoint, 'http://172.28.64.1:22347/mcp');
+  assert.equal((await getMt5McpConfig())!.endpoint, 'http://172.28.64.1:22347/mcp');
 
   // poll interval fora da faixa cai no default.
   process.env.MT5_MCP_POLL_INTERVAL_MS = '10';
-  assert.equal(getMt5McpConfig()!.pollIntervalMs, 1500);
+  assert.equal((await getMt5McpConfig())!.pollIntervalMs, 1500);
   process.env.MT5_MCP_POLL_INTERVAL_MS = '3000';
-  assert.equal(getMt5McpConfig()!.pollIntervalMs, 3000);
+  assert.equal((await getMt5McpConfig())!.pollIntervalMs, 3000);
 
   resetEnv();
   console.log('config MT5 MCP (allowlist loopback/WSL, fail-closed sem API key): OK');
@@ -1662,7 +1662,7 @@ async function ordersTests(): Promise<void> {
 
   // Resposta como array puro.
   await withMockServer(
-    { tools: [{ name: 'get_orders', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }] },
+    { tools: [{ name: 'get_positions', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }] },
     async (handle) => {
       process.env.MT5_MCP_ENDPOINT = handle.url;
       process.env.MT5_MCP_API_KEY = TOKEN;
@@ -1678,7 +1678,7 @@ async function ordersTests(): Promise<void> {
 
   // Resposta envelopada ({ orders: [...] }) — shape alternativo não documentado do build 6060.
   await withMockServer(
-    { tools: [{ name: 'list_orders', result: async () => jsonTool({ orders: [RAW_ORDER_FIXTURE] }) }] },
+    { tools: [{ name: 'get_trading_open_positions', result: async () => jsonTool({ orders: [RAW_ORDER_FIXTURE] }) }] },
     async (handle) => {
       process.env.MT5_MCP_ENDPOINT = handle.url;
       process.env.MT5_MCP_API_KEY = TOKEN;
@@ -1693,7 +1693,7 @@ async function ordersTests(): Promise<void> {
 
   // Shape totalmente inesperado — nunca lança, só devolve lista vazia.
   await withMockServer(
-    { tools: [{ name: 'get_orders', result: async () => jsonTool({ unexpected: 'shape' }) }] },
+    { tools: [{ name: 'get_positions', result: async () => jsonTool({ unexpected: 'shape' }) }] },
     async (handle) => {
       process.env.MT5_MCP_ENDPOINT = handle.url;
       process.env.MT5_MCP_API_KEY = TOKEN;
@@ -1707,7 +1707,7 @@ async function ordersTests(): Promise<void> {
   // Falha de sessão (quirk build 6060) — recupera 1x via retry único do client.
   await withMockServer(
     {
-      tools: [{ name: 'get_orders', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }],
+      tools: [{ name: 'get_positions', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }],
       failSessionChecksCount: 1,
     },
     async (handle) => {
@@ -1742,7 +1742,7 @@ async function ordersTests(): Promise<void> {
     {
       tools: [
         {
-          name: 'get_orders',
+          name: 'get_positions',
           result: async () => {
             throw new Error('No account is logged in');
           },
@@ -1779,7 +1779,7 @@ async function ordersRouteTests(): Promise<void> {
   assert.equal(notConfiguredBody.error.code, 'MT5_MCP_NOT_CONFIGURED');
 
   await withMockServer(
-    { tools: [{ name: 'get_orders', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }] },
+    { tools: [{ name: 'get_positions', result: async () => jsonTool([RAW_ORDER_FIXTURE]) }] },
     async (handle) => {
       process.env.MT5_MCP_ENDPOINT = handle.url;
       process.env.MT5_MCP_API_KEY = TOKEN;
@@ -1811,7 +1811,7 @@ async function ordersRouteTests(): Promise<void> {
     {
       tools: [
         {
-          name: 'get_orders',
+          name: 'get_positions',
           result: async () => {
             throw new Error('No account is logged in');
           },
@@ -2772,7 +2772,7 @@ function classifyUnknownErrorPrecedenceTests(): void {
 // ─── main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  configTests();
+  await configTests();
   await handshakeAndWorkspaceInfoTests();
   await accountInfoTests();
   await tradingEligibilityTests();

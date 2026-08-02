@@ -17,7 +17,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const config = getMt5McpConfig();
+  const config = await getMt5McpConfig();
   if (!config) {
     const payload: Mt5McpErrorPayload = {
       code: 'MT5_MCP_NOT_CONFIGURED',

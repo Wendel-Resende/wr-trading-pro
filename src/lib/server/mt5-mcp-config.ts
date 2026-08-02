@@ -1,12 +1,17 @@
 /**
  * Server-side MT5 MCP nativo config — WR Trading Pro
  *
- * Único ponto de leitura de MT5_MCP_ENDPOINT/MT5_MCP_API_KEY/
- * MT5_MCP_POLL_INTERVAL_MS. Fail-closed: sem MT5_MCP_API_KEY,
- * getMt5McpConfig() retorna null e nenhuma chamada de rede é tentada — os
- * chamadores devem tratar isso como MT5_MCP_NOT_CONFIGURED, nunca inferir
- * "desconectado" a partir de um objeto parcial.
+ * Único ponto de resolução de endpoint/API key/intervalo de polling.
+ * Precedência (2026-08-02, suporte a múltiplas contas/corretoras): perfil
+ * ATIVO persistido via UI (`mt5-connection-store.ts`, cadastrado em
+ * Configurações) > `.env` (MT5_MCP_ENDPOINT/MT5_MCP_API_KEY, bootstrap/
+ * compat). Fail-closed: sem perfil ativo E sem MT5_MCP_API_KEY no .env,
+ * `getMt5McpConfig()` resolve para null e nenhuma chamada de rede é
+ * tentada — os chamadores devem tratar isso como MT5_MCP_NOT_CONFIGURED,
+ * nunca inferir "desconectado" a partir de um objeto parcial.
  */
+
+import { getActiveMt5ConnectionSecrets } from './mt5-connection-store';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:22346/mcp';
 export const DEFAULT_POLL_INTERVAL_MS = 1500;
@@ -38,22 +43,25 @@ export function isAllowedMt5McpHost(hostname: string): boolean {
   return false;
 }
 
-function resolveEndpoint(): string {
+/** Valida um endpoint (env ou perfil persistido) contra a allowlist; retorna null se inválido/fora da allowlist. */
+function validateEndpoint(raw: string, sourceLabel: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' || !isAllowedMt5McpHost(url.hostname)) {
+      console.warn(`[mt5-mcp-config] ${sourceLabel} fora da allowlist (loopback ou 172.16-31.x). Ignorando.`);
+      return null;
+    }
+    return raw.replace(/\/+$/, '');
+  } catch {
+    console.warn(`[mt5-mcp-config] ${sourceLabel} inválido. Ignorando.`);
+    return null;
+  }
+}
+
+function resolveEndpointFromEnv(): string {
   const configured = process.env.MT5_MCP_ENDPOINT?.trim();
   if (!configured) return DEFAULT_ENDPOINT;
-  try {
-    const url = new URL(configured);
-    if (url.protocol !== 'http:' || !isAllowedMt5McpHost(url.hostname)) {
-      console.warn(
-        '[mt5-mcp-config] MT5_MCP_ENDPOINT fora da allowlist (loopback ou 172.16-31.x). Usando endpoint padrão local.'
-      );
-      return DEFAULT_ENDPOINT;
-    }
-    return configured.replace(/\/+$/, '');
-  } catch {
-    console.warn('[mt5-mcp-config] MT5_MCP_ENDPOINT inválido. Usando endpoint padrão local.');
-    return DEFAULT_ENDPOINT;
-  }
+  return validateEndpoint(configured, 'MT5_MCP_ENDPOINT') ?? DEFAULT_ENDPOINT;
 }
 
 function resolvePollIntervalMs(): number {
@@ -69,17 +77,31 @@ function resolvePollIntervalMs(): number {
   return parsed;
 }
 
-/** Config efetiva, ou null (fail-closed) quando MT5_MCP_API_KEY está ausente. */
-export function getMt5McpConfig(): Mt5McpConfig | null {
+/**
+ * Config efetiva. Precedência: perfil ativo persistido (Configurações >
+ * Conexões MT5) > `.env` (MT5_MCP_ENDPOINT/MT5_MCP_API_KEY). Null
+ * (fail-closed) quando nenhuma das duas fontes resolve uma API key válida —
+ * nunca finge configurado.
+ */
+export async function getMt5McpConfig(): Promise<Mt5McpConfig | null> {
+  const active = await getActiveMt5ConnectionSecrets();
+  if (active) {
+    const endpoint = validateEndpoint(active.endpoint, `perfil de conexão "${active.profileId}"`);
+    if (endpoint) {
+      return { endpoint, apiKey: active.apiKey, pollIntervalMs: resolvePollIntervalMs() };
+    }
+    console.warn('[mt5-mcp-config] Perfil ativo com endpoint inválido — caindo para .env.');
+  }
+
   const apiKey = process.env.MT5_MCP_API_KEY?.trim();
   if (!apiKey) return null;
   return {
-    endpoint: resolveEndpoint(),
+    endpoint: resolveEndpointFromEnv(),
     apiKey,
     pollIntervalMs: resolvePollIntervalMs(),
   };
 }
 
-export function hasMt5McpConfigured(): boolean {
-  return getMt5McpConfig() !== null;
+export async function hasMt5McpConfigured(): Promise<boolean> {
+  return (await getMt5McpConfig()) !== null;
 }

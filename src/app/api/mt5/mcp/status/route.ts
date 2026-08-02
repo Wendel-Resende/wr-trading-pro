@@ -38,7 +38,7 @@ function toErrorPayload(error: unknown): Mt5McpErrorPayload {
 }
 
 export async function GET() {
-  const config = getMt5McpConfig();
+  const config = await getMt5McpConfig();
   if (!config) {
     const payload: Mt5McpErrorPayload = {
       code: 'MT5_MCP_NOT_CONFIGURED',

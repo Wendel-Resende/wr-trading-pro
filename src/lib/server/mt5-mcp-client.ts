@@ -116,7 +116,7 @@ async function connectNewClient(config: Mt5McpConfig): Promise<Client> {
 
 /** Reaproveita o client ativo se a config não mudou; senão fecha e reconecta. */
 async function ensureClient(): Promise<Client> {
-  const config = getMt5McpConfig();
+  const config = await getMt5McpConfig();
   if (!config) throw new Mt5McpError('MT5_MCP_NOT_CONFIGURED');
 
   if (active && active.config.endpoint === config.endpoint && active.config.apiKey === config.apiKey) {

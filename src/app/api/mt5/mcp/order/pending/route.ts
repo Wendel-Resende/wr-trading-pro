@@ -23,7 +23,7 @@ export const dynamic = 'force-dynamic';
 const VALID_TYPES = ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop', 'buy_stop_limit', 'sell_stop_limit'] as const;
 
 export async function POST(request: NextRequest) {
-  const config = getMt5McpConfig();
+  const config = await getMt5McpConfig();
   if (!config) {
     const payload: Mt5McpErrorPayload = {
       code: 'MT5_MCP_NOT_CONFIGURED',
