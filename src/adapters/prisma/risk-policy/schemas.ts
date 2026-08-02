@@ -40,7 +40,7 @@ export const RiskLimitsSchema = z
     maxNotional: z.number().finite().gt(0),
     maxPositionConcentrationPct: z.number().finite().gt(0).lte(100),
     maxProposalsPerRun: z.number().int().min(1),
-    instrumentAllowlist: z.array(z.string().min(1).max(64)).min(1),
+    instrumentAllowlist: z.array(z.string().min(1).max(64)),
   })
   .strict();
 

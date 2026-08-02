@@ -86,8 +86,11 @@ function hashesMatch(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+// Sem WR_MCP_TRADE_ALLOWLIST no .env: nenhuma restrição de instrumento —
+// qualquer ativo que o MT5 conectado consiga cotar é elegível. Setar a env
+// var reativa a trava (lista explícita de tickers permitidos).
 function parseAllowlist(env: NodeJS.ProcessEnv): readonly string[] {
-  const raw = env.WR_MCP_TRADE_ALLOWLIST ?? 'PETR4,VALE3,ITUB4,BBDC4,ABEV3,WEGE3';
+  const raw = env.WR_MCP_TRADE_ALLOWLIST ?? '';
   return raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
 }
 

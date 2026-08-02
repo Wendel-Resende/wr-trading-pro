@@ -98,6 +98,36 @@ src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, or
     `trade_close_by_position`.
   - **Fora desta rodada:** `SpreadOrderForm.tsx`/`spreadOrderService.ts` (ordens de spread, 2 pernas)
     continuam fail-closed — superfície maior, não abordada ainda.
+  - **Trilho `trade.*` liberado para qualquer mercado do MT5 conectado, não só B3 (2026-08-02):** decisão
+    explícita do usuário — a WR analisa dados de qualquer ativo que o MT5 conectado cote (forex, cripto,
+    B3 etc.), e o agente não deve ficar restrito a operar só uma lista fixa quando a oportunidade real
+    pode estar em outro instrumento. Duas travas B3-específicas foram removidas:
+    - `src/mcp/pilot/tools/trade.ts`: regex do `symbol` em `trade.propose` generalizado de
+      `^[A-Za-z]{4}\d{1,2}$` (só ticker B3, ex. PETR4) para `^[A-Za-z0-9]{3,12}$` (aceita PETR4, BTCUSD,
+      EURUSD etc.), com uppercase automático.
+    - `src/domain/v1/models/risk-policy/risk-policy.ts` + `src/application/mcp-trade/service.ts`:
+      `instrumentAllowlist` vazia agora significa "sem restrição de instrumento" (antes tinha default
+      hardcoded de 6 tickers B3 — `PETR4,VALE3,ITUB4,BBDC4,ABEV3,WEGE3`). `.env`:
+      `WR_MCP_TRADE_ALLOWLIST=` (vazia). Setar essa env var de novo reativa a trava como lista explícita,
+      se algum dia quiser restringir por perfil de conexão.
+    - `src/adapters/prisma/risk-policy/schemas.ts`: removido `.min(1)` do array — vazio agora é estado
+      válido.
+    - **`market-live.ts` (scan de opções B3 via Flask) foi deixado com o padrão B3** — é uma ferramenta
+      diferente (opções B3 via `spread_api`/`volatility_api`), não o trilho de trading MT5.
+    - O que continua limitando o que pode ser negociado, por design (não é bug, é a governança
+      funcionando): `maxNotional`, `maxPositionConcentrationPct` (20% do NAV por padrão — trava real
+      contra posição desproporcional em conta pequena), `maxProposalsPerRun`, kill switch
+      `WR_TRADING_ENABLED` e aprovação humana com código de 6 dígitos.
+    - **Achado operacional (não é config nova, é como o app já funcionava):** o MCP Pilot roda como
+      processo filho do Electron (`ELECTRON_RUN_AS_NODE`, `scripts/mcp-pilot/dist/**`) e herda
+      `process.env` do processo pai. O `.env` só é lido uma vez, na subida do processo principal do
+      Electron (`@next/env` `loadEnvConfig`, chamado uma vez em `electron/main.ts`/`dist/main.js`).
+      **Reiniciar só o MCP Pilot pela aba Admin não relê o `.env`** — mudança de variável de ambiente
+      exige fechar e reabrir o app Electron por completo.
+    - **Achado operacional (lote mínimo × concentração):** em contas pequenas (ex. demo Exness com NAV
+      ~R$2.000), o lote mínimo de 0.01 de um ativo caro (ex. BTCUSD) pode sozinho já estourar o teto de
+      concentração de 20% — proposta rejeitada por `CONCENTRATION_EXCEEDS_MAX` antes de chegar no broker,
+      comportamento esperado da trava de risco, não bug.
   - `eligibleForExecution` em `src/app/api/agents/route.ts` (4 ocorrências) continua hardcoded `false` —
     é um flag de reporte nas respostas do agente, não usado pelo gate real de `trade.propose`; não foi
     alterado nesta mudança.

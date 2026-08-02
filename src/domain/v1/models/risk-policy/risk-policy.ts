@@ -105,7 +105,13 @@ export function evaluatePolicy(
     return { outcome: 'APPROVED', reasons: ['NO_ACTIONABLE_DIRECTION'] };
   }
 
-  if (!context.limits.instrumentAllowlist.includes(proposal.instrumentId)) {
+  // Allowlist vazia = sem restrição de instrumento (qualquer ativo que a
+  // plataforma consiga cotar via MT5 conectado é elegível) — allowlist
+  // não-vazia continua funcionando como trava opcional via env.
+  if (
+    context.limits.instrumentAllowlist.length > 0 &&
+    !context.limits.instrumentAllowlist.includes(proposal.instrumentId)
+  ) {
     return { outcome: 'REJECTED', reasons: ['INSTRUMENT_NOT_ALLOWED'] };
   }
 

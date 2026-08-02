@@ -19,7 +19,10 @@ import type { McpTradeService } from '../../../application/mcp-trade/service';
 const MCP_REQUESTED_BY = 'mcp:hermes';
 
 const PROPOSE_SHAPE = {
-  symbol: z.string().regex(/^[A-Za-z]{4}\d{1,2}$/, 'símbolo B3 inválido (ex.: PETR4)'),
+  symbol: z
+    .string()
+    .regex(/^[A-Za-z0-9]{3,12}$/, 'símbolo inválido (ex.: PETR4, BTCUSD, EURUSD)')
+    .transform((s) => s.toUpperCase()),
   direction: z.enum(['BUY', 'SELL']),
   volume: z.number().positive().max(10_000),
   stopLoss: z.number().positive().optional(),
