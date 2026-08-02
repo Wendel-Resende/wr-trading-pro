@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, CheckCircle, XCircle, Loader2, Wifi, WifiOff, Bot, Power } from "lucide-react";
 import { MT5ServiceSingleton } from "@/services/mt5Service";
+import type { MT5ConnectionStatus } from "@/types/mt5";
 
 interface ServiceResult {
   name: string;
@@ -27,7 +28,8 @@ const SERVICE_LABELS: Record<string, string> = {
 
 export default function AdminTab() {
   const [data, setData] = useState<ServicesPayload | null>(null);
-  const [mt5Status, setMt5Status] = useState<"online" | "offline">("offline");
+  const [mt5Connection, setMt5Connection] = useState<MT5ConnectionStatus>(mt5Service.getConnectionState());
+  const [mt5Connecting, setMt5Connecting] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpPilotStatus | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mlStatus, setMlStatus] = useState<MlEngineStatus | null>(null);
@@ -128,14 +130,25 @@ export default function AdminTab() {
   }, [fetchMlStatus]);
 
   useEffect(() => {
-    const syncMt5 = () => {
-      const state = mt5Service.getConnectionState();
-      setMt5Status(state.state === "CONNECTED" ? "online" : "offline");
-    };
-    syncMt5();
+    const syncMt5 = (state: MT5ConnectionStatus) => setMt5Connection(state);
+    syncMt5(mt5Service.getConnectionState());
     mt5Service.on("state", syncMt5);
     return () => { mt5Service.off("state", syncMt5); };
   }, []);
+
+  const handleMt5Toggle = async () => {
+    if (mt5Connecting) return;
+    setMt5Connecting(true);
+    try {
+      if (mt5Connection.state === "CONNECTED") {
+        mt5Service.disconnect();
+      } else {
+        await mt5Service.connect();
+      }
+    } finally {
+      setMt5Connecting(false);
+    }
+  };
 
   useEffect(() => {
     fetchStatus();
@@ -143,28 +156,22 @@ export default function AdminTab() {
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  const allServices: ServiceResult[] = [
-    ...(data?.services ?? []),
-    {
-      name: "mt5_bridge",
-      url: "/api/mt5/mcp/status (mt5Service)",
-      status: mt5Status,
-      latencyMs: null,
-      error: mt5Status === "offline" ? "Not connected" : null,
-    },
-  ];
+  const allServices: ServiceResult[] = data?.services ?? [];
 
+  const mt5IsOnline = mt5Connection.state === "CONNECTED";
   const mcpIsOnline = mcpStatus?.state === "online";
   const mlIsOnline = mlStatus?.state === "online";
   const onlineCount = allServices.filter((s) => s.status === "online").length
+    + (mt5IsOnline ? 1 : 0)
     + (mcpIsOnline ? 1 : 0)
     + (mlIsOnline ? 1 : 0);
-  const totalServices = allServices.length + 2;
+  const totalServices = allServices.length + 3;
 
   const refreshAll = () => {
     fetchStatus();
     fetchMcpStatus();
     fetchMlStatus();
+    if (mt5Connection.state === "CONNECTED") void mt5Service.connect();
   };
 
   return (
@@ -199,13 +206,73 @@ export default function AdminTab() {
         {allServices.map((svc) => (
           <ServiceCard key={svc.name} service={svc} loading={loading && !data} />
         ))}
+        <Mt5Card connection={mt5Connection} loading={mt5Connecting} onToggle={handleMt5Toggle} />
         <McpCard status={mcpStatus} loading={mcpLoading} onToggle={handleMcpToggle} />
         <MlCard status={mlStatus} loading={mlLoading} onToggle={handleMlToggle} />
       </div>
 
       <div className="text-xs text-gray-500 font-space border-t border-cyber-border pt-4">
-        Auto-refresh a cada 30s. Timeout HTTP: 2s. mt5_bridge via MCP nativo (mt5Service, sem senha).
+        Auto-refresh a cada 30s. Timeout HTTP: 2s. MT5 via MCP nativo do terminal (sem senha).
       </div>
+    </div>
+  );
+}
+
+function Mt5Card({
+  connection,
+  loading,
+  onToggle,
+}: {
+  connection: MT5ConnectionStatus;
+  loading: boolean;
+  onToggle: () => void;
+}) {
+  const isOnline = connection.state === "CONNECTED";
+  const isConnecting = connection.state === "CONNECTING" || loading;
+  const isError = connection.state === "ERROR";
+  const border = isOnline ? "border-green-500/40" : isError ? "border-red-500/40" : "border-cyber-border";
+  const label = isOnline ? "ONLINE" : isConnecting ? "CONECTANDO" : isError ? "ERRO" : "OFFLINE";
+
+  return (
+    <div className={`cyber-card p-4 hud-corner border ${border}`}>
+      <div className="flex items-start justify-between mb-3">
+        <h3 className="font-orbitron text-sm text-white leading-tight">MT5 (MCP Nativo)</h3>
+        {isConnecting
+          ? <Loader2 className="w-4 h-4 text-cyber-cyan animate-spin flex-shrink-0" />
+          : isOnline
+            ? <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+            : <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />}
+      </div>
+      <div className="flex items-center gap-2 mb-2">
+        {isOnline ? <Wifi className="w-3 h-3 text-green-400" /> : <WifiOff className="w-3 h-3 text-red-400" />}
+        <span className={`text-sm font-space font-semibold ${isOnline ? "text-green-400" : isError ? "text-red-400" : "text-gray-400"}`}>
+          {label}
+        </span>
+      </div>
+      {isOnline && connection.accountInfo && (
+        <p className="text-xs text-gray-400 font-jetbrains truncate">
+          Conta {connection.accountInfo.login} — {connection.accountInfo.server}
+        </p>
+      )}
+      {connection.lastError && (
+        <p className="text-xs text-red-400/70 font-space mt-1" title={connection.lastError}>
+          {connection.lastError}
+        </p>
+      )}
+      {!isOnline && !connection.lastError && (
+        <p className="text-xs text-gray-600 font-space">
+          Requer o terminal MT5 aberto com o servidor MCP interno ativado.
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={isConnecting}
+        className="cyber-button cyber-button-secondary mt-3 w-full flex items-center justify-center gap-2 disabled:opacity-50"
+      >
+        <Power className="w-3 h-3" />
+        <span className="font-space text-xs">{isOnline ? "Desconectar" : "Conectar"}</span>
+      </button>
     </div>
   );
 }

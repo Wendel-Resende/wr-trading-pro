@@ -24,24 +24,48 @@ export type Mt5McpCapability =
   | 'symbol_info'
   | 'rates'
   | 'tick'
-  | 'market_book';
+  | 'market_book'
+  | 'ensure_symbol_watch';
 
 /**
- * Candidatos por capability, em ordem de preferência. Cobre as convenções
- * mais comuns entre servidores MCP de MT5 — ajustado no smoke-test real
- * (Fase 1) assim que o Guardião configurar MT5_MCP_API_KEY de verdade.
+ * Candidatos por capability, em ordem de preferência. Os nomes reais foram
+ * verificados por sonda direta (`tools/list`) contra o servidor MCP nativo
+ * do MT5 (build 6060+) instalado — não são mais um palpite. Ficam registrados
+ * aqui também os candidatos "de convenção comum" antigos como fallback, caso
+ * uma versão futura do servidor use nomes diferentes.
+ *
+ * GAPS confirmados nesta versão real (sem tool candidata — a capability
+ * falha isolada com MT5_MCP_TOOL_MISSING, nunca finge sucesso):
+ * - `orders` (ordens pendentes/abertas): não existe tool dedicada. O mais
+ *   próximo é `get_trading_open_positions` com `include_orders: true`, mas
+ *   isso devolve posições+ordens no mesmo payload — não um endpoint próprio
+ *   de "orders". Não mapeado aqui de propósito, para não fabricar semântica.
+ * - `symbol_info`: nenhuma tool expõe info de UM símbolo isolado.
+ * - `market_book` (livro de ofertas/DOM): nenhuma tool equivalente.
+ * - `tick` (cotação atual): não existe "get current tick" — só
+ *   `get_chart_ticks_history` (histórico, exige `datetime_from`/`datetime_to`).
+ *   Não mapeado aqui: a capability atual chama só com `{symbol}`, incompatível
+ *   com o schema real (params obrigatórios diferentes). Pendência registrada.
+ *
+ * `rates` (`get_chart_history`) e `history` (`get_trading_history_*`) TÊM
+ * tool real, mas com schema de argumentos diferente do que este módulo envia
+ * hoje (`period`+`datetime_from`+`datetime_to` em vez de `timeframe`+`count`).
+ * Mapeados aqui para não regredir a listagem de tools, mas as funções
+ * `getRates`/`getHistoryDeals` ainda precisam de ajuste de argumentos — ver
+ * pendência no handoff.
  */
 const TOOL_NAME_CANDIDATES: Record<Mt5McpCapability, readonly string[]> = {
   workspace_info: ['get_workspace_info', 'workspace_info'],
-  account_info: ['get_account_info', 'account_info', 'get_account'],
-  positions: ['get_positions', 'positions', 'list_positions'],
+  account_info: ['get_trading_account_info', 'get_account_info', 'account_info', 'get_account'],
+  positions: ['get_trading_open_positions', 'get_positions', 'positions', 'list_positions'],
   orders: ['get_orders', 'orders', 'list_orders', 'get_open_orders'],
-  history: ['get_history_deals', 'get_history', 'history_deals', 'get_deals_history'],
-  symbols: ['get_symbols', 'symbols', 'list_symbols'],
+  history: ['get_trading_history_positions', 'get_history_deals', 'get_history', 'history_deals', 'get_deals_history'],
+  symbols: ['get_marketwatch_symbols', 'get_symbols', 'symbols', 'list_symbols'],
   symbol_info: ['get_symbol_info', 'symbol_info'],
-  rates: ['get_rates', 'get_candles', 'copy_rates', 'get_bars'],
-  tick: ['get_tick', 'get_symbol_price', 'get_last_tick', 'symbol_info_tick'],
+  rates: ['get_chart_history', 'get_rates', 'get_candles', 'copy_rates', 'get_bars'],
+  tick: ['get_chart_ticks_history', 'get_tick', 'get_symbol_price', 'get_last_tick', 'symbol_info_tick'],
   market_book: ['get_market_book', 'get_depth', 'market_book_get', 'get_order_book'],
+  ensure_symbol_watch: ['add_marketwatch_symbol'],
 };
 
 /** Cache de tools descobertas — válido pela vida do processo; nomes de tool não mudam entre sessões. */
@@ -115,6 +139,28 @@ export async function getWorkspaceInfo(): Promise<unknown> {
 }
 
 /**
+ * `get_trading_account_info` (verificado por sonda real) devolve
+ * `{ account: {...}, terminal: {...} }`, não um objeto achatado — e não
+ * expõe todos os campos de `MT5AccountInfo` (ex.: leverage, marginLevel).
+ * Achata os campos de `account` (snake_case → alguns aliases camelCase
+ * usados pela UI) e deriva `tradeAllowed` de dois flags do terminal
+ * (`experts_trade_allowed` E `mcp_trade_allowed` — os dois precisam estar
+ * true; qualquer um false já impede envio de ordem no terminal real).
+ */
+function normalizeAccountInfoPayload(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const account = obj.account && typeof obj.account === 'object' ? (obj.account as Record<string, unknown>) : null;
+  if (!account) return obj; // já achatado — tolerância a outra versão do servidor
+  const terminal = obj.terminal && typeof obj.terminal === 'object' ? (obj.terminal as Record<string, unknown>) : {};
+  return {
+    ...account,
+    marginFree: account.margin_free,
+    tradeAllowed: Boolean(terminal.experts_trade_allowed) && Boolean(terminal.mcp_trade_allowed),
+  };
+}
+
+/**
  * Info da conta logada no terminal (via GUI do próprio MT5 — nunca por
  * login/senha vindos do WR). Se o terminal estiver aberto mas sem conta
  * logada, o client já classifica isso como MT5_MCP_TERMINAL_DISCONNECTED
@@ -124,7 +170,7 @@ export async function getWorkspaceInfo(): Promise<unknown> {
 export async function getAccountInfo(): Promise<unknown> {
   const toolName = await resolveMt5ToolName('account_info');
   const result = await callMt5Tool(toolName, {});
-  return redactSensitiveFields(extractToolValue(result));
+  return normalizeAccountInfoPayload(redactSensitiveFields(extractToolValue(result)));
 }
 
 export interface Mt5TradingEligibility {
@@ -203,10 +249,45 @@ function normalizeTickPayload(value: unknown): unknown {
   return value;
 }
 
+/**
+ * `get_chart_history`/`get_chart_ticks_history` falham com "symbol not
+ * found" se o símbolo não estiver no Market Watch do terminal (verificado
+ * por sonda real: os watchlists padrão do app, ex. PETR4/VALE3/BBDC4, não
+ * vêm pré-adicionados). `add_marketwatch_symbol` só afeta VISIBILIDADE no
+ * Market Watch — nunca abre posição/ordem (garantido pela própria descrição
+ * da tool). Best-effort: se a capability não existir ou falhar, ignora — a
+ * chamada de dados seguinte reporta o erro real por conta própria.
+ */
+async function ensureSymbolInMarketWatch(symbol: string): Promise<void> {
+  try {
+    const toolName = await resolveMt5ToolName('ensure_symbol_watch');
+    await callMt5Tool(toolName, { symbol, show: true });
+  } catch {
+    // Melhor esforço — capability ausente ou falha aqui não deve impedir a tentativa de dados.
+  }
+}
+
+/**
+ * Este servidor real não tem "get current tick" — só `get_chart_ticks_history`
+ * (`datetime_from`/`datetime_to`/`symbol` obrigatórios). Pede os últimos 5
+ * minutos e devolve o tick mais recente do array — aproximação declarada,
+ * não um tick "ao vivo" garantido (pode ter alguns segundos de atraso e pode
+ * vir vazio fora do pregão).
+ */
 export async function getTick(symbol: string): Promise<unknown> {
+  await ensureSymbolInMarketWatch(symbol);
   const toolName = await resolveMt5ToolName('tick');
-  const result = await callMt5Tool(toolName, { symbol });
-  return normalizeTickPayload(redactSensitiveFields(extractToolValue(result)));
+  const now = new Date();
+  const from = new Date(now.getTime() - 5 * 60_000);
+  const result = await callMt5Tool(toolName, {
+    symbol,
+    datetime_from: from.toISOString(),
+    datetime_to: now.toISOString(),
+    limit: 1000,
+  });
+  const redacted = redactSensitiveFields(extractToolValue(result));
+  const ticks = normalizeRatesPayload(redacted); // mesmo formato de envelope (array/'ticks'/'result')
+  return ticks.length > 0 ? ticks[ticks.length - 1] : normalizeTickPayload(redacted);
 }
 
 /**
@@ -217,7 +298,7 @@ export async function getTick(symbol: string): Promise<unknown> {
 function normalizeRatesPayload(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') {
-    for (const key of ['rates', 'candles', 'bars', 'result'] as const) {
+    for (const key of ['rates', 'candles', 'bars', 'ticks', 'history', 'result'] as const) {
       const candidate = (value as Record<string, unknown>)[key];
       if (Array.isArray(candidate)) return candidate;
     }
@@ -233,16 +314,82 @@ export interface Mt5RatesParams {
   readonly to?: string;
 }
 
+/** Minutos por período — só os períodos aceitos pelo schema real de `get_chart_history`. */
+const PERIOD_MINUTES: Record<string, number> = {
+  M1: 1, M2: 2, M3: 3, M4: 4, M5: 5, M6: 6, M10: 10, M12: 12, M15: 15, M20: 20, M30: 30,
+  H1: 60, H2: 120, H3: 180, H4: 240, H6: 360, H8: 480, H12: 720,
+  D1: 1440, W1: 10080, MN1: 43200,
+};
+
+/**
+ * `timeframe` chega em formatos inconsistentes de chamadores diferentes do
+ * app (ex.: '1H', 'H1', '1D', 'D1', '5M', 'M5') — nenhum é o nome exato que
+ * `get_chart_history` aceita. Normaliza dígito+letra para letra+dígito
+ * (ex.: '1H' → 'H1') e default 'H1' se vazio/desconhecido.
+ */
+function normalizePeriod(timeframe: string | undefined): string {
+  if (!timeframe) return 'H1';
+  const upper = timeframe.trim().toUpperCase();
+  if (upper in PERIOD_MINUTES) return upper;
+  const match = /^(\d+)([A-Z]+)$/.exec(upper);
+  if (match) {
+    const swapped = `${match[2]}${match[1]}`;
+    if (swapped in PERIOD_MINUTES) return swapped;
+  }
+  return 'H1';
+}
+
+/**
+ * `get_chart_history` (verificado por sonda real) exige `datetime_from`,
+ * `datetime_to`, `symbol`, `period` — não aceita `count`/`timeframe` como
+ * os chamadores deste módulo enviam. Traduz: `timeframe` → `period`
+ * (normalizado); se `from`/`to` não vierem prontos, calcula uma janela de
+ * `count` barras (default 300) a partir de agora, usando a duração do
+ * período.
+ */
 export async function getRates(params: Mt5RatesParams): Promise<unknown[]> {
+  await ensureSymbolInMarketWatch(params.symbol);
   const toolName = await resolveMt5ToolName('rates');
-  const args: Record<string, unknown> = { symbol: params.symbol };
-  if (params.timeframe) args.timeframe = params.timeframe;
-  if (typeof params.count === 'number') args.count = params.count;
-  if (params.from) args.from = params.from;
-  if (params.to) args.to = params.to;
+  const period = normalizePeriod(params.timeframe);
+  let datetimeFrom = params.from;
+  let datetimeTo = params.to;
+  if (!datetimeFrom || !datetimeTo) {
+    const count = typeof params.count === 'number' && params.count > 0 ? params.count : 300;
+    const minutes = PERIOD_MINUTES[period] ?? 60;
+    const to = new Date();
+    const from = new Date(to.getTime() - count * minutes * 60_000);
+    datetimeFrom = from.toISOString();
+    datetimeTo = to.toISOString();
+  }
+  const args: Record<string, unknown> = {
+    symbol: params.symbol,
+    period,
+    datetime_from: datetimeFrom,
+    datetime_to: datetimeTo,
+  };
+  if (typeof params.count === 'number') args.limit = params.count;
   const result = await callMt5Tool(toolName, args);
   const redacted = redactSensitiveFields(extractToolValue(result));
-  return normalizeRatesPayload(redacted);
+  return normalizeRatesPayload(redacted).map(normalizeMt5CandleTime);
+}
+
+/**
+ * O `time` de cada candle vem no formato MT5 `"YYYY.MM.DD HH:MM:SS"`
+ * (verificado por sonda real) — `new Date(...)` do JS NÃO faz parse disso
+ * (retorna Invalid Date). Converte para epoch em segundos aqui, no servidor,
+ * para que `mt5Service.normalizeMcpCandle` (que já espera epoch ou algo que
+ * `new Date()` entenda) funcione sem precisar conhecer o formato do MT5.
+ */
+function normalizeMt5CandleTime(candle: unknown): unknown {
+  if (!candle || typeof candle !== 'object') return candle;
+  const obj = candle as Record<string, unknown>;
+  const time = obj.time;
+  if (typeof time !== 'string') return candle;
+  const match = /^(\d{4})\.(\d{2})\.(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(time);
+  if (!match) return candle;
+  const [, y, mo, d, h, mi, s] = match;
+  const epochSeconds = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)) / 1000;
+  return { ...obj, time: epochSeconds };
 }
 
 /** Lista de símbolos não vem com shape documentado — pode ser array puro ou envelopado sob 'symbols'/'result'. */
@@ -309,9 +456,17 @@ function normalizeOrdersPayload(value: unknown): unknown[] {
   return [];
 }
 
+/**
+ * Nesta versão real do servidor não existe tool dedicada de "ordens abertas"
+ * (`orders` não tem candidato em TOOL_NAME_CANDIDATES). O único jeito
+ * confirmado de obter ordens pendentes é `get_trading_open_positions` com
+ * `include_orders: true` — devolve `{ positions: [...], orders: [...] }` no
+ * mesmo payload (verificado por sonda real). Por isso esta função usa a
+ * capability `positions`, não `orders`, e extrai só o array `orders`.
+ */
 export async function getOrders(symbol?: string): Promise<unknown[]> {
-  const toolName = await resolveMt5ToolName('orders');
-  const args: Record<string, unknown> = {};
+  const toolName = await resolveMt5ToolName('positions');
+  const args: Record<string, unknown> = { include_orders: true };
   if (symbol) args.symbol = symbol;
   const result = await callMt5Tool(toolName, args);
   const redacted = redactSensitiveFields(extractToolValue(result));

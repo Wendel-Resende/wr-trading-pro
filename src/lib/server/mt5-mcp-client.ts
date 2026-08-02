@@ -21,6 +21,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { getMt5McpConfig, type Mt5McpConfig } from './mt5-mcp-config';
 import { MT5_MCP_ERROR_MESSAGES, type Mt5McpErrorCode, type Mt5McpErrorPayload } from '../../types/mt5-mcp';
 
@@ -145,7 +146,18 @@ export interface Mt5McpToolResult {
 
 async function callToolOnce(name: string, args: Record<string, unknown>): Promise<Mt5McpToolResult> {
   const client = await ensureClient();
-  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+  // `client.callTool()` valida structuredContent contra o outputSchema
+  // declarado pela tool — e o servidor MT5 real declara outputSchema que não
+  // bate com o que várias tools de fato devolvem (confirmado por sonda real:
+  // get_workspace_info falha nessa validação embora a resposta seja válida).
+  // `client.request()` faz a MESMA chamada JSON-RPC tools/call sem essa
+  // camada extra de validação — a resposta ainda é parseada pelo
+  // CallToolResultSchema do protocolo, só pula o schema PRÓPRIO de cada tool.
+  const result = await client.request(
+    { method: 'tools/call', params: { name, arguments: args } },
+    CallToolResultSchema,
+    { timeout: CALL_TIMEOUT_MS }
+  );
   if (result.isError) {
     const text = Array.isArray(result.content)
       ? result.content.find((c): c is { type: 'text'; text: string } => c?.type === 'text' && typeof c.text === 'string')
