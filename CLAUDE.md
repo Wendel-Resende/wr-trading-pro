@@ -53,6 +53,37 @@ python/
 └── ml_api.py           # Flask :5560 — motor ML (backfill D1, TimesFM, LightGBM)
 ```
 
+### MT5 — MCP nativo (não é mais ponte Python)
+
+Desde 2026-08-02 o MT5 não usa mais ponte Python/WebSocket (`mt5_bridge.py`
+foi removido) — o terminal MT5 (Windows, build 6060+) expõe um servidor MCP
+próprio via Streamable HTTP quando "Ativar servidor interno" está ligado em
+Tools > Options > MCP. A WR consome isso **somente para leitura**, server-side:
+
+```
+src/lib/server/mt5-mcp-config.ts   # endpoint/API key/allowlist (fail-closed sem MT5_MCP_API_KEY)
+src/lib/server/mt5-mcp-client.ts   # client MCP (client.request() de baixo nível — ver nota abaixo)
+src/lib/server/mt5-mcp-tools.ts    # mapeamento capability → tool name real + normalização de payload
+src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, orders, rates, tick, symbols...)
+```
+
+- Config: `MT5_MCP_ENDPOINT` (default `http://127.0.0.1:22346/mcp`) + `MT5_MCP_API_KEY` no `.env`.
+- **Envio/alteração/cancelamento de ordem está fail-closed de propósito** (`Mt5TradingUnavailableError`,
+  `eligibleForExecution=false` hardcoded) — decisão de governança, **não** limitação técnica: o servidor
+  real EXPÕE tools de trade (`trade_send_market_order`, `trade_modify_sl_tp`, etc.), mas ligar isso exige
+  aprovação explícita, não foi feito.
+- Aba **Admin** tem card dedicado "MT5 (MCP Nativo)" com botão Conectar/Desconectar (fluxo: logar na WR →
+  Admin → conectar com o terminal MT5 já aberto na máquina).
+- **Nomes de tool do servidor real (build 6090, verificados por sonda) NÃO são os nomes-convenção óbvios**
+  — ver `TOOL_NAME_CANDIDATES` em `mt5-mcp-tools.ts` antes de assumir qualquer nome de tool novo.
+- Gaps confirmados nesta versão do servidor: sem tool de "ordens abertas" isolada (vem junto no payload
+  de `get_trading_open_positions`), sem "tick ao vivo" (aproximado com `get_chart_ticks_history` dos
+  últimos 5 min — fica vazio fora do pregão), sem `symbol_info`/`market_book` dedicados.
+- `client.request()` é usado em vez de `client.callTool()` do SDK: o servidor real declara `outputSchema`
+  que não bate com o que várias tools devolvem (inclusive o pré-flight obrigatório `get_workspace_info`),
+  e a validação estrita do SDK quebrava toda chamada. `client.request()` faz a mesma chamada JSON-RPC sem
+  essa camada extra.
+
 ### Desktop (Electron)
 ```
 electron/
@@ -116,10 +147,14 @@ release/build/win-unpacked/WR Trade Pro.exe
 4. **SQLite cache:** candles histórico salvo no Prisma/SQLite via `historicalDataService.syncCandles()` / `upsertCandles()`
 5. **Static export:** projeto NÃO usa `output: 'export'` — mantém Next.js como servidor (API routes funcionam)
 6. **Dados locais:** persistência runtime fica dentro de `data/` no repositório; o banco de opções oficial é `data/options/options_data.db`
+7. **MT5 via MCP nativo, não ponte Python:** leituras (conta/posições/ordens/candles/tick/símbolos/book)
+   passam pelo servidor MCP embutido do terminal MT5, consumido server-side em `src/lib/server/mt5-mcp-*`
+   e exposto via `/api/mt5/mcp/**`. Trading (envio/alteração/cancelamento de ordem) é fail-closed por
+   decisão de governança — ver seção "MT5 — MCP nativo" acima
 
 ## Bugs Corrigidos (não apagar)
 
-- `mt5_bridge.py`: reenvia `STATE:CONNECTED` para clientes que reconectam
+- `mt5_bridge.py`: reenvia `STATE:CONNECTED` para clientes que reconectam *(bridge removida em 2026-08-02, ver seção MT5 MCP nativo)*
 - `mt5Service`: `lastConfig` salvo para reconexões automáticas
 - `mt5Service`: `GET_CHART_DATA` envia com wrapper `data: {}`
 - `mt5Service`: `CHART_DATA` lê `message.data.candles`
@@ -127,6 +162,14 @@ release/build/win-unpacked/WR Trade Pro.exe
 - `mt5Service`: `console.error` → `console.warn` para erros não-fatais (evita overlay Next.js)
 - `sync-prices/route.ts`: `stringifyBigInt` em responses
 - `SpreadTab`: símbolos convertidos para maiúsculo automaticamente
+- **MT5 MCP nativo (2026-08-02):** nomes de tool corrigidos (eram convenção chutada, não os nomes reais do
+  servidor); `client.callTool()` → `client.request()` (o servidor declara `outputSchema` que não bate com o
+  retorno real, quebrando a validação estrita do SDK até no pré-flight `get_workspace_info`); `getAccountInfo`
+  achata `{account, terminal}`; `getRates` traduz `timeframe/count` → `period/datetime_from/datetime_to` e
+  converte `time` de `"YYYY.MM.DD HH:MM:SS"` (MT5) para epoch, que `new Date()` do browser não parseia;
+  `ensureSymbolInMarketWatch` adiciona símbolos ausentes do Market Watch antes de candles/tick (só
+  visibilidade, nunca abre posição) — sem isso `get_chart_history` falhava com "symbol not found" para
+  PETR4/VALE3/BBDC4 (watchlist padrão do app)
 
 ## Histórico de Superpowers (SP)
 
@@ -139,4 +182,13 @@ release/build/win-unpacked/WR Trade Pro.exe
 
 1. Integrar Profit DLL quando chave de ativação da Nelogica estiver disponível
 2. Resolver build NSIS (falha com symbolic links no Windows — requer admin ou target diferente)
-3. Commit das mudanças pendentes (11 arquivos modificados)
+3. Electron sem trava de instância única (`app.requestSingleInstanceLock()` nunca implementado em
+   `electron/main.ts`) — abrir o atalho várias vezes empilha processos disputando a porta 3001 sem
+   nenhum mostrar janela
+4. Porta 3001 fixa (`PORT` em `electron/main.ts`) pode colidir com um `next-server` do Guardião_Hermes
+   rodando no WSL (já aconteceu — `wslrelay.exe` espelha a porta do WSL pro Windows). Considerar porta
+   configurável ou coordenar com o Guardião
+5. Capabilities do MT5 MCP nativo ainda não testadas contra o servidor real: `history` (deals),
+   `symbol_info`, `market_book`/DOM — candidatos de tool só por suposição
+6. Decisão em aberto: habilitar trading via MCP nativo (`trade_send_market_order` etc. existem no
+   servidor real) — bloqueado por governança, não por limitação técnica

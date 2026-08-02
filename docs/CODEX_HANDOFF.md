@@ -1,8 +1,116 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-07-26 (escore composto + MCP do fator)
+Última atualização: 2026-08-02 (MCP nativo do MT5 — nomes reais de tool corrigidos, conexão restaurada)
 
-## Status 2026-08-02 — Ponto 4 concluído: ponte Python/WS (mt5_bridge.py, ws-token, porta 8766) removida; leituras via MCP nativo; trading fail-closed TS (eligibleForExecution=false); commit/push pendente de autorização do usuário.
+## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO: ponte Python/WS (mt5_bridge.py, ws-token, porta 8766) removida; leituras via MCP nativo com os nomes de tool REAIS do servidor (build 6090); trading fail-closed TS (eligibleForExecution=false); commit `c748e73` na `main`, push feito.
+
+## Sessão 2026-08-02 — MCP nativo do MT5: da migração "no papel" à conexão de verdade (branch `main`)
+
+O commit `6822f1f` (mesma data, sessão anterior) tinha migrado as ROTAS do
+bridge Python para o MCP nativo, mas **nunca tinha sido testado contra o
+servidor MCP real** — os nomes de tool em `TOOL_NAME_CANDIDATES` eram só
+convenção chutada. Resultado: usuário abriu a plataforma e a conexão MT5
+simplesmente não funcionava (nem erro claro, silêncio).
+
+### Cadeia de causas encontradas e corrigidas, na ordem em que apareceram
+
+1. **`.exe` da Área de Trabalho estava desatualizado** (empacotado em
+   12/05, antes da migração) — ainda tentava subir `python/mt5_bridge.py`,
+   removido do repo. Reempacotado (`npm run electron:package`).
+2. **Bug de packaging do electron-builder**: `ENOENT stat .prisma` na raiz
+   do projeto (não em `node_modules/.prisma`) — bug conhecido do
+   electron-builder com o client gerado do Prisma. Workaround: pasta
+   `.prisma` vazia na raiz (não versionada, recriar se sumir e o build
+   falhar com esse erro).
+3. **Nenhuma trava de instância única** no Electron (`app.requestSingleInstanceLock`
+   nunca foi chamado) — cada clique no atalho empilhava um processo novo
+   brigando pela porta 3001; nenhum chegava a mostrar janela. Não corrigido
+   no código ainda (só mitigado manualmente matando processos) — **pendência
+   registrada abaixo**.
+4. **Conflito de porta real**: um `next-server` do **Guardião_Hermes rodando
+   dentro do WSL** ocupava 127.0.0.1:3001 (espelhado pro Windows via
+   `wslrelay.exe`), a mesma porta fixa (`PORT = 3001`) que o Electron nativo
+   do Windows usa. Resolvido matando o processo do WSL nesta sessão — **se
+   voltar a acontecer, é esse o primeiro lugar a checar** (`wsl.exe -e bash
+   -lc "ss -ltnp | grep 3001"`).
+5. **Nomes de tool errados** (o bug de fundo): `TOOL_NAME_CANDIDATES` em
+   `src/lib/server/mt5-mcp-tools.ts` tinha `get_account_info`, `get_positions`,
+   `get_symbols`, `get_rates` etc. — nenhum existe no servidor real (build
+   6090). Os nomes verdadeiros, verificados por sonda direta (`tools/list`):
+
+   ```
+   get_workspace_info, get_trading_account_info, get_trading_open_positions,
+   get_trading_history_positions, get_trading_history_orders,
+   get_marketwatch_symbols, get_chart_history, get_chart_ticks_history,
+   trade_send_market_order, trade_send_pending_order, trade_modify_sl_tp,
+   trade_delete_order, trade_close_single_position, trade_close_by_position,
+   tester_run_backtest, tester_get_status, ...
+   ```
+
+   **Achado relevante para decisão futura:** o servidor real EXPÕE tools de
+   trade (`trade_send_market_order` etc.) — a plataforma continua fail-closed
+   por decisão de governança, não por limitação técnica do MCP nativo. Ligar
+   isso é decisão do usuário/Guardião, não foi feito.
+
+6. **Bug do SDK `@modelcontextprotocol/sdk`**: `client.callTool()` valida
+   `structuredContent` contra o `outputSchema` declarado por cada tool — e o
+   servidor real declara `outputSchema` que não bate com o que várias tools
+   devolvem de fato, incluindo o pré-flight OBRIGATÓRIO `get_workspace_info`.
+   Toda chamada quebrava com erro de validação mesmo com os nomes certos.
+   Corrigido usando `client.request()` de baixo nível (mesma chamada
+   JSON-RPC `tools/call`, sem a camada extra de validação por tool).
+7. **Schemas de argumento incompatíveis**: `get_chart_history` exige
+   `period`+`datetime_from`+`datetime_to` (não `timeframe`+`count`); o campo
+   `time` de cada candle vem como string MT5 `"YYYY.MM.DD HH:MM:SS"`, que
+   `new Date()` do browser não faz parse (vira `Invalid Date`). Corrigido com
+   tradução de parâmetros e conversão para epoch no servidor.
+8. **Símbolos fora do Market Watch**: PETR4/VALE3/BBDC4 (watchlist padrão do
+   app) não estavam adicionados no Market Watch do terminal → `get_chart_history`
+   respondia "symbol not found". Corrigido chamando `add_marketwatch_symbol`
+   (só visibilidade, nunca abre posição) antes de buscar candles/tick.
+9. **Não existe tool de "ordens abertas" nem "tick ao vivo"** nesta versão:
+   ordens vêm no mesmo payload de `get_trading_open_positions`; tick é
+   aproximado com os últimos 5 min de `get_chart_ticks_history` (fica vazio
+   fora do pregão — não é bug, é ausência real de dado).
+
+### O que foi mudado (commit `c748e73`, push feito)
+
+- `src/lib/server/mt5-mcp-tools.ts`: candidatos de tool corrigidos + gaps
+  documentados; `getAccountInfo` achata `{account, terminal}`; `getOrders`
+  reaproveita a tool de posições; `getRates`/`getTick` traduzem parâmetros e
+  normalizam tempo; `ensureSymbolInMarketWatch` best-effort antes de
+  candles/tick.
+- `src/lib/server/mt5-mcp-client.ts`: `client.request()` em vez de
+  `client.callTool()` (pula a validação de outputSchema quebrada).
+- `src/components/tabs/AdminTab.tsx`: card dedicado "MT5 (MCP Nativo)" com
+  botão Conectar/Desconectar — antes só existia status passivo na aba Admin,
+  sem ação; o fluxo pedido pelo usuário era "logar na WR → aba Admin →
+  conectar com o MT5 já aberto".
+
+### Verificado ao vivo (conta XPMT5-DEMO real, não mock)
+
+Status/conexão, conta (saldo, servidor, login), posições, símbolos, candles
+D1/H1 com preços reais. Tick fica zerado fora do horário de pregão (testado
+num domingo) — comportamento esperado, não confirmado ainda em horário de
+mercado aberto.
+
+### Pendências registradas para quem retomar
+
+1. **Sem trava de instância única no Electron** — `app.requestSingleInstanceLock()`
+   nunca foi implementado em `electron/main.ts`. Cada abertura do atalho sem
+   matar processos residuais antes pode empilhar instâncias zumbi disputando
+   a porta 3001. Não corrigido nesta sessão (só mitigado manualmente).
+2. **Conflito de porta 3001 com processo do WSL (Guardião)** pode se repetir
+   se o Guardião subir outro `next dev`/`next start` na mesma porta enquanto
+   o app Windows tenta abrir. Nenhuma das duas partes foi reconfigurada para
+   usar portas diferentes — considerar mudar `PORT` fixo em
+   `electron/main.ts` ou coordenar com o Guardião.
+3. **`history` (deals), `symbol_info`, `market_book`/DOM**: candidatos de
+   tool mapeados só por suposição ou deixados como gap documentado — não
+   testados contra o servidor real nesta sessão (fora do escopo do pedido,
+   que era "conexão não funciona").
+4. **Habilitar trading via MCP nativo** (`trade_send_market_order` etc.
+   existem no servidor real) é decisão de governança em aberto, não técnica.
 
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
