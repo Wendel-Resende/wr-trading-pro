@@ -1,5 +1,9 @@
 # Autenticação do WebSocket MT5 — Setup (Fase 0, Item 10)
 
+> OBSOLETO (2026-08-02): a ponte WebSocket (ws://localhost:8766) e o ws-token
+> foram REMOVIDOS no Ponto 4 da migração MCP nativo. Este documento é mantido
+> apenas como registro histórico.
+
 O WebSocket do MT5 Bridge (`ws://localhost:8766`) exige um **token efêmero de
 uso único** antes de qualquer outra mensagem. O token é derivado da sessão
 HttpOnly (`wr_session`) e assinado com um secret separado (`WR_WS_TOKEN_SECRET`).

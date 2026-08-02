@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { mt5Service } from '@/services/mt5Service';
-import { Loader2, CheckCircle } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface MT5ConnectionFormProps {
   onClose: () => void;
@@ -12,72 +12,29 @@ interface MT5ConnectionFormProps {
 export default function MT5ConnectionForm({ onClose, onConnected }: MT5ConnectionFormProps) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [config, setConfig] = useState(() => {
-    if (typeof window === 'undefined') {
-      return { login: '', password: '', server: '' };
-    }
-    const savedConfig = localStorage.getItem('mt5-config');
-    if (savedConfig) {
-      try {
-        const parsed = JSON.parse(savedConfig);
-        return {
-          login: parsed.login || '',
-          password: parsed.password || '',
-          server: parsed.server || '',
-        };
-      } catch (error) {
-        console.error('Failed to load MT5 config:', error);
-      }
-    }
-    return { login: '', password: '', server: '' };
-  });
+  const [error, setError] = useState<string | null>(null);
 
   const handleConnect = useCallback(async () => {
-    if (!config.login || !config.password || !config.server) {
-      console.error('Credenciais incompletas');
-      return;
-    }
-    
-    const loginNumber = parseInt(config.login);
-    if (isNaN(loginNumber)) {
-      console.error('Login inválido:', config.login);
-      return;
-    }
-    
     setIsConnecting(true);
-    
-    const timeoutId = setTimeout(() => {
-      console.error('Timeout de conexão MT5');
-      setIsConnecting(false);
-    }, 30000);
-    
+    setError(null);
     try {
-      await mt5Service.connect({
-        login: loginNumber,
-        password: config.password,
-        server: config.server,
-      });
-
-      clearTimeout(timeoutId);
-
-      localStorage.setItem('mt5-config', JSON.stringify(config));
+      const ok = await mt5Service.connect();
+      if (!ok) {
+        const state = mt5Service.getConnectionState();
+        setError(state.lastError || 'Não foi possível conectar ao MT5 MCP nativo');
+        setIsConnecting(false);
+        return;
+      }
       setSuccess(true);
-      
       setTimeout(() => {
         onConnected();
         onClose();
       }, 500);
-    } catch (error) {
-      clearTimeout(timeoutId);
-      console.error('Failed to connect to MT5:', error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível conectar ao MT5 MCP nativo');
       setIsConnecting(false);
     }
-  }, [config, onClose, onConnected]);
-
-  const handleClear = () => {
-    localStorage.removeItem('mt5-config');
-    setConfig({ login: '', password: '', server: '' });
-  };
+  }, [onClose, onConnected]);
 
   return (
     <div className="space-y-4">
@@ -88,63 +45,33 @@ export default function MT5ConnectionForm({ onClose, onConnected }: MT5Connectio
         </div>
       ) : (
         <>
-          <div>
-            <label htmlFor="mt5-login" className="text-xs text-gray-400 font-space mb-2 block">
-              Login
-            </label>
-            <input
-              type="number"
-              value={config.login}
-              onChange={(e) => setConfig({ ...config, login: e.target.value })}
-              className="cyber-input w-full text-white bg-cyber-dark"
-              placeholder="Número da conta"
-              autoComplete="off"
-              disabled={isConnecting}
-            />
-          </div>
-          
-          <div>
-            <label htmlFor="mt5-password" className="text-xs text-gray-400 font-space mb-2 block">
-              Senha
-            </label>
-            <input
-              type="password"
-              value={config.password}
-              onChange={(e) => setConfig({ ...config, password: e.target.value })}
-              className="cyber-input w-full text-white bg-cyber-dark"
-              placeholder="Senha da conta"
-              autoComplete="new-password"
-              disabled={isConnecting}
-            />
-          </div>
-          
-          <div>
-            <label htmlFor="mt5-server" className="text-xs text-gray-400 font-space mb-2 block">
-              Servidor
-            </label>
-            <input
-              type="text"
-              value={config.server}
-              onChange={(e) => setConfig({ ...config, server: e.target.value })}
-              className="cyber-input w-full text-white bg-cyber-dark"
-              placeholder="Nome do servidor"
-              autoComplete="off"
-              disabled={isConnecting}
-            />
-          </div>
+          <p className="text-sm text-gray-400 font-space">
+            A conexão usa o MCP nativo do MetaTrader 5 (build 6060+) — sem login/senha pelo WR.
+            Certifique-se de que o terminal MT5 está aberto, com uma conta logada e o servidor MCP
+            interno ativado (Tools &gt; Options &gt; MCP).
+          </p>
+
+          {error && (
+            <div className="bg-red-500/10 p-3 rounded border border-red-500/30 flex gap-2 items-start">
+              <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-200 font-space">{error}</p>
+            </div>
+          )}
 
           <div className="flex gap-2 pt-2">
             <button
-              onClick={handleClear}
+              onClick={onClose}
               disabled={isConnecting}
               className="flex-1 cyber-button cyber-button-secondary"
+              type="button"
             >
-              Limpar
+              Cancelar
             </button>
             <button
-              onClick={handleConnect}
-              disabled={isConnecting || !config.login || !config.password || !config.server}
+              onClick={() => void handleConnect()}
+              disabled={isConnecting}
               className="flex-1 cyber-button cyber-button-primary"
+              type="button"
             >
               {isConnecting ? (
                 <>

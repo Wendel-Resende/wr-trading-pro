@@ -22,7 +22,7 @@ const mt5Service = MT5ServiceSingleton.getInstance();
 const SERVICE_LABELS: Record<string, string> = {
   spread_api: "Spread API (B3)",
   volatility_api: "Volatility API",
-  mt5_bridge: "MT5 Bridge (WebSocket)",
+  mt5_bridge: "MT5 MCP Nativo",
 };
 
 export default function AdminTab() {
@@ -65,7 +65,6 @@ export default function AdminTab() {
         managedByElectron: false,
         pid: null,
         error: "Não foi possível consultar o MCP.",
-        wsAuthReady: false,
       });
     }
   }, []);
@@ -148,7 +147,7 @@ export default function AdminTab() {
     ...(data?.services ?? []),
     {
       name: "mt5_bridge",
-      url: "ws://localhost:8766 (mt5Service)",
+      url: "/api/mt5/mcp/status (mt5Service)",
       status: mt5Status,
       latencyMs: null,
       error: mt5Status === "offline" ? "Not connected" : null,
@@ -205,7 +204,7 @@ export default function AdminTab() {
       </div>
 
       <div className="text-xs text-gray-500 font-space border-t border-cyber-border pt-4">
-        Auto-refresh a cada 30s. Timeout HTTP: 2s. mt5_bridge via WebSocket singleton.
+        Auto-refresh a cada 30s. Timeout HTTP: 2s. mt5_bridge via MCP nativo (mt5Service, sem senha).
       </div>
     </div>
   );
@@ -251,7 +250,6 @@ function McpCard({
       </p>
       {isExternal && <p className="text-xs text-yellow-400/80 font-space mt-1">Instância externa: controle indisponível.</p>}
       {status?.error && <p className="text-xs text-red-400/70 font-space mt-1">{status.error}</p>}
-      {status && !status.wsAuthReady && <p className="text-xs text-yellow-400/80 font-space mt-1">Bridge MT5 sem autenticação.</p>}
       <button
         type="button"
         onClick={onToggle}

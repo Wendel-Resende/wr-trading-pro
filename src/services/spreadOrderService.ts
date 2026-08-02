@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { SpreadPendingOrder, SpreadOrderStatus, SpreadCondition, SpreadSummary } from '@/types/spread';
-import { mt5Service } from '@/services/mt5Service';
+import { mt5Service, Mt5TradingUnavailableError } from '@/services/mt5Service';
 import { MT5Tick } from '@/types/mt5';
 
 // Map DB status strings to SpreadOrderStatus enum
@@ -102,12 +102,6 @@ class SpreadOrderService extends EventEmitter {
       }
 
       this.emit('ordersUpdated', this.pendingOrders);
-
-      // Auto-start monitoring if there are pending orders
-      if (this.pendingOrders.length > 0 && !this.monitoringInterval) {
-        console.log('[SpreadOrderService] Iniciando monitoramento automático para', this.pendingOrders.length, 'ordens pendentes');
-        this.startMonitoring();
-      }
     } catch (error) {
       console.error('[SpreadOrderService] Erro ao carregar do banco:', error);
     }
@@ -176,52 +170,15 @@ class SpreadOrderService extends EventEmitter {
     return spreadDiff * totalQuantity;
   }
 
-  // Add a pending order — POST to API then store locally
+  // Envio/alteração/fechamento de ordens está indisponível nesta versão —
+  // nunca migrado ao MCP nativo. Lança incondicionalmente, sem criar body,
+  // fazer POST, ler response, mutar arrays, emitir evento, logar ou
+  // iniciar monitor.
   async addPendingOrder(
     order: Omit<SpreadPendingOrder, 'id' | 'createdAt' | 'currentSpread' | 'status'>
   ): Promise<SpreadPendingOrder> {
-    const body = {
-      symbol1: order.symbol1,
-      symbol2: order.symbol2,
-      type1: order.action1.toUpperCase(),
-      type2: order.action2.toUpperCase(),
-      quantity1: order.quantity1,
-      quantity2: order.quantity2,
-      price1: order.price1,
-      price2: order.price2,
-      spreadValue: order.price1 - order.price2,
-      status: 'PENDING',
-      isAutomated: true,
-      automationTarget: order.targetSpread,
-      automationCondition: order.condition,
-    };
-
-    const res = await fetch('/api/spread-orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Erro ao criar ordem');
-    }
-
-    const json = await res.json();
-    const newOrder = dbRowToOrder(json.data);
-    newOrder.triggered = false;
-    newOrder.executing = false;
-
-    this.pendingOrders.push(newOrder);
-    this.emit('ordersUpdated', this.pendingOrders);
-
-    console.log('[SpreadOrderService] Ordem pendente adicionada:', newOrder.id);
-
-    if (!this.monitoringInterval) {
-      this.startMonitoring();
-    }
-
-    return newOrder;
+    void order;
+    throw new Mt5TradingUnavailableError();
   }
 
   // Cancel a pending order — DELETE via API then remove locally
@@ -239,6 +196,10 @@ class SpreadOrderService extends EventEmitter {
 
   // Mark order as executed — PATCH via API
   async markAsExecuted(orderId: string, tickets?: { order1?: number; order2?: number }, error?: string): Promise<boolean> {
+    if (!error) {
+      throw new Mt5TradingUnavailableError();
+    }
+
     console.log('[SpreadOrderService] markAsExecuted chamado para ordem:', orderId);
 
     const index = this.pendingOrders.findIndex(o => o.id === orderId);
@@ -331,16 +292,12 @@ class SpreadOrderService extends EventEmitter {
     };
   }
 
-  // Start monitoring interval
+  // Envio/alteração/fechamento de ordens está indisponível nesta versão —
+  // nunca migrado ao MCP nativo. Garante que nenhum monitor fique ativo e
+  // lança incondicionalmente, sem criar timer nem logar.
   startMonitoring() {
-    if (this.monitoringInterval) {
-      console.log('[SpreadOrderService] Monitoramento já está ativo');
-      return;
-    }
-    console.log('[SpreadOrderService] Iniciando monitoramento de ordens spread');
-    this.monitoringInterval = setInterval(() => {
-      this.checkAndExecuteOrders();
-    }, this.MONITOR_INTERVAL);
+    this.stopMonitoring();
+    throw new Mt5TradingUnavailableError();
   }
 
   // Stop monitoring interval
@@ -352,146 +309,22 @@ class SpreadOrderService extends EventEmitter {
     }
   }
 
-  // Send a single MT5 order and wait for the result event
-  private sendMT5Order(order: SpreadPendingOrder, leg: 1 | 2): Promise<number | null> {
-    const symbol = leg === 1 ? order.symbol1 : order.symbol2;
-    const action = leg === 1 ? order.action1 : order.action2;
-    const quantity = leg === 1 ? order.quantity1 : order.quantity2;
-    const price = leg === 1 ? order.price1 : order.price2;
-
-    const shortId = order.id.split('_')[1] || Date.now().toString().slice(-8);
-    const comment = `SPD${shortId}-${leg}`;
-
-    return new Promise<number | null>((resolve) => {
-      let resolved = false;
-
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          mt5Service.off('order', handleOrderResult);
-          mt5Service.off('trade', handleTradeResult);
-          console.warn(`[SpreadOrderService] Ordem ${leg} timeout para ${symbol}`);
-          resolve(null);
-        }
-      }, 10000);
-
-      const handleTradeResult = (trade: any) => {
-        if (resolved) return;
-        if (trade.comment && trade.comment.includes(comment)) {
-          resolved = true;
-          clearTimeout(timeout);
-          mt5Service.off('order', handleOrderResult);
-          mt5Service.off('trade', handleTradeResult);
-          resolve(trade.order ?? null);
-        }
-      };
-
-      const handleOrderResult = (data: any) => {
-        if (resolved) return;
-        if (!data || typeof data !== 'object') return;
-
-        if (data.retcode === 10009 || (data.volumeCurrent !== undefined && data.volumeCurrent < data.volumeInitial)) {
-          if (data.ticket || data.order) {
-            resolved = true;
-            clearTimeout(timeout);
-            mt5Service.off('order', handleOrderResult);
-            mt5Service.off('trade', handleTradeResult);
-            resolve(data.order ?? data.ticket);
-          }
-        } else if (data.retcode && data.retcode !== 10009) {
-          resolved = true;
-          clearTimeout(timeout);
-          mt5Service.off('order', handleOrderResult);
-          mt5Service.off('trade', handleTradeResult);
-          resolve(null);
-        }
-      };
-
-      mt5Service.on('order', handleOrderResult);
-      mt5Service.on('trade', handleTradeResult);
-
-      try {
-        const getTradeType = (a: 'buy' | 'sell') => a === 'buy' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL';
-        mt5Service.sendOrder({
-          action: 'TRADE_ACTION_DEAL' as const,
-          symbol,
-          volume: quantity,
-          type: getTradeType(action) as 'ORDER_TYPE_BUY' | 'ORDER_TYPE_SELL',
-          price,
-          comment,
-        });
-      } catch (err) {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          mt5Service.off('order', handleOrderResult);
-          mt5Service.off('trade', handleTradeResult);
-          resolve(null);
-        }
-      }
-    });
-  }
-
-  // Execute a spread order via MT5
+  // Envio/alteração/fechamento de ordens está indisponível nesta versão —
+  // nunca migrado ao MCP nativo. Lança incondicionalmente, sem tentar
+  // sendMT5Order/markAsExecuted/markAsFailed/fetch/emit/log.
   async executeSpreadOrder(
     order: SpreadPendingOrder
   ): Promise<{ success: boolean; tickets?: { order1?: number; order2?: number }; error?: string }> {
-    console.log('[SpreadOrderService] Executando ordem de spread:', order.id);
-
-    try {
-      const [ticket1, ticket2] = await Promise.all([
-        this.sendMT5Order(order, 1),
-        this.sendMT5Order(order, 2),
-      ]);
-
-      console.log('[SpreadOrderService] Ordens executadas:', { ticket1, ticket2 });
-
-      await this.markAsExecuted(order.id, {
-        order1: ticket1 ?? undefined,
-        order2: ticket2 ?? undefined,
-      });
-
-      return { success: true, tickets: { order1: ticket1 ?? undefined, order2: ticket2 ?? undefined } };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
-      console.error('[SpreadOrderService] Erro ao executar ordem:', errorMessage);
-      await this.markAsExecuted(order.id, undefined, errorMessage);
-      return { success: false, error: errorMessage };
-    }
+    void order;
+    throw new Mt5TradingUnavailableError();
   }
 
-  // Check pending orders and execute those that meet conditions
+  // Envio/alteração/fechamento de ordens está indisponível nesta versão
+  // (Mt5TradingUnavailableError) — o monitoramento automático nunca deve
+  // ler condição, marcar ordem como triggered/executing, nem chamar
+  // executeSpreadOrder. Retorna imediatamente, sem efeito colateral.
   private async checkAndExecuteOrders() {
-    const ordersToExecute: SpreadPendingOrder[] = [];
-
-    this.pendingOrders.forEach(order => {
-      if (order.status === SpreadOrderStatus.PENDING && order.triggered && !order.executing) {
-        order.triggered = false;
-        return;
-      }
-
-      if (order.status === SpreadOrderStatus.PENDING && !order.triggered) {
-        const conditionMet = this.checkCondition(order.currentSpread, order.targetSpread, order.condition);
-        if (conditionMet) {
-          ordersToExecute.push(order);
-        }
-      }
-    });
-
-    if (ordersToExecute.length > 0) {
-      console.log('[SpreadOrderService] Executando ordens que atingiram alvo:', ordersToExecute.length);
-
-      for (const order of ordersToExecute) {
-        order.triggered = true;
-        order.executing = true;
-
-        try {
-          await this.executeSpreadOrder(order);
-        } finally {
-          order.executing = false;
-        }
-      }
-    }
+    return;
   }
 }
 

@@ -2,6 +2,8 @@
 
 Última atualização: 2026-07-26 (escore composto + MCP do fator)
 
+## Status 2026-08-02 — Ponto 4 concluído: ponte Python/WS (mt5_bridge.py, ws-token, porta 8766) removida; leituras via MCP nativo; trading fail-closed TS (eligibleForExecution=false); commit/push pendente de autorização do usuário.
+
 ## Estado das iniciativas (atualizado 2026-07-25) — ATENÇÃO: duas numerações de "Item"
 
 > **Aviso p/ quem retomar:** existem DOIS esquemas de numeração de "Item" que se

@@ -1,5 +1,4 @@
 import {
-  MT5Config,
   MT5ConnectionStatus,
   MT5AccountInfo,
   MT5Position,
@@ -16,33 +15,66 @@ import {
 import { redactedString } from '@/lib/redact';
 
 /**
- * MetaTrader 5 Service - Bridge para comunicação com servidor Python
- * 
- * Este serviço se comunica com um servidor Python que faz a ponte
- * com a API oficial do MetaTrader 5
+ * MetaTrader 5 Service — WR Trading Pro
+ *
+ * Conexão/status/conta/posições/ordens/símbolos/ticks/book: via MCP nativo
+ * do MT5 (build 6060+), consultado server-side em /api/mt5/mcp/** — nunca
+ * WebSocket, nunca senha no cliente. O login na conta MT5 acontece na
+ * própria GUI do terminal, fora do WR.
+ *
+ * `this.ws` nunca é atribuído (não há mais handshake de WebSocket em
+ * connect()) — o campo e `send()` abaixo sobrevivem só porque
+ * `optionsService.ts` ainda os chama para símbolos de opções; nesse
+ * caminho `send()` sempre no-opa (loga aviso, não conecta a nada).
  */
+
+/**
+ * Envio/alteração/fechamento de ordens nunca foi migrado ao MCP nativo e
+ * não deve ser — eligibleForExecution continua false independentemente
+ * de qualquer capability de conta (tradeAllowed etc.). Código e mensagem
+ * são estáticos e sanitizados, sem depender de estado de conexão/conta.
+ */
+export class Mt5TradingUnavailableError extends Error {
+  static readonly CODE = 'MT5_TRADING_UNAVAILABLE' as const;
+  static readonly MESSAGE =
+    'Envio, alteração e fechamento de ordens não estão disponíveis nesta versão. Nenhuma ordem foi enviada ao MT5.';
+  readonly code = Mt5TradingUnavailableError.CODE;
+
+  constructor() {
+    super(Mt5TradingUnavailableError.MESSAGE);
+    this.name = 'Mt5TradingUnavailableError';
+  }
+}
 class MT5Service {
   private ws: WebSocket | null = null;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectDelay = 3000;
   private connectionState: MT5ConnectionStatus = {
     state: 'DISCONNECTED',
     isConnected: false,
   };
   private listeners: Map<string, Set<(data: any) => void>> = new Map();
-  private pythonServerUrl: string = 'ws://localhost:8766';
-  private lastConfig: MT5Config | null = null;
-  // Serializa tentativas concorrentes e distingue socket aberto de autenticado.
+  // Serializa tentativas concorrentes de connect().
   private connectPromise: Promise<boolean> | null = null;
-  private wsAuthenticated = false;
+  // Invalida fetch de status em andamento quando disconnect() é chamado no meio.
   private connectionGeneration = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private statusPollTimer: ReturnType<typeof setInterval> | null = null;
   private chartRequestId = 0;
 
-  // Timeouts do handshake de autenticação do bridge (Fase 0, Item 10)
-  private readonly WS_TOKEN_FETCH_TIMEOUT_MS = 5000;
-  private readonly WS_AUTH_TIMEOUT_MS = 5000;
+  // Status do MCP nativo é por polling HTTP (sem push) — intervalo de
+  // atualização do card de conexão; independente do polling de ticks.
+  private readonly STATUS_POLL_INTERVAL_MS = 5000;
+  private readonly STATUS_FETCH_TIMEOUT_MS = 10000;
+  // Ticks também são por polling HTTP (MCP nativo não tem push) — um
+  // intervalo por símbolo inscrito, espelhando DEFAULT_POLL_INTERVAL_MS
+  // documentado em mt5-mcp-config.ts.
+  private readonly TICK_POLL_INTERVAL_MS = 1500;
+  private tickPollTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  // Book de ofertas também é por polling HTTP (MCP nativo não tem push) —
+  // mesmo intervalo de subscribeTicks, já que ambos são dados de mercado
+  // ao vivo.
+  private readonly ORDER_BOOK_POLL_INTERVAL_MS = 1500;
+  private orderBookPollTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  // Evita disparar um novo fetch do mesmo símbolo enquanto o anterior ainda está em andamento.
+  private orderBookFetchInFlight: Set<string> = new Set();
 
   // Cache de dados para manter estado entre remontagens de componentes
   private ordersCache: Map<number, MT5Order> = new Map();
@@ -62,103 +94,25 @@ class MT5Service {
     'Erro ao obter dados de gráfico',
   ];
 
-  constructor() {
-    this.loadConfig();
-  }
-
-  /**
-   * Carregar configuração do localStorage
-   */
-  private loadConfig() {
-    // Verificar se está no ambiente do navegador
-    if (typeof window === 'undefined') {
-      return;
-    }
-    
-    const config = localStorage.getItem('mt5-config');
-    if (config) {
-      try {
-        const parsed = JSON.parse(config);
-        this.pythonServerUrl = parsed.pythonServerUrl || 'ws://localhost:8766';
-      } catch (error) {
-        console.error('Failed to load MT5 config:', error);
-      }
-    }
-  }
+  constructor() {}
 
   /**
    * Obter estado atual da conexão
    */
   getConnectionState(): MT5ConnectionStatus {
-    console.log('[MT5 SERVICE] getConnectionState chamado - Estado:', this.connectionState.state, 'WebSocket:', this.ws?.readyState);
     return { ...this.connectionState };
   }
 
   /**
-   * Obter estado do WebSocket (para sincronização de estado)
+   * Consulta o status do MT5 MCP nativo (server-side, sem senha) e atualiza
+   * o estado da conexão. Em caso de sucesso, inicia o polling periódico que
+   * mantém o card de conexão atualizado (o MCP nativo não tem push).
    */
-  getWebSocketReadyState(): number | undefined {
-    const readyState = this.ws?.readyState;
-    console.log('[MT5 SERVICE] getWebSocketReadyState chamado - readyState:', readyState, 'this.ws:', this.ws);
-    return readyState;
-  }
-
-  /**
-   * Busca um token efêmero de uso único para o handshake do WebSocket.
-   * A sessão vem do cookie HttpOnly (credentials same-origin); o token nunca
-   * é logado, guardado em localStorage nem colocado na URL do WebSocket.
-   */
-  private async fetchWsToken(): Promise<string> {
-    let response: Response;
-    try {
-      response = await fetch('/api/auth/ws-token', {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        signal: AbortSignal.timeout(this.WS_TOKEN_FETCH_TIMEOUT_MS),
-      });
-    } catch {
-      throw new Error('Falha ao obter token de autenticação do MT5 Bridge');
-    }
-
-    if (response.status === 401) {
-      throw new Error('Sessão expirada — faça login novamente para conectar ao MT5');
-    }
-    if (response.status === 503) {
-      throw new Error('Autenticação do MT5 Bridge não configurada no servidor');
-    }
-    if (!response.ok) {
-      throw new Error(`Falha ao obter token de autenticação (HTTP ${response.status})`);
-    }
-
-    const body = await response.json().catch(() => null);
-    if (!body || typeof body.token !== 'string' || body.token.length === 0) {
-      throw new Error('Resposta inválida ao obter token de autenticação');
-    }
-    return body.token;
-  }
-
-  /**
-   * Conectar ao servidor Python do MT5. Chamadas concorrentes compartilham a
-   * mesma Promise para impedir que um AUTH_OK de um socket resolva outro.
-   */
-  async connect(config?: Partial<MT5Config>): Promise<boolean> {
-    if (
-      this.ws?.readyState === WebSocket.OPEN &&
-      this.wsAuthenticated
-    ) {
-      return true;
-    }
+  async connect(): Promise<boolean> {
     if (this.connectPromise) {
       return this.connectPromise;
     }
-
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    const attempt = this.connectInternal(config);
+    const attempt = this.connectInternal();
     this.connectPromise = attempt;
     try {
       return await attempt;
@@ -169,220 +123,126 @@ class MT5Service {
     }
   }
 
-  private async connectInternal(config?: Partial<MT5Config>): Promise<boolean> {
+  private async connectInternal(): Promise<boolean> {
     const generation = this.connectionGeneration;
-    // Zerar this.ws antes de fechar o socket antigo garante que o onclose
-    // dele não toque no estado da nova tentativa nem feche o socket novo.
-    const oldWs = this.ws;
-    if (oldWs && oldWs.readyState !== WebSocket.CLOSED) {
-      this.ws = null;
-      oldWs.close();
-    }
-    this.wsAuthenticated = false;
+    this.connectionState = { ...this.connectionState, state: 'CONNECTING', isConnected: false, lastError: undefined };
+    this.emit('state', this.connectionState);
 
-    if (config && (config.login || config.password || config.server)) {
-      this.lastConfig = config as MT5Config;
-    }
-
-    // eslint-disable-next-line no-console
-    console.log('Tentando conectar ao MT5 Bridge:', this.pythonServerUrl);
-
-    // Token novo a cada (re)conexão — é de uso único e expira em segundos
-    let wsToken: string;
-    try {
-      wsToken = await this.fetchWsToken();
-    } catch (error) {
-      if (generation !== this.connectionGeneration) {
-        throw new Error('Conexão com o MT5 cancelada');
-      }
-      const message = error instanceof Error ? error.message : 'Falha ao obter token de autenticação';
-      // eslint-disable-next-line no-console
-      console.warn('MT5:', message);
-      this.connectionState.state = 'ERROR';
-      this.connectionState.isConnected = false;
-      this.connectionState.lastError = message;
-      this.emit('state', this.connectionState);
-      throw error;
-    }
-
-    // disconnect() pode ocorrer enquanto fetchWsToken() aguarda a rede.
+    const ok = await this.refreshMcpStatus(generation);
     if (generation !== this.connectionGeneration) {
-      throw new Error('Conexão com o MT5 cancelada');
+      return false;
     }
 
-    return new Promise((resolve, reject) => {
-      let socket: WebSocket;
-      try {
-        socket = new WebSocket(this.pythonServerUrl);
-        this.ws = socket;
-      } catch (error) {
-        this.connectionState.state = 'ERROR';
-        this.connectionState.isConnected = false;
-        this.connectionState.lastError = error instanceof Error ? error.message : 'Unknown error';
-        this.emit('state', this.connectionState);
-        reject(error);
-        return;
-      }
+    if (ok && !this.statusPollTimer) {
+      this.statusPollTimer = setInterval(() => {
+        void this.refreshMcpStatus(this.connectionGeneration);
+      }, this.STATUS_POLL_INTERVAL_MS);
+    }
+    return ok;
+  }
 
-      let settled = false;
-      let authTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Busca /api/mt5/mcp/status e aplica o resultado ao estado local. Nunca lança — só atualiza connectionState. */
+  private async refreshMcpStatus(generation: number): Promise<boolean> {
+    let response: Response;
+    try {
+      response = await fetch('/api/mt5/mcp/status', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      if (generation !== this.connectionGeneration) return false;
+      this.setErrorState('Falha de rede ao consultar o status do MT5 MCP nativo');
+      return false;
+    }
 
-      const clearAuthTimer = () => {
-        if (authTimer) {
-          clearTimeout(authTimer);
-          authTimer = null;
-        }
-      };
+    if (generation !== this.connectionGeneration) return false;
 
-      const failBeforeAuth = (message: string) => {
-        if (settled) return;
-        settled = true;
-        clearAuthTimer();
-        if (this.ws === socket) {
-          this.wsAuthenticated = false;
-          this.connectionState.state = 'ERROR';
-          this.connectionState.isConnected = false;
-          this.connectionState.lastError = message;
-          this.emit('state', this.connectionState);
-        }
-        try {
-          socket.close();
-        } catch {
-          // socket já fechado
-        }
-        reject(new Error(message));
-      };
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) ||
+        `Falha ao consultar o status do MT5 MCP nativo (HTTP ${response.status})`;
+      this.setErrorState(message);
+      return false;
+    }
 
-      const completeAuth = () => {
-        if (settled || this.ws !== socket) return;
-        settled = true;
-        clearAuthTimer();
-        this.wsAuthenticated = true;
-        this.reconnectAttempts = 0;
+    const data = body.data as {
+      accountInfo?: MT5AccountInfo | null;
+      accountError?: { message?: string };
+    };
+    this.connectionState = {
+      state: 'CONNECTED',
+      isConnected: true,
+      accountInfo: data.accountInfo ?? undefined,
+      lastError: data.accountError?.message,
+    };
+    this.emit('state', this.connectionState);
+    return true;
+  }
 
-        // eslint-disable-next-line no-console
-        console.log('MT5 WebSocket conectado e autenticado');
-        this.connectionState.state = 'CONNECTING';
-        this.connectionState.isConnected = true;
-        this.emit('state', this.connectionState);
-
-        // Só enviar LOGIN depois do AUTH_OK
-        if (config) {
-          this.sendLogin(config);
-        } else {
-          // eslint-disable-next-line no-console
-          console.warn('Nenhuma configuração fornecida para login');
-        }
-        resolve(true);
-      };
-
-      socket.onopen = () => {
-        // Primeira mensagem obrigatória: AUTH com token efêmero. Envio direto
-        // para nunca passar pelo logger de send().
-        socket.send(JSON.stringify({ type: 'AUTH', data: { token: wsToken } }));
-        authTimer = setTimeout(
-          () => failBeforeAuth('Timeout na autenticação do MT5 Bridge'),
-          this.WS_AUTH_TIMEOUT_MS
-        );
-      };
-
-      socket.onmessage = (event) => {
-        if (!settled) {
-          try {
-            const message = JSON.parse(event.data as string) as { type?: string };
-            if (message.type === 'AUTH_OK') {
-              completeAuth();
-              return;
-            }
-          } catch {
-            failBeforeAuth('Resposta inválida durante autenticação do MT5 Bridge');
-            return;
-          }
-          failBeforeAuth('MT5 Bridge respondeu antes de confirmar autenticação');
-          return;
-        }
-
-        this.handleMessage(event.data);
-      };
-
-      socket.onerror = () => {
-        if (!settled) {
-          failBeforeAuth('WebSocket connection error');
-        }
-      };
-
-      socket.onclose = () => {
-        clearAuthTimer();
-        const wasAuthenticated = this.ws === socket && this.wsAuthenticated;
-        if (!settled) {
-          settled = true;
-          reject(new Error('Conexão fechada antes da autenticação com o MT5 Bridge'));
-        }
-
-        // Eventos atrasados de socket antigo não podem alterar a tentativa atual.
-        if (this.ws !== socket) return;
-
-        this.ws = null;
-        this.wsAuthenticated = false;
-        this.connectionState.isConnected = false;
-
-        // Falha de autenticação permanece ERROR e não entra em retry automático.
-        if (!wasAuthenticated) {
-          if (this.connectionState.state !== 'ERROR') {
-            this.connectionState.state = 'ERROR';
-            this.connectionState.lastError = 'Conexão fechada antes da autenticação com o MT5 Bridge';
-            this.emit('state', this.connectionState);
-          }
-          return;
-        }
-
-        const wasManualDisconnect = this.reconnectAttempts > this.maxReconnectAttempts;
-        this.connectionState.state = 'DISCONNECTED';
-        this.emit('state', this.connectionState);
-
-        if (!wasManualDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          const reconnectGeneration = this.connectionGeneration;
-          this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            if (reconnectGeneration !== this.connectionGeneration) return;
-            this.connect(this.lastConfig ?? undefined).catch((err) => {
-              // eslint-disable-next-line no-console
-              console.warn('Reconexão MT5 falhou:', err instanceof Error ? err.message : err);
-            });
-          }, this.reconnectDelay);
-        }
-      };
-    });
+  private setErrorState(message: string): void {
+    this.connectionState = { state: 'ERROR', isConnected: false, lastError: message };
+    this.emit('state', this.connectionState);
   }
 
   /**
-   * Desconectar do servidor Python
+   * Checagem SOMENTE LEITURA de elegibilidade de trading (AutoTrading/conta),
+   * via /api/mt5/mcp/trading-eligibility. Nunca referencia nem abre um
+   * caminho de envio de ordem — usada só para a UI decidir se mostra algo
+   * como habilitado/desabilitado em fases futuras.
+   */
+  async checkTradingEligibility(): Promise<{ tradeAllowed: boolean; reason?: string }> {
+    try {
+      const response = await fetch('/api/mt5/mcp/trading-eligibility', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body?.success) {
+        return {
+          tradeAllowed: false,
+          reason: body?.error?.message || 'Não foi possível verificar elegibilidade de trading',
+        };
+      }
+      return body.data as { tradeAllowed: boolean; reason?: string };
+    } catch {
+      return { tradeAllowed: false, reason: 'Falha de rede ao verificar elegibilidade de trading' };
+    }
+  }
+
+  /**
+   * Desconectar (encerra o polling de status local — não afeta a sessão do
+   * MCP nativo mantida server-side nem o terminal MT5).
    */
   disconnect(): void {
-    // Invalida fetch/handshake pendente e qualquer reconexão já agendada.
+    // Invalida qualquer refreshMcpStatus() em andamento.
     this.connectionGeneration++;
-    this.reconnectAttempts = this.maxReconnectAttempts + 1;
-    this.wsAuthenticated = false;
-
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    // Permite uma nova conexão manual; a tentativa antiga continuará vinculada
-    // à geração anterior e não poderá criar/autenticar um novo socket.
     this.connectPromise = null;
 
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    if (this.statusPollTimer) {
+      clearInterval(this.statusPollTimer);
+      this.statusPollTimer = null;
     }
 
-    this.connectionState.state = 'DISCONNECTED';
-    this.connectionState.isConnected = false;
-    this.connectionState.lastError = undefined;
+    this.connectionState = { state: 'DISCONNECTED', isConnected: false, lastError: undefined };
     this.emit('state', this.connectionState);
+
+    // Parar polling de ticks — senão os timers seguem chamando o MCP nativo
+    // mesmo com o card mostrando "desconectado".
+    for (const timer of this.tickPollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.tickPollTimers.clear();
+
+    // Parar polling de book de ofertas pelo mesmo motivo dos ticks.
+    for (const timer of this.orderBookPollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.orderBookPollTimers.clear();
+    this.orderBookFetchInFlight.clear();
+    this.subscribedOrderBooks.clear();
 
     // Limpar caches ao desconectar
     this.ordersCache.clear();
@@ -421,31 +281,9 @@ class MT5Service {
   }
 
   /**
-   * Enviar comando de login para o servidor Python
-   */
-  private sendLogin(config: Partial<MT5Config>): void {
-    const loginNumber = config.login ? Number(config.login) : undefined;
-    const message = {
-      type: 'LOGIN',
-      data: {
-        login: loginNumber,
-        password: config.password,
-        server: config.server,
-        path: config.path,
-      },
-    };
-    // eslint-disable-next-line no-console
-    console.log('Enviando mensagem LOGIN:', {
-      type: message.type,
-      login: loginNumber,
-      server: config.server,
-      hasPassword: !!config.password,
-    });
-    this.send(message);
-  }
-
-  /**
-   * Enviar mensagem para o servidor Python
+   * Enviar mensagem para o bridge Python legado — `this.ws` nunca é
+   * atribuído, então isto sempre no-opa (só loga aviso). Mantido porque
+   * `optionsService.ts` ainda chama este método; nada mais no app o faz.
    */
   send(message: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -457,510 +295,6 @@ class MT5Service {
       // eslint-disable-next-line no-console
       console.warn('MT5: send() skipped — WebSocket not connected. ReadyState:', this.ws?.readyState);
     }
-  }
-
-  /**
-   * Processar mensagem recebida do servidor Python
-   */
-  private handleMessage(data: string): void {
-    try {
-      const message: MT5WebSocketMessage = JSON.parse(data);
-      
-      // Ignorar mensagens sem tipo ou com tipo inválido
-      if (!message.type) {
-        // eslint-disable-next-line no-console
-        console.warn('Mensagem recebida sem tipo:', data);
-        return;
-      }
-      
-      // Ignorar mensagens com data vazio/inválido para ERROR
-      if (message.type === 'ERROR') {
-        const data = message.data;
-        const isEmpty = !data || 
-          (typeof data === 'object' && Object.keys(data).length === 0) ||
-          (typeof data === 'string' && data.trim() === '');
-        if (isEmpty) {
-          // eslint-disable-next-line no-console
-          console.warn('ERRO VAZIO DETECTADO E BLOQUEADO - mensagem ignorada:', data);
-          return;
-        }
-      }
-      
-      // Log apenas para mensagens importantes (não TICK que é muito frequente)
-      if (message.type !== 'TICK' && message.type !== 'ACCOUNT') {
-        // eslint-disable-next-line no-console
-        console.log('[MT5 SERVICE] Processando mensagem tipo:', message.type, 'Data:', JSON.stringify(message.data));
-      }
-      
-      switch (message.type) {
-        case 'STATE':
-          this.handleStateMessage(message.data);
-          break;
-        case 'TICK':
-          this.handleTickMessage(message.data);
-          break;
-        case 'POSITION':
-          this.handlePositionMessage(message.data);
-          break;
-        case 'ORDER':
-          this.handleOrderMessage(message.data);
-          break;
-        case 'TRADE':
-          this.handleTradeMessage(message.data);
-          break;
-        case 'ACCOUNT':
-          this.handleAccountMessage(message.data);
-          break;
-        case 'ORDER_RESULT':
-          this.handleOrderResultMessage(message.data);
-          break;
-        case 'ORDERBOOK':
-          this.handleOrderBookMessage(message.data);
-          break;
-        case 'CHART_DATA': {
-          const chartData = message.data as MT5ChartData;
-          const requestId = (chartData as any)?.requestId;
-          const emitSymbol = message.symbol ?? chartData?.symbol;
-          const emitTimeframe = message.timeframe ?? chartData?.timeframe;
-          // eslint-disable-next-line no-console
-          console.log('[MT5] Mensagem CHART_DATA recebida:', emitSymbol);
-          if (!emitSymbol || !emitTimeframe) {
-            // eslint-disable-next-line no-console
-            console.warn('[MT5] CHART_DATA missing symbol/timeframe — response will not resolve pending getChartData()');
-          }
-          const rawCandles = chartData?.candles ?? chartData ?? [];
-          const candles: MT5Candle[] = (Array.isArray(rawCandles) ? rawCandles : []).map((c: any) => ({
-            time: typeof c.time === 'number' ? c.time : new Date(c.time).getTime() / 1000,
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-            volume: Number(c.volume || c.tick_volume || 0),
-          }));
-          this.emit('chartData', { requestId, symbol: emitSymbol, timeframe: emitTimeframe, candles });
-          break;
-        }
-        case 'ERROR':
-          // Validar e processar mensagem de erro
-          const errData = message.data;
-          const isEmptyErr = !errData ||
-            (typeof errData === 'object' && Object.keys(errData).length === 0) ||
-            (typeof errData === 'string' && errData.trim() === '');
-
-          if (isEmptyErr) {
-            // eslint-disable-next-line no-console
-            console.warn('MT5 error vazio ignorado');
-            return;
-          }
-
-          // Validar se tem conteúdo útil antes de processar
-          let hasValidError = false;
-          if (typeof errData === 'string' && errData.trim() !== '') {
-            hasValidError = true;
-          } else if (typeof errData === 'object' && Object.keys(errData).length > 0) {
-            // Verificar se pelo menos uma propriedade tem valor não-vazio
-            hasValidError = Object.values(errData).some(val =>
-              val !== null && val !== undefined && val !== ''
-            );
-          }
-
-          if (!hasValidError) {
-            // eslint-disable-next-line no-console
-            console.warn('MT5 error sem conteúdo válido - ignorando');
-            return;
-          }
-
-          this.handleErrorMessage(message.data);
-          break;
-        case 'SYMBOLS':
-          this.emit('symbols', message.data);
-          break;
-        case 'SYMBOL_INFO':
-          this.emit('symbolInfo', message.data);
-          break;
-        case 'EQUITIES':
-          this.emit('equities', message.data);
-          break;
-        default:
-          // eslint-disable-next-line no-console
-          console.warn('Unknown message type:', message.type);
-      }
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to parse MT5 message:', error, 'Data:', data);
-    }
-  }
-
-  /**
-   * Processar mensagem de estado
-   */
-  private handleStateMessage(data: any): void {
-    // Validar estado recebido
-    const newState = data.state;
-    
-    // Ignorar mensagens de estado vazias ou inválidas
-    if (!newState || typeof newState !== 'string') {
-      // eslint-disable-next-line no-console
-      console.warn('Mensagem STATE inválida ignorada:', data);
-      return;
-    }
-    
-    // Estados válidos
-    const validStates: string[] = ['CONNECTED', 'CONNECTING', 'DISCONNECTED', 'ERROR'];
-    if (!validStates.includes(newState)) {
-      // eslint-disable-next-line no-console
-      console.warn('Estado MT5 inválido ignorado:', newState);
-      return;
-    }
-    
-    // NÃO mudar para DISCONNECTED se o WebSocket ainda estiver conectado
-    if (newState === 'DISCONNECTED' && this.ws?.readyState === WebSocket.OPEN) {
-      // eslint-disable-next-line no-console
-      console.log('Ignorando estado DISCONNECTED - WebSocket ainda está conectado (readyState:', this.ws.readyState, ')');
-      return;
-    }
-    
-    // eslint-disable-next-line no-console
-    console.log('Estado MT5 atualizado:', newState);
-    
-    // Só atualizar e emitir se o estado realmente mudou
-    if (this.connectionState.state !== newState) {
-      this.connectionState = {
-        ...this.connectionState,
-        state: newState as 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'ERROR',
-        accountInfo: data.accountInfo,
-      };
-      this.emit('state', this.connectionState);
-    }
-  }
-
-  /**
-   * Converter tipo numérico de ordem para string
-   */
-  private orderTypeToString(type: number): string {
-    const typeMap: { [key: number]: string } = {
-      0: 'BUY',
-      1: 'SELL',
-      2: 'BUY_LIMIT',
-      3: 'SELL_LIMIT',
-      4: 'BUY_STOP',
-      5: 'SELL_STOP',
-      6: 'BUY_STOP_LIMIT',
-      7: 'SELL_STOP_LIMIT',
-    };
-    return typeMap[type] || 'BUY';
-  }
-
-  /**
-   * Converter estado numérico de ordem para string
-   */
-  private orderStateToString(state: number): string {
-    const stateMap: { [key: number]: string } = {
-      0: 'STARTED',
-      1: 'PLACED',
-      2: 'CANCELED',
-      3: 'PARTIAL',
-      4: 'FILLED',
-      5: 'REJECTED',
-      6: 'EXPIRED',
-    };
-    return stateMap[state] || 'PLACED';
-  }
-
-  /**
-   * Converter tipo numérico de trade para string
-   */
-  private tradeTypeToString(type: number): 'BUY' | 'SELL' {
-    return type === 0 ? 'BUY' : 'SELL';
-  }
-
-  /**
-   * Processar mensagem de tick
-   */
-  private handleTickMessage(data: any): void {
-    const tick: MT5Tick = {
-      symbol: data.symbol,
-      time: new Date(data.time),
-      bid: data.bid,
-      ask: data.ask,
-      last: data.last,
-      volume: data.volume,
-      volumeReal: data.volumeReal,
-      timeMsc: data.timeMsc,
-      flags: data.flags,
-      volumeDiff: data.volumeDiff,
-      previousClose: data.previousClose,
-      change: data.change,
-      changePercent: data.changePercent,
-    };
-    this.emit('tick', tick);
-  }
-
-  /**
-   * Processar mensagem de posição
-   */
-  private handlePositionMessage(data: any): void {
-    const position: MT5Position = {
-      ticket: data.ticket,
-      time: new Date(data.time),
-      timeMsc: data.timeMsc,
-      timeUpdate: new Date(data.timeUpdate),
-      timeUpdateMsc: data.timeUpdateMsc,
-      type: data.type === 0 ? 'BUY' : 'SELL',
-      magic: data.magic,
-      identifier: data.identifier,
-      reason: data.reason,
-      volume: data.volume,
-      priceOpen: data.priceOpen,
-      sl: data.sl,
-      tp: data.tp,
-      priceCurrent: data.priceCurrent,
-      swap: data.swap,
-      profit: data.profit,
-      symbol: data.symbol,
-      comment: data.comment,
-      externalId: data.externalId,
-    };
-    
-    // Adicionar/atualizar no cache
-    this.positionsCache.set(position.ticket, position);
-    this.emit('position', position);
-  }
-
-  /**
-   * Processar mensagem de ordem
-   */
-  private handleOrderMessage(data: any): void {
-    const order: MT5Order = {
-      ticket: data.ticket,
-      timeSetup: new Date(data.timeSetup),
-      timeSetupMsc: data.timeSetupMsc,
-      timeDone: new Date(data.timeDone),
-      timeDoneMsc: data.timeDoneMsc,
-      type: data.type,  // MT5 envia como número (0=BUY, 1=SELL, etc.)
-      state: data.state,  // MT5 envia como número (0=STARTED, 1=PLACED, etc.)
-      expiration: new Date(data.expiration),
-      volume: data.volume,
-      priceCurrent: data.priceCurrent,
-      priceStopLimit: data.priceStopLimit,
-      priceSl: data.priceSl,
-      priceTp: data.priceTp,
-      comment: data.comment,
-      position: data.position,
-      positionBy: data.positionBy,
-      volumeInitial: data.volumeInitial,
-      volumeCurrent: data.volumeCurrent,
-      priceOpen: data.priceOpen,
-      magic: data.magic,
-      reason: data.reason,
-      symbol: data.symbol,
-    };
-    
-    // Adicionar/atualizar no cache
-    this.ordersCache.set(order.ticket, order);
-    this.emit('order', order);
-  }
-
-  /**
-   * Processar mensagem de trade
-   */
-  private handleTradeMessage(data: any): void {
-    // Converter timestamp (Python envia em segundos, JavaScript precisa em milissegundos)
-    let tradeTime: Date;
-    if (typeof data.time === 'number') {
-      // Se já está em milissegundos (valor muito grande), usar diretamente
-      if (data.time > 10000000000) {
-        tradeTime = new Date(data.time);
-      } else {
-        // Se está em segundos, multiplicar por 1000
-        tradeTime = new Date(data.time * 1000);
-      }
-    } else if (data.time instanceof Date) {
-      tradeTime = data.time;
-    } else {
-      tradeTime = new Date();
-    }
-    
-    const trade: MT5Trade = {
-      ticket: data.ticket,
-      order: data.order,
-      time: tradeTime,
-      timeMsc: data.timeMsc,
-      type: data.type,  // MT5 envia como número (0=BUY, 1=SELL)
-      entry: data.entry,
-      magic: data.magic,
-      reason: data.reason,
-      position: data.position,
-      positionBy: data.positionBy,
-      volume: data.volume,
-      price: data.price,
-      profit: data.profit,
-      commission: data.commission,
-      swap: data.swap,
-      symbol: data.symbol,
-      comment: data.comment,
-    };
-    
-    // Adicionar/atualizar no cache
-    this.tradesCache.set(trade.ticket, trade);
-    this.emit('trade', trade);
-  }
-
-  /**
-   * Processar mensagem de conta
-   */
-  private handleAccountMessage(data: any): void {
-    const accountInfo: MT5AccountInfo = {
-      login: data.login,
-      tradeMode: data.tradeMode,
-      leverage: data.leverage,
-      limitOrders: data.limitOrders,
-      marginSoCall: data.marginSoCall,
-      marginSoMode: data.marginSoMode,
-      currency: data.currency,
-      balance: data.balance,
-      credit: data.credit,
-      profit: data.profit,
-      equity: data.equity,
-      margin: data.margin,
-      marginFree: data.marginFree,
-      marginLevel: data.marginLevel,
-      marginInitial: data.marginInitial,
-      marginMaintenance: data.marginMaintenance,
-      marginRequired: data.marginRequired,
-      assets: data.assets,
-      liabilities: data.liabilities,
-      commissionBlocked: data.commissionBlocked,
-      name: data.name,
-      server: data.server,
-      currencyDigits: data.currencyDigits,
-      fifoClose: data.fifoClose,
-    };
-    
-    // Se é a primeira mensagem de conta (conexão inicial), salvar o saldo inicial do dia
-    if (!this.initialDailyBalance && data.balance) {
-      this.initialDailyBalance = data.balance;
-      // eslint-disable-next-line no-console
-      console.log('Saldo inicial do dia definido:', this.initialDailyBalance);
-    }
-    
-    this.connectionState.accountInfo = accountInfo;
-    this.emit('account', accountInfo);
-  }
-
-  /**
-   * Processar mensagem de resultado de ordem
-   */
-  private handleOrderResultMessage(data: any): void {
-    // eslint-disable-next-line no-console
-    console.log('=== ORDER RESULT ===');
-    // eslint-disable-next-line no-console
-    console.log('Resultado:', data);
-    
-    // Verificar se a ordem foi bem-sucedida
-    const isSuccess = data.retcode === 10009; // TRADE_RETCODE_DONE
-    
-    if (isSuccess) {
-      // Emitir dados brutos diretamente para que o spreadOrderService possa acessar data.retcode, etc.
-      this.emit('order', data);
-      
-      // Se é uma ordem de fechamento de posição (tem 'position' no resultado)
-      // e o comentário indica fechamento, remover a posição do cache
-      if (data.position && data.comment && data.comment.includes('Fechamento')) {
-        // eslint-disable-next-line no-console
-        console.log('Detectado fechamento de posição:', data.position);
-        
-        // Remover do cache de posições
-        if (this.positionsCache.has(data.position)) {
-          // eslint-disable-next-line no-console
-          console.log('Removendo posição do cache:', data.position);
-          this.positionsCache.delete(data.position);
-          
-          // Emitir evento específico de posição fechada
-          this.emit('positionClosed', data.position);
-        }
-      }
-    } else {
-      this.emit('error', {
-        type: 'order',
-        message: data.comment || `Erro ao executar ordem (código: ${data.retcode})`,
-        data,
-      });
-    }
-  }
-
-  /**
-   * Processar mensagem de book de ofertas
-   */
-  private handleOrderBookMessage(data: any): void {
-    this.emit('orderbook', data);
-  }
-
-  /**
-   * Processar mensagem de erro
-   */
-  private handleErrorMessage(data: any): void {
-    // Ignorar erros vazios ou sem conteúdo útil
-    if (!data || 
-        (typeof data === 'object' && Object.keys(data).length === 0) ||
-        (typeof data === 'string' && data.trim() === '')) {
-      // eslint-disable-next-line no-console
-      console.warn('MT5 error vazio ignorado no handleErrorMessage - não emitindo evento de erro');
-      return;
-    }
-    
-    // Verificar se é um erro válido antes de logar
-    let hasValidError = false;
-    if (typeof data === 'string' && data.trim() !== '') {
-      hasValidError = true;
-    } else if (typeof data === 'object' && Object.keys(data).length > 0) {
-      // Verificar se pelo menos uma propriedade tem valor
-      hasValidError = Object.values(data).some(val => 
-        val !== null && val !== undefined && val !== ''
-      );
-    }
-    
-    if (!hasValidError) {
-      // eslint-disable-next-line no-console
-      console.warn('MT5 error sem conteúdo válido - ignorando');
-      return;
-    }
-    
-    // eslint-disable-next-line no-console
-    console.warn('MT5 error received:', data);
-    
-    // Tratar erro vazio ou sem mensagem
-    let errorMessage = 'Unknown error';
-    if (typeof data === 'string') {
-      errorMessage = data;
-    } else if (data && typeof data === 'object') {
-      errorMessage = data.message || data.error || data.code || JSON.stringify(data);
-    } else if (data) {
-      errorMessage = String(data);
-    }
-    
-    // NÃO mudar estado para ERROR se for erro específico que não afeta a conexão
-    const shouldChangeState =
-      data?.type !== 'order' &&
-      !this.NON_FATAL_ERROR_CODES.has(data?.code) &&
-      !this.NON_FATAL_ERROR_SUBSTRINGS.some((s) => errorMessage?.includes(s)) &&
-      !(this.ws?.readyState === WebSocket.OPEN && data?.code);
-    
-    if (shouldChangeState) {
-      this.connectionState.state = 'ERROR';
-      this.connectionState.lastError = errorMessage;
-      this.emit('state', this.connectionState);
-    } else {
-      // eslint-disable-next-line no-console
-      console.log('Erro específico detectado - NÃO mudando estado para ERROR:', data?.code || errorMessage);
-    }
-    
-    this.emit('error', {
-      message: errorMessage,
-      type: data?.type,
-      code: data?.code,
-      ...data,
-    });
   }
 
   /**
@@ -994,7 +328,10 @@ class MT5Service {
   }
 
   /**
-   * Inscrever em ticks de símbolo
+   * Inscrever em ticks de símbolo — via MCP nativo server-side
+   * (GET /api/mt5/mcp/tick?symbol=...), por polling (sem push). Somente
+   * leitura. Preserva o contrato de evento existente ('tick') para não
+   * exigir mudanças nos componentes consumidores.
    */
   subscribeTicks(symbol: string): void {
     // Evitar inscrições duplicadas
@@ -1002,10 +339,9 @@ class MT5Service {
       return;
     }
     this.subscribedSymbols.add(symbol);
-    this.send({
-      type: 'SUBSCRIBE_TICKS',
-      data: { symbol },
-    });
+    void this.fetchTickFromMcp(symbol);
+    const timer = setInterval(() => void this.fetchTickFromMcp(symbol), this.TICK_POLL_INTERVAL_MS);
+    this.tickPollTimers.set(symbol, timer);
   }
 
   /**
@@ -1013,144 +349,540 @@ class MT5Service {
    */
   unsubscribeTicks(symbol: string): void {
     this.subscribedSymbols.delete(symbol);
-    this.send({
-      type: 'UNSUBSCRIBE_TICKS',
-      data: { symbol },
-    });
+    const timer = this.tickPollTimers.get(symbol);
+    if (timer) {
+      clearInterval(timer);
+      this.tickPollTimers.delete(symbol);
+    }
   }
 
-  /** Obter lista completa de símbolos (comando já suportado pelo bridge). */
+  private async fetchTickFromMcp(symbol: string): Promise<void> {
+    // Símbolo pode ter sido desinscrito enquanto o fetch anterior aguardava a rede.
+    if (!this.subscribedSymbols.has(symbol)) return;
+
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/tick?symbol=${encodeURIComponent(symbol)}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'tick', symbol, message: 'Falha de rede ao consultar tick' });
+      return;
+    }
+
+    if (!this.subscribedSymbols.has(symbol)) return;
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar tick (HTTP ${response.status})`;
+      this.emit('error', { type: 'tick', symbol, message, code: body?.error?.code });
+      return;
+    }
+
+    if (!body.data?.tick) return;
+    const tick = this.normalizeMcpTick(symbol, body.data.tick);
+    this.emit('tick', tick);
+  }
+
+  /** Tolerante a snake_case (atributos brutos do MetaTrader5) e camelCase — schema do MCP nativo não é documentado. */
+  private normalizeMcpTick(symbol: string, raw: any): MT5Tick {
+    return {
+      symbol: raw.symbol ?? symbol,
+      time: this.parseMcpTimestamp(raw.time),
+      bid: raw.bid ?? 0,
+      ask: raw.ask ?? 0,
+      last: raw.last ?? 0,
+      volume: raw.volume ?? 0,
+      volumeReal: raw.volume_real ?? raw.volumeReal ?? 0,
+      timeMsc: raw.time_msc ?? raw.timeMsc ?? 0,
+      flags: raw.flags ?? 0,
+      volumeDiff: raw.volume_diff ?? raw.volumeDiff ?? 0,
+      previousClose: raw.previous_close ?? raw.previousClose,
+      change: raw.change,
+      changePercent: raw.change_percent ?? raw.changePercent,
+      digits: raw.digits,
+    };
+  }
+
+  /**
+   * Obter lista completa de símbolos — via MCP nativo server-side
+   * (GET /api/mt5/mcp/symbols). Somente leitura, requisição única (sem
+   * polling — símbolos não mudam como tick). Preserva o contrato de evento
+   * existente ('symbols', lista completa emitida uma vez) para não exigir
+   * mudanças nos consumidores (ex.: Mt5InstrumentCatalog).
+   */
   getSymbols(): void {
-    this.send({ type: 'GET_SYMBOLS', data: { includeDetails: true } });
+    void this.fetchSymbolsFromMcp();
+  }
+
+  private async fetchSymbolsFromMcp(): Promise<void> {
+    let response: Response;
+    try {
+      response = await fetch('/api/mt5/mcp/symbols', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'symbols', message: 'Falha de rede ao consultar símbolos' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar símbolos (HTTP ${response.status})`;
+      this.emit('error', { type: 'symbols', message, code: body?.error?.code });
+      return;
+    }
+
+    const rawSymbols = Array.isArray(body.data?.symbols) ? body.data.symbols : [];
+    this.emit('symbols', rawSymbols);
   }
 
   /**
    * Obter informações de símbolo
    */
+  /**
+   * Obter informações de um símbolo — via MCP nativo server-side
+   * (GET /api/mt5/mcp/symbol-info). Somente leitura, requisição única.
+   * Preserva o contrato de evento existente ('symbolInfo') para não exigir
+   * mudanças no consumidor (Mt5InstrumentCatalog.getInstrument).
+   */
   getSymbolInfo(symbol: string): void {
-    this.send({
-      type: 'GET_SYMBOL_INFO',
-      data: { symbol },
-    });
+    void this.fetchSymbolInfoFromMcp(symbol);
+  }
+
+  private async fetchSymbolInfoFromMcp(symbol: string): Promise<void> {
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/symbol-info?symbol=${encodeURIComponent(symbol)}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'symbolInfo', symbol, message: 'Falha de rede ao consultar informações do símbolo' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) ||
+        `Falha ao consultar informações do símbolo (HTTP ${response.status})`;
+      this.emit('error', { type: 'symbolInfo', symbol, message, code: body?.error?.code });
+      return;
+    }
+
+    if (!body.data?.symbolInfo) return;
+    const info = this.normalizeMcpSymbolInfo(symbol, body.data.symbolInfo);
+    this.emit('symbolInfo', info);
+  }
+
+  /** Garante o campo symbol (fallback pro symbol solicitado) — Mt5InstrumentCatalog.mapInstrument já faz o mapeamento de campos a partir daqui, então não precisa de normalização pesada como positions/orders. */
+  private normalizeMcpSymbolInfo(symbol: string, raw: any): Record<string, unknown> {
+    return { ...raw, symbol: raw?.symbol ?? raw?.name ?? symbol };
   }
 
   /**
-   * Obter posições
+   * Obter posições — via MCP nativo server-side (GET /api/mt5/mcp/positions).
+   * Somente leitura: não envia, modifica nem fecha posição/ordem. Preserva o
+   * contrato de eventos existente ('position'/'positionClosed') para não
+   * exigir mudanças nos componentes consumidores.
    */
   getPositions(symbol?: string): void {
-    this.send({
-      type: 'GET_POSITIONS',
-      data: { symbol },
-    });
+    void this.fetchPositionsFromMcp(symbol);
   }
 
-  /**
-   * Obter informações da conta
-   */
-  getAccountInfo(): void {
-    this.send({
-      type: 'GET_ACCOUNT_INFO',
-      data: {},
-    });
+  private async fetchPositionsFromMcp(symbol?: string): Promise<void> {
+    let response: Response;
+    try {
+      const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+      response = await fetch(`/api/mt5/mcp/positions${query}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'positions', message: 'Falha de rede ao consultar posições' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar posições (HTTP ${response.status})`;
+      this.emit('error', { type: 'positions', message, code: body?.error?.code });
+      return;
+    }
+
+    const rawPositions = Array.isArray(body.data?.positions) ? body.data.positions : [];
+    const seenTickets = new Set<number>();
+    for (const raw of rawPositions) {
+      const position = this.normalizeMcpPosition(raw);
+      seenTickets.add(position.ticket);
+      this.positionsCache.set(position.ticket, position);
+      this.emit('position', position);
+    }
+
+    // Posições que não vieram mais nesta consulta foram fechadas/alteradas fora do WR.
+    for (const ticket of Array.from(this.positionsCache.keys())) {
+      if (!seenTickets.has(ticket)) {
+        this.positionsCache.delete(ticket);
+        this.emit('positionClosed', ticket);
+      }
+    }
+  }
+
+  /** Tolerante a snake_case (atributos brutos do MetaTrader5) e camelCase — schema do MCP nativo não é documentado. */
+  private normalizeMcpPosition(raw: any): MT5Position {
+    return {
+      ticket: raw.ticket,
+      time: this.parseMcpTimestamp(raw.time),
+      timeMsc: raw.time_msc ?? raw.timeMsc ?? 0,
+      timeUpdate: this.parseMcpTimestamp(raw.time_update ?? raw.timeUpdate),
+      timeUpdateMsc: raw.time_update_msc ?? raw.timeUpdateMsc ?? 0,
+      type: raw.type === 0 || raw.type === 'BUY' ? 'BUY' : 'SELL',
+      magic: raw.magic ?? 0,
+      identifier: raw.identifier ?? 0,
+      reason: raw.reason ?? 0,
+      volume: raw.volume ?? 0,
+      priceOpen: raw.price_open ?? raw.priceOpen ?? 0,
+      sl: raw.sl ?? 0,
+      tp: raw.tp ?? 0,
+      priceCurrent: raw.price_current ?? raw.priceCurrent ?? 0,
+      swap: raw.swap ?? 0,
+      profit: raw.profit ?? 0,
+      symbol: raw.symbol,
+      comment: raw.comment,
+      externalId: raw.external_id ?? raw.externalId,
+    };
+  }
+
+  /** Aceita epoch em segundos/ms, string ou Date — schema do MCP nativo não é documentado. */
+  private parseMcpTimestamp(value: unknown): Date {
+    if (value instanceof Date) return value;
+    if (typeof value === 'number') return new Date(value > 10000000000 ? value : value * 1000);
+    if (typeof value === 'string') {
+      const numeric = Number(value);
+      if (!Number.isNaN(numeric) && value.trim() !== '') {
+        return new Date(numeric > 10000000000 ? numeric : numeric * 1000);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
+    }
+    return new Date(0);
   }
 
   /**
    * Obter ordens
    */
+  /**
+   * Obter ordens — via MCP nativo server-side (GET /api/mt5/mcp/orders).
+   * Somente leitura, requisição única. Preserva o contrato de evento/cache
+   * existente ('order'/ordersCache) para não exigir mudanças no consumidor
+   * (MT5Orders.tsx).
+   */
   getOrders(symbol?: string): void {
-    this.send({
-      type: 'GET_ORDERS',
-      data: { symbol },
-    });
+    void this.fetchOrdersFromMcp(symbol);
+  }
+
+  private async fetchOrdersFromMcp(symbol?: string): Promise<void> {
+    let response: Response;
+    try {
+      const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+      response = await fetch(`/api/mt5/mcp/orders${query}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'orders', message: 'Falha de rede ao consultar ordens' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar ordens (HTTP ${response.status})`;
+      this.emit('error', { type: 'orders', message, code: body?.error?.code });
+      return;
+    }
+
+    const rawOrders = Array.isArray(body.data?.orders) ? body.data.orders : [];
+    for (const raw of rawOrders) {
+      const order = this.normalizeMcpOrder(raw);
+      this.ordersCache.set(order.ticket, order);
+      this.emit('order', order);
+    }
+  }
+
+  /** Tolerante a snake_case (atributos brutos do MetaTrader5) e camelCase — schema do MCP nativo não é documentado. */
+  private normalizeMcpOrder(raw: any): MT5Order {
+    return {
+      ticket: raw.ticket,
+      timeSetup: this.parseMcpTimestamp(raw.time_setup ?? raw.timeSetup),
+      timeSetupMsc: raw.time_setup_msc ?? raw.timeSetupMsc ?? 0,
+      timeDone: this.parseMcpTimestamp(raw.time_done ?? raw.timeDone),
+      timeDoneMsc: raw.time_done_msc ?? raw.timeDoneMsc ?? 0,
+      type: Number(raw.type),
+      state: Number(raw.state),
+      expiration: this.parseMcpTimestamp(raw.time_expiration ?? raw.expiration),
+      volume: raw.volume ?? raw.volume_initial ?? raw.volumeInitial ?? 0,
+      priceCurrent: raw.price_current ?? raw.priceCurrent ?? 0,
+      priceStopLimit: raw.price_stoplimit ?? raw.priceStopLimit ?? 0,
+      priceSl: raw.sl ?? raw.priceSl ?? 0,
+      priceTp: raw.tp ?? raw.priceTp ?? 0,
+      comment: raw.comment,
+      position: raw.position_id ?? raw.position ?? 0,
+      positionBy: raw.position_by_id ?? raw.positionBy ?? 0,
+      volumeInitial: raw.volume_initial ?? raw.volumeInitial ?? 0,
+      volumeCurrent: raw.volume_current ?? raw.volumeCurrent ?? 0,
+      priceOpen: raw.price_open ?? raw.priceOpen ?? 0,
+      magic: raw.magic ?? 0,
+      reason: raw.reason ?? 0,
+      symbol: raw.symbol,
+    };
   }
 
   /**
-   * Obter lista de ações (equities) da B3
+   * Obter lista de ações (equities) da B3 — reusa o catálogo de símbolos já
+   * migrado (GET /api/mt5/mcp/symbols) e filtra com filterB3EquityNames
+   * (mesmo critério do bridge Python legado, definida logo abaixo da
+   * classe). Sem capability/rota nova — se o MCP nativo não incluir o
+   * campo `path`, degrada para lista vazia (nunca inclui símbolo errado,
+   * só deixa de incluir).
    */
   getEquities(): void {
-    this.send({
-      type: 'GET_EQUITIES',
-      data: {},
-    });
+    void this.fetchEquitiesFromSymbols();
+  }
+
+  private async fetchEquitiesFromSymbols(): Promise<void> {
+    let response: Response;
+    try {
+      response = await fetch('/api/mt5/mcp/symbols', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'equities', message: 'Falha de rede ao consultar ações da B3' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar ações da B3 (HTTP ${response.status})`;
+      this.emit('error', { type: 'equities', message, code: body?.error?.code });
+      return;
+    }
+
+    const rawSymbols = Array.isArray(body.data?.symbols) ? body.data.symbols : [];
+    const equities = filterB3EquityNames(rawSymbols);
+    this.emit('equities', { equities });
   }
 
   /**
    * Obter histórico de trades
    */
+  /**
+   * Obter histórico de deals — via MCP nativo server-side
+   * (GET /api/mt5/mcp/history). Somente leitura, requisição única. Preserva
+   * o contrato de evento/cache existente ('trade'/tradesCache) para não
+   * exigir mudanças no consumidor (MT5Orders.tsx).
+   */
   getHistory(fromDate?: Date, toDate?: Date, symbol?: string): void {
-    this.send({
-      type: 'GET_HISTORY',
-      data: {
-        fromDate: fromDate?.toISOString(),
-        toDate: toDate?.toISOString(),
-        symbol,
-      },
+    void this.fetchHistoryFromMcp(fromDate, toDate, symbol);
+  }
+
+  private async fetchHistoryFromMcp(fromDate?: Date, toDate?: Date, symbol?: string): Promise<void> {
+    const params = new URLSearchParams();
+    if (fromDate) params.set('from', fromDate.toISOString());
+    if (toDate) params.set('to', toDate.toISOString());
+    if (symbol) params.set('symbol', symbol);
+    const query = params.toString();
+
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/history${query ? `?${query}` : ''}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'history', message: 'Falha de rede ao consultar histórico' });
+      return;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar histórico (HTTP ${response.status})`;
+      this.emit('error', { type: 'history', message, code: body?.error?.code });
+      return;
+    }
+
+    const rawDeals = Array.isArray(body.data?.deals) ? body.data.deals : [];
+    for (const raw of rawDeals) {
+      const trade = this.normalizeMcpTrade(raw);
+      this.tradesCache.set(trade.ticket, trade);
+      this.emit('trade', trade);
+    }
+  }
+
+  /** Tolerante a snake_case (atributos brutos do MetaTrader5) e camelCase — schema do MCP nativo não é documentado. */
+  private normalizeMcpTrade(raw: any): MT5Trade {
+    return {
+      ticket: raw.ticket,
+      order: raw.order,
+      time: this.parseMcpTimestamp(raw.time),
+      timeMsc: raw.time_msc ?? raw.timeMsc ?? 0,
+      type: Number(raw.type),
+      entry: Number(raw.entry),
+      magic: raw.magic ?? 0,
+      reason: raw.reason ?? 0,
+      position: raw.position_id ?? raw.position ?? 0,
+      positionBy: raw.position_by_id ?? raw.positionBy ?? 0,
+      volume: raw.volume ?? 0,
+      price: raw.price ?? 0,
+      profit: raw.profit ?? 0,
+      commission: raw.commission ?? 0,
+      swap: raw.swap ?? 0,
+      symbol: raw.symbol,
+      comment: raw.comment,
+    };
+  }
+
+  /** Emite o evento 'error' compatível e SEMPRE lança em seguida — nunca retorna normalmente. */
+  private emitAndThrowTradingUnavailable(type: string, extra: Record<string, unknown> = {}): never {
+    this.emit('error', {
+      type,
+      code: Mt5TradingUnavailableError.CODE,
+      message: Mt5TradingUnavailableError.MESSAGE,
+      ...extra,
     });
+    throw new Mt5TradingUnavailableError();
   }
 
   /**
-   * Enviar ordem
+   * Enviar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
    */
-  sendOrder(request: MT5OrderRequest): void {
-    this.send({
-      type: 'SEND_ORDER',
-      data: request,
-    });
+  sendOrder(request: MT5OrderRequest): never {
+    void request;
+    return this.emitAndThrowTradingUnavailable('sendOrder');
   }
 
   /**
-   * Modificar ordem
+   * Modificar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
    */
-  modifyOrder(ticket: number, request: Partial<MT5OrderRequest>): void {
-    this.send({
-      type: 'MODIFY_ORDER',
-      data: { ticket, ...request },
-    });
+  modifyOrder(ticket: number, request: Partial<MT5OrderRequest>): never {
+    void request;
+    return this.emitAndThrowTradingUnavailable('modifyOrder', { ticket });
   }
 
   /**
-   * Cancelar ordem
+   * Cancelar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
    */
-  cancelOrder(ticket: number): void {
-    this.send({
-      type: 'CANCEL_ORDER',
-      data: { ticket },
-    });
+  cancelOrder(ticket: number): never {
+    return this.emitAndThrowTradingUnavailable('cancelOrder', { ticket });
   }
 
   /**
-   * Fechar posição
+   * Fechar posição — indisponível nesta versão, nunca migrado ao MCP nativo.
    */
-  closePosition(ticket: number, volume?: number): void {
-    this.send({
-      type: 'CLOSE_POSITION',
-      data: { ticket, volume },
-    });
+  closePosition(ticket: number, volume?: number): never {
+    void volume;
+    return this.emitAndThrowTradingUnavailable('closePosition', { ticket });
   }
 
   /**
-   * Fechar posição por posição oposta
+   * Fechar posição por posição oposta — indisponível nesta versão, nunca migrado ao MCP nativo.
    */
-  closePositionBy(ticket: number, ticketBy: number): void {
-    this.send({
-      type: 'CLOSE_POSITION_BY',
-      data: { ticket, ticketBy },
-    });
+  closePositionBy(ticket: number, ticketBy: number): never {
+    return this.emitAndThrowTradingUnavailable('closePositionBy', { ticket, ticketBy });
   }
 
   /**
-   * Obter book de ofertas (order book) - uma única vez
+   * Obter book de ofertas (uma única vez) — via MCP nativo server-side
+   * (GET /api/mt5/mcp/order-book). Somente leitura, requisição única.
+   * Preserva o contrato de evento existente ('orderbook'); subscribeOrderBook/
+   * unsubscribeOrderBook também migrados, via polling (ver abaixo).
    */
   getOrderBook(symbol: string): void {
-    this.send({
-      type: 'GET_ORDER_BOOK',
-      data: { symbol },
-    });
+    void this.fetchOrderBookFromMcp(symbol);
+  }
+
+  private async fetchOrderBookFromMcp(symbol: string): Promise<string | undefined> {
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/order-book?symbol=${encodeURIComponent(symbol)}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      this.emit('error', { type: 'orderBook', symbol, message: 'Falha de rede ao consultar book de ofertas' });
+      return undefined;
+    }
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao consultar book de ofertas (HTTP ${response.status})`;
+      const code = body?.error?.code as string | undefined;
+      this.emit('error', { type: 'orderBook', symbol, message, code });
+      return code;
+    }
+
+    if (!body.data?.book) return undefined;
+    const book = this.normalizeMcpOrderBook(symbol, body.data.book);
+    this.emit('orderbook', book);
+    return undefined;
   }
 
   /**
-   * Inscrever em atualizações contínuas do book de ofertas
-   * Igual a subscribeTicks() - o backend enviará atualizações automaticamente
+   * Tolerante a snake_case — se o MCP nativo já devolver {bids,asks},
+   * repassa direto; se devolver lista plana com campo `type` (convenção
+   * MetaTrader5 real, confirmada em python/mt5_bridge.py:993-1005:
+   * BOOK_TYPE_SELL=1/BOOK_TYPE_SELL_MARKET=3 são ask, BOOK_TYPE_BUY=2/
+   * BOOK_TYPE_BUY_MARKET=4 são bid), separa aqui. Tipo desconhecido é
+   * ignorado — não entra em bids nem em asks, nunca classificado por
+   * default.
+   */
+  private normalizeMcpOrderBook(symbol: string, raw: any): Record<string, unknown> {
+    if (raw && (Array.isArray(raw.bids) || Array.isArray(raw.asks))) {
+      return { symbol: raw.symbol ?? symbol, bids: raw.bids ?? [], asks: raw.asks ?? [], digits: raw.digits };
+    }
+    const entries: any[] = Array.isArray(raw) ? raw : [];
+    const bids: Array<{ price: number; volume: number }> = [];
+    const asks: Array<{ price: number; volume: number }> = [];
+    const BID_TYPES = new Set<unknown>([2, 4, 'BUY', 'BOOK_TYPE_BUY', 'BUY_MARKET', 'BOOK_TYPE_BUY_MARKET']);
+    const ASK_TYPES = new Set<unknown>([1, 3, 'SELL', 'BOOK_TYPE_SELL', 'SELL_MARKET', 'BOOK_TYPE_SELL_MARKET']);
+    for (const entry of entries) {
+      const type = entry?.type;
+      const price = Number(entry?.price ?? 0);
+      const volume = Number(entry?.volume ?? entry?.volume_dbl ?? 0);
+      if (BID_TYPES.has(type)) {
+        bids.push({ price, volume });
+      } else if (ASK_TYPES.has(type)) {
+        asks.push({ price, volume });
+      }
+      // tipo desconhecido: ignorado, não entra em bids nem asks
+    }
+    return { symbol, bids, asks };
+  }
+
+  /**
+   * Inscrever em atualizações contínuas do book de ofertas — via MCP nativo
+   * server-side (GET /api/mt5/mcp/order-book), por polling (sem push).
+   * Somente leitura. Reusa fetchOrderBookFromMcp/normalizeMcpOrderBook (já
+   * migrados) sem alterá-los; preserva o contrato de evento existente
+   * ('orderbook') para não exigir mudanças em OrderBook.tsx.
    */
   subscribeOrderBook(symbol: string): void {
     // Evitar inscrições duplicadas
@@ -1158,10 +890,9 @@ class MT5Service {
       return;
     }
     this.subscribedOrderBooks.add(symbol);
-    this.send({
-      type: 'SUBSCRIBE_ORDER_BOOK',
-      data: { symbol },
-    });
+    void this.pollOrderBookOnce(symbol);
+    const timer = setInterval(() => void this.pollOrderBookOnce(symbol), this.ORDER_BOOK_POLL_INTERVAL_MS);
+    this.orderBookPollTimers.set(symbol, timer);
   }
 
   /**
@@ -1169,55 +900,122 @@ class MT5Service {
    */
   unsubscribeOrderBook(symbol: string): void {
     this.subscribedOrderBooks.delete(symbol);
-    this.send({
-      type: 'UNSUBSCRIBE_ORDER_BOOK',
-      data: { symbol },
-    });
+    const timer = this.orderBookPollTimers.get(symbol);
+    if (timer) {
+      clearInterval(timer);
+      this.orderBookPollTimers.delete(symbol);
+    }
+  }
+
+  /** Guarda inscrição + evita overlap de requests; chama fetchOrderBookFromMcp sem alterá-lo. */
+  private async pollOrderBookOnce(symbol: string): Promise<void> {
+    if (!this.subscribedOrderBooks.has(symbol)) return; // desinscrito antes desta rodada
+    if (this.orderBookFetchInFlight.has(symbol)) return; // fetch anterior ainda em andamento
+    this.orderBookFetchInFlight.add(symbol);
+    try {
+      const errorCode = await this.fetchOrderBookFromMcp(symbol);
+      if (errorCode === 'MT5_MCP_TOOL_MISSING' || errorCode === 'MT5_MCP_NOT_CONFIGURED') {
+        this.unsubscribeOrderBook(symbol); // erro permanente — não adianta continuar tentando
+      }
+    } finally {
+      this.orderBookFetchInFlight.delete(symbol);
+    }
   }
 
   /**
-   * Busca dados históricos de candles para um símbolo e timeframe
+   * Busca dados históricos de candles para um símbolo e timeframe — via MCP
+   * nativo server-side (GET /api/mt5/mcp/rates). Somente leitura. Mesma
+   * assinatura pública/contrato de retorno de antes, para não exigir
+   * mudanças nos consumidores (CandlestickChart, DashboardTab,
+   * historicalDataService, optionsService).
    */
-  getChartData(symbol: string, timeframe: string, count: number = 200, range?: Readonly<{ from: string; to: string }>): Promise<MT5Candle[]> {
-    return new Promise((resolve, reject) => {
-      if (!this.ws || this.connectionState.state !== 'CONNECTED') {
-        reject(new Error('MT5 não conectado'));
-        return;
-      }
+  async getChartData(symbol: string, timeframe: string, count: number = 200, range?: Readonly<{ from: string; to: string }>): Promise<MT5Candle[]> {
+    const params = new URLSearchParams({ symbol, timeframe, count: String(count) });
+    if (range) {
+      params.set('from', range.from);
+      params.set('to', range.to);
+    }
 
-      const requestId = ++this.chartRequestId;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const cleanup = () => {
-        if (timeout) clearTimeout(timeout);
-        this.off('chartData', onChartData);
-        this.off('error', onError);
-      };
-      const fail = (error: Error) => { cleanup(); reject(error); };
-      const onChartData = (data: { requestId?: number; symbol: string; timeframe: string; candles: MT5Candle[] }) => {
-        if (data.requestId !== requestId || data.symbol !== symbol || data.timeframe !== timeframe) return;
-        cleanup();
-        resolve(data.candles);
-      };
-      const onError = (data: any) => {
-        if (data?.requestId !== requestId || data?.symbol !== symbol || data?.timeframe !== timeframe) return;
-        const code = typeof data.code === 'string' ? data.code : 'CHART_DATA_ERROR';
-        fail(new Error(`${code}: ${data.message || 'Falha ao buscar chart data'}`));
-      };
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/rates?${params.toString()}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error('Falha de rede ao consultar dados de gráfico');
+    }
 
-      this.on('chartData', onChartData);
-      this.on('error', onError);
-      timeout = setTimeout(() => fail(new Error('Timeout ao buscar chart data')), 60000);
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success) {
+      const message =
+        (body?.error?.message as string | undefined) || `Falha ao buscar chart data (HTTP ${response.status})`;
+      throw new Error(message);
+    }
 
-      try {
-        this.send({
-          type: 'GET_CHART_DATA',
-          data: { requestId, symbol, timeframe, count, ...(range ? { from: range.from, to: range.to } : {}) },
-        });
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error('Falha ao solicitar chart data'));
-      }
-    });
+    const rawRates = Array.isArray(body.data?.rates) ? body.data.rates : [];
+    return rawRates.map((raw: any) => this.normalizeMcpCandle(raw));
   }
+
+  /** Tolerante a snake_case (atributos brutos do MetaTrader5) — mesma conversão de tempo já usada no handler CHART_DATA legado. */
+  private normalizeMcpCandle(raw: any): MT5Candle {
+    return {
+      time: typeof raw.time === 'number' ? raw.time : new Date(raw.time).getTime() / 1000,
+      open: Number(raw.open),
+      high: Number(raw.high),
+      low: Number(raw.low),
+      close: Number(raw.close),
+      volume: Number(raw.volume ?? raw.tick_volume ?? raw.real_volume ?? 0),
+    };
+  }
+}
+
+/** Mesmos sufixos excluídos do bridge Python legado (python/mt5_bridge.py:506) — classes fracionárias/especiais, não ações normais. */
+const EQUITY_EXCLUDED_SUFFIXES = [
+  'F',
+  'ED',
+  'EF',
+  'P',
+  'PC',
+  'PD',
+  'PE',
+  'PG',
+  'PH',
+  'PJ',
+  'PL',
+  'PM',
+  'PN',
+  'PP',
+  'PQ',
+  'PR',
+  'PS',
+  'PT',
+  'PU',
+  'PV',
+  'PW',
+  'PX',
+  'PY',
+];
+
+/**
+ * Filtro puro de ações (equities) da B3 — mesma lógica antes inline em
+ * fetchEquitiesFromSymbols(), extraída para ser testável isoladamente (sem
+ * fetch, sem instância).
+ */
+export function filterB3EquityNames(rawSymbols: readonly unknown[]): string[] {
+  return rawSymbols
+    .filter((raw: any) => {
+      const path: string = raw?.path ?? '';
+      const name: string = raw?.name ?? raw?.symbol ?? '';
+      return (
+        path.startsWith('BOVESPA\\A VISTA\\') &&
+        !EQUITY_EXCLUDED_SUFFIXES.some((suffix) => name.endsWith(suffix)) &&
+        name.length <= 6
+      );
+    })
+    .map((raw: any) => raw.name ?? raw.symbol)
+    .sort();
 }
 
 // Export singleton instance for backward compatibility

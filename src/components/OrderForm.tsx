@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { ArrowUp, ArrowDown, AlertTriangle, Loader2 } from 'lucide-react';
-import { mt5Service } from '@/services/mt5Service';
+import { mt5Service, Mt5TradingUnavailableError } from '@/services/mt5Service';
 import { MT5Tick } from '@/types/mt5';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -19,7 +19,6 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
   const [price, setPrice] = useState<number | undefined>();
   const [stopLoss, setStopLoss] = useState<number | undefined>();
   const [takeProfit, setTakeProfit] = useState<number | undefined>();
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [tickData, setTickData] = useState<MT5Tick | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [symbolError, setSymbolError] = useState<string | null>(null);
@@ -83,29 +82,12 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
       }
     };
 
-    const handleOrderResult = (result: any) => {
-      setIsSubmitting(false);
-      if (result.type === 'success') {
-        toast.success(result.message || 'Ordem enviada com sucesso!');
-        // Solicitar atualização das posições e da conta após ordem bem-sucedida
-        setTimeout(() => {
-          console.log('[OrderForm] Solicitando atualização de posições e conta após ordem bem-sucedida');
-          mt5Service.getPositions();
-          mt5Service.getAccountInfo();
-        }, 500);
-      } else {
-        toast.error(result.message || 'Erro ao executar ordem');
-      }
-    };
-
     mt5Service.on('tick', handleTick);
     mt5Service.on('error', handleError);
-    mt5Service.on('order', handleOrderResult);
 
     return () => {
       mt5Service.off('tick', handleTick);
       mt5Service.off('error', handleError);
-      mt5Service.off('order', handleOrderResult);
     };
   }, [inputSymbol, orderType, orderStyle, price]);
 
@@ -121,51 +103,7 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Validações
-    if (!inputSymbol) {
-      toast.error('Por favor, insira um símbolo.');
-      return;
-    }
-
-    if (orderStyle !== 'MARKET' && !price) {
-      toast.error('Para ordens LIMIT/STOP, é necessário definir o preço.');
-      return;
-    }
-
-    setIsSubmitting(true);
-
-    // Mapear tipo de ordem para MT5
-    const mt5OrderType = orderStyle === 'MARKET'
-      ? orderType === 'BUY' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL'
-      : orderStyle === 'LIMIT'
-      ? orderType === 'BUY' ? 'ORDER_TYPE_BUY_LIMIT' : 'ORDER_TYPE_SELL_LIMIT'
-      : orderType === 'BUY' ? 'ORDER_TYPE_BUY_STOP' : 'ORDER_TYPE_SELL_STOP';
-
-    // Enviar ordem via MT5
-    const orderRequest: any = {
-      action: 'TRADE_ACTION_DEAL',
-      symbol: inputSymbol.toUpperCase(),
-      type: mt5OrderType,
-      volume: quantity,
-      sl: stopLoss,
-      tp: takeProfit,
-      comment: `WR Trading Pro - ${orderType}`,
-      deviation: 20,
-      magic: 234000,
-      typeTime: 0,
-      typeFilling: 1,
-    };
-
-    // Adicionar preço apenas se não for ordem MARKET
-    if (orderStyle !== 'MARKET' && price) {
-      orderRequest.price = price;
-    }
-
-    mt5Service.sendOrder(orderRequest);
-
-    // Mostrar mensagem de envio inicial via toast
-    toast.info(`Ordem de ${orderType === 'BUY' ? 'compra' : 'venda'} de ${inputSymbol.toUpperCase()} enviada! Aguardando confirmação...`);
+    toast.error(Mt5TradingUnavailableError.MESSAGE);
   };
 
   return (
@@ -404,32 +342,21 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
           )}
         </div>
 
-        {/* Risk Warning */}
+        {/* Aviso persistente: trading indisponível */}
         <div className="flex items-start gap-2 bg-yellow-500/10 p-3 rounded border border-yellow-500/30">
           <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
           <p className="text-xs text-yellow-200 font-space">
-            Trading envolve riscos significativos. Certifique-se de entender os riscos antes de operar.
+            {Mt5TradingUnavailableError.MESSAGE}
           </p>
         </div>
 
         {/* Submit Button */}
         <button
           type="submit"
-          disabled={isSubmitting || isLoading || !inputSymbol}
-          className={`w-full cyber-button font-bold text-lg ${
-            orderType === 'BUY'
-              ? 'cyber-button-primary'
-              : 'bg-red-600 text-white hover:bg-red-700'
-          } ${(isSubmitting || isLoading || !inputSymbol) ? 'opacity-50 cursor-not-allowed' : ''}`}
+          disabled={true}
+          className="w-full cyber-button font-bold text-lg opacity-50 cursor-not-allowed"
         >
-          {isSubmitting ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block mr-2" />
-              Enviando...
-            </>
-          ) : (
-            `${orderType === 'BUY' ? 'COMPRAR' : 'VENDER'} ${inputSymbol.toUpperCase()}`
-          )}
+          TRADING INDISPONÍVEL
         </button>
       </form>
     </div>

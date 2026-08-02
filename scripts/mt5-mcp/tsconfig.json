@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": [
+    "mt5-mcp-test.ts",
+    "../../src/lib/server/mt5-mcp-config.ts",
+    "../../src/lib/server/mt5-mcp-client.ts",
+    "../../src/lib/server/mt5-mcp-tools.ts",
+    "../../src/types/mt5-mcp.ts",
+    "../../src/app/api/mt5/mcp/**/*.ts"
+  ]
+}

@@ -13,7 +13,6 @@ export interface PilotConfig {
   readonly serviceToken: string;
   readonly spreadApiUrl: string;
   readonly volatilityApiUrl: string;
-  readonly bridgeUrl: string;
 }
 
 export function resolvePilotConfig(env: NodeJS.ProcessEnv = process.env): PilotConfig {
@@ -38,6 +37,5 @@ export function resolvePilotConfig(env: NodeJS.ProcessEnv = process.env): PilotC
     nextBaseUrl: env.WR_MCP_NEXT_BASE_URL?.trim() || 'http://127.0.0.1:3001',
     spreadApiUrl: env.WR_MCP_SPREAD_API_URL?.trim() || 'http://127.0.0.1:5000',
     volatilityApiUrl: env.WR_MCP_VOLATILITY_API_URL?.trim() || 'http://127.0.0.1:5555',
-    bridgeUrl: env.WR_MCP_BRIDGE_URL?.trim() || 'ws://127.0.0.1:8766',
   });
 }

@@ -21,6 +21,7 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
   const [selectedSymbol, setSelectedSymbol] = useState<string>(defaultSymbol);
   const [symbolInput, setSymbolInput] = useState<string>(defaultSymbol);
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -28,6 +29,8 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
 
   useEffect(() => {
     if (!selectedSymbol) return;
+
+    setErrorMessage(null); // limpar erro ao trocar de símbolo
 
     const handleOrderBook = (data: any) => {
       if (data.symbol === selectedSymbol) {
@@ -43,6 +46,7 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
         setBids(bidEntries);
         setAsks(askEntries);
         setLoading(false);
+        setErrorMessage(null); // book chegou — limpar qualquer erro anterior
 
         // Calcular spread
         if (bidEntries.length > 0 && askEntries.length > 0) {
@@ -61,6 +65,16 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
       }
     };
 
+    const handleOrderBookError = (data: any) => {
+      if (data?.type !== 'orderBook' || data?.symbol !== selectedSymbol) return;
+      setErrorMessage(typeof data.message === 'string' ? data.message : 'Book de ofertas indisponível');
+      setLoading(false);
+    };
+
+    // Registrar listeners ANTES de inscrever, para nunca perder o primeiro evento.
+    mt5Service.on('orderbook', handleOrderBook);
+    mt5Service.on('error', handleOrderBookError);
+
     // Verificar se está conectado antes de solicitar
     const connectionState = mt5Service.getConnectionState();
     if (connectionState.state === 'CONNECTED') {
@@ -70,10 +84,10 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
     } else {
       console.log('MT5 não está conectado, aguardando...');
     }
-    mt5Service.on('orderbook', handleOrderBook);
 
     return () => {
       mt5Service.off('orderbook', handleOrderBook);
+      mt5Service.off('error', handleOrderBookError);
       // Desinscrever do book ao desmontar componente
       if (selectedSymbol) {
         mt5Service.unsubscribeOrderBook(selectedSymbol);
@@ -175,7 +189,7 @@ export default function OrderBook({ defaultSymbol = 'EURUSD' }: OrderBookProps) 
           />
         </h3>
         <div className="text-gray-400 font-space text-sm text-center py-8">
-          {loading ? 'Buscando dados...' : 'Sem dados disponíveis para este ativo'}
+          {errorMessage ? errorMessage : loading ? 'Buscando dados...' : 'Sem dados disponíveis para este ativo'}
         </div>
       </div>
     );

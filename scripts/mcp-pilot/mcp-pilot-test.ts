@@ -12,13 +12,14 @@ import { buildCvmRichTools } from '../../src/mcp/pilot/tools/cvm-rich';
 import { buildMonitoringTools } from '../../src/mcp/pilot/tools/monitoring';
 import { buildAgentActionTools } from '../../src/mcp/pilot/tools/agent-actions';
 import { buildPortfolioTools } from '../../src/mcp/pilot/tools/portfolio';
-import { createBridgeClient, type WebSocketLike } from '../../src/mcp/pilot/clients/mt5-bridge';
 import { buildMarketLiveTools } from '../../src/mcp/pilot/tools/market-live';
 import { buildTradeTools } from '../../src/mcp/pilot/tools/trade';
 import { buildMlDirectionalTools } from '../../src/mcp/pilot/tools/ml-directional';
 import { Mt5DemoBroker } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createBridgeSnapshot } from '../../src/mcp/pilot/execution/bridge-snapshot';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
+import { Mt5McpError } from '../../src/lib/server/mt5-mcp-client';
+import { Mt5TradingUnavailableError } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createRiskPolicyService } from '../../src/application/risk-policy';
 import { createOrderIntentService } from '../../src/application/order-intent';
 import { McpTradeService, type MarketSnapshotPort } from '../../src/application/mcp-trade/service';
@@ -137,116 +138,31 @@ async function proxyToolsTests(): Promise<void> {
 }
 
 async function portfolioToolsTests(): Promise<void> {
-  const calls: { type: string; data?: Record<string, unknown> }[] = [];
-  const stubBridge = {
-    request: async (type: string, data?: Record<string, unknown>) => { calls.push({ type, data }); return { fixture: true }; },
-  };
-  const tools = buildPortfolioTools(stubBridge);
+  // Sem MT5_MCP_API_KEY: getMt5McpConfig() retorna null e os wrappers
+  // nativos falham fail-closed com Mt5McpError('MT5_MCP_NOT_CONFIGURED')
+  // antes de qualquer chamada de rede — nunca positions/saldo/candles
+  // inventados. Nenhum outro teste deste arquivo define MT5_MCP_API_KEY,
+  // então não há estado para salvar/restaurar.
+  delete process.env.MT5_MCP_API_KEY;
+  const tools = buildPortfolioTools();
   assert.ok(tools.every((t) => t.privilege === 'free'));
-  await tools.find((t) => t.name === 'portfolio.get_positions')!.handler({});
-  assert.equal(calls[0].type, 'GET_POSITIONS_SNAPSHOT');
-  await tools.find((t) => t.name === 'portfolio.get_account')!.handler({});
-  assert.equal(calls[1].type, 'GET_ACCOUNT_INFO');
-  await tools.find((t) => t.name === 'orders.list_open')!.handler({});
-  assert.equal(calls[2].type, 'GET_ORDERS_SNAPSHOT');
-  await tools.find((t) => t.name === 'orders.history')!.handler({});
-  assert.equal(calls[3].type, 'GET_HISTORY_SNAPSHOT');
-  await tools.find((t) => t.name === 'market.get_live_candles')!.handler({ symbol: 'PETR4', timeframe: 'H1', count: 100 });
-  assert.equal(calls[4].type, 'GET_CHART_DATA');
-  assert.deepEqual(calls[4].data, { symbol: 'PETR4', timeframe: 'H1', count: 100 });
-  await tools.find((t) => t.name === 'market.get_order_book')!.handler({ symbol: 'PETR4' });
-  assert.equal(calls[5].type, 'GET_ORDER_BOOK');
 
-  const down = { request: async () => { throw new ReadModelError('MT5_DISCONNECTED', 'MT5 não conectado'); } };
-  const result = await buildPortfolioTools(down).find((t) => t.name === 'portfolio.get_account')!.handler({});
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /MT5_DISCONNECTED/);
-  console.log('tools de conta/ordens/candles/book: OK (stub bridge; erro claro sem MT5)');
-}
-
-/**
- * Socket fake para testar `createBridgeClient` sem servidor WS real —
- * implementa só o subconjunto de `WebSocketLike` usado pelo cliente,
- * disparando os handlers registrados via `addEventListener` manualmente.
- */
-class FakeSocket implements WebSocketLike {
-  readyState = 0; // CONNECTING
-  readonly sent: string[] = [];
-  readonly listeners: Record<'open' | 'message' | 'close' | 'error', Array<(event: any) => void>> = {
-    open: [], message: [], close: [], error: [],
-  };
-  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.listeners[type].push(listener);
+  async function assertNotConfigured(name: string, args: Record<string, unknown> = {}): Promise<void> {
+    const result = await tools.find((t) => t.name === name)!.handler(args);
+    assert.equal(result.isError, true, `${name} deveria falhar sem MT5_MCP_API_KEY`);
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.code, 'MT5_MCP_NOT_CONFIGURED', `${name}: código esperado MT5_MCP_NOT_CONFIGURED, recebido ${payload.code}`);
+    assert.equal(typeof payload.message, 'string');
   }
-  removeEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
-  }
-  send(data: string): void { this.sent.push(data); }
-  close(): void { this.readyState = 3; }
-  private emit(type: 'open' | 'message' | 'close' | 'error', event: any): void {
-    for (const listener of [...this.listeners[type]]) listener(event);
-  }
-  open(): void { this.readyState = 1; this.emit('open', {}); }
-  message(payload: unknown): void { this.emit('message', { data: JSON.stringify(payload) }); }
-}
 
-async function flush(times = 1): Promise<void> {
-  for (let i = 0; i < times; i++) await new Promise<void>((r) => setImmediate(r));
-}
+  await assertNotConfigured('portfolio.get_positions');
+  await assertNotConfigured('portfolio.get_account');
+  await assertNotConfigured('orders.list_open');
+  await assertNotConfigured('orders.history');
+  await assertNotConfigured('market.get_live_candles', { symbol: 'PETR4', timeframe: 'H1', count: 100 });
+  await assertNotConfigured('market.get_order_book', { symbol: 'PETR4' });
 
-async function bridgeSerializationTests(): Promise<void> {
-  const prevSecret = process.env.WR_WS_TOKEN_SECRET;
-  process.env.WR_WS_TOKEN_SECRET = 'x'.repeat(40);
-  try {
-    const sockets: FakeSocket[] = [];
-    const bridge = createBridgeClient('ws://fake-bridge', {
-      socketFactory: () => { const s = new FakeSocket(); sockets.push(s); return s; },
-    });
-
-    // Dois requests de tipos DISTINTOS disparados em paralelo — o bug
-    // corrigido era: um ERROR chegando durante o 1º rejeitava a Promise
-    // errada se ambos estivessem "em voo" ao mesmo tempo.
-    const p1 = bridge.request('GET_ACCOUNT_INFO');
-    const p2 = bridge.request('GET_ORDER_BOOK', { symbol: 'PETR4' });
-
-    for (let i = 0; i < 20 && sockets.length === 0; i++) await flush();
-    assert.equal(sockets.length, 1, 'as duas requisições devem reusar um único socket');
-    const sock = sockets[0];
-    for (let i = 0; i < 20 && sock.listeners.open.length === 0; i++) await flush();
-    sock.open();
-    for (let i = 0; i < 20 && sock.sent.length === 0; i++) await flush();
-    assert.equal(JSON.parse(sock.sent[0]).type, 'AUTH');
-    sock.message({ type: 'AUTH_OK', data: { sub: 'mcp-pilot' } });
-
-    for (let i = 0; i < 20 && sock.sent.length < 2; i++) await flush();
-    assert.equal(sock.sent.length, 2, 'após o handshake, só o 1º request deve estar em voo (serialização)');
-    assert.equal(JSON.parse(sock.sent[1]).type, 'GET_ACCOUNT_INFO');
-
-    // Prova de serialização: o 2º request NÃO foi enviado ainda.
-    await flush(5);
-    assert.equal(sock.sent.length, 2, 'o 2º request não pode ser enviado antes da resposta do 1º');
-
-    // ERROR chega enquanto só GET_ACCOUNT_INFO está ativo — deve rejeitar
-    // exatamente essa Promise, com o código certo.
-    sock.message({ type: 'ERROR', data: { message: 'MT5 não conectado', code: 'NOT_CONNECTED' } });
-    let firstError: unknown;
-    try { await p1; } catch (e) { firstError = e; }
-    assert.ok(firstError instanceof ReadModelError, 'p1 deve rejeitar com ReadModelError');
-    assert.equal((firstError as ReadModelError).code, 'MT5_DISCONNECTED');
-
-    // Com o 1º liberado, o 2º request (tipo diferente) é enviado e conclui normalmente.
-    for (let i = 0; i < 20 && sock.sent.length < 3; i++) await flush();
-    assert.equal(sock.sent.length, 3);
-    assert.equal(JSON.parse(sock.sent[2]).type, 'GET_ORDER_BOOK');
-    sock.message({ type: 'ORDERBOOK', data: { symbol: 'PETR4', bids: [], asks: [] } });
-    const result2 = await p2;
-    assert.deepEqual(result2, { symbol: 'PETR4', bids: [], asks: [] });
-
-    console.log('bridge MT5: serialização de requests + ERROR correlacionado à Promise ativa certa: OK');
-  } finally {
-    if (prevSecret === undefined) delete process.env.WR_WS_TOKEN_SECRET;
-    else process.env.WR_WS_TOKEN_SECRET = prevSecret;
-  }
+  console.log('tools de conta/ordens/candles/book: OK (MT5 MCP nativo, fail-closed sem MT5_MCP_API_KEY, payload sanitizado)');
 }
 
 async function marketLiveToolsTests(): Promise<void> {
@@ -838,62 +754,37 @@ async function tradeToolsTests(): Promise<void> {
 }
 
 async function mt5DemoBrokerTests(): Promise<void> {
-  const calls: Array<{ type: string; data?: Record<string, unknown> }> = [];
-  const successBridge = {
-    request: async (type: string, data?: Record<string, unknown>) => {
-      calls.push({ type, data });
-      return { order: 555, deal: 999, volume: 100, price: 31.4, retcode: 10009 };
-    },
-  };
-  const broker = new Mt5DemoBroker(successBridge);
-  const result = await broker.send({ symbol: 'PETR4', direction: 'BUY', volume: 100, stopLoss: 29, takeProfit: 33, comment: 'mcp:test-1' });
-  assert.deepEqual(result, { ok: true, ticket: 555, price: 31.4 });
-  assert.equal(calls[0].type, 'SEND_ORDER');
-  assert.deepEqual(calls[0].data, { symbol: 'PETR4', type: 'ORDER_TYPE_BUY', volume: 100, comment: 'mcp:test-1', sl: 29, tp: 33 });
+  // Mt5DemoBroker.send() é fail-closed: nunca chama o bridge, nunca monta
+  // corpo de ordem, sempre devolve {ok:false, error: MESSAGE} do contrato
+  // MT5_TRADING_UNAVAILABLE (mesma classe do app principal).
+  const broker = new Mt5DemoBroker();
+  const result = await broker.send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:d3-test' });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, Mt5TradingUnavailableError.MESSAGE);
 
-  const sellCalls: Array<{ type: string; data?: Record<string, unknown> }> = [];
-  const sellBridge = { request: async (type: string, data?: Record<string, unknown>) => { sellCalls.push({ type, data }); return { order: 1, price: 1 }; } };
-  await new Mt5DemoBroker(sellBridge).send({ symbol: 'VALE3', direction: 'SELL', volume: 50, comment: 'mcp:test-2' });
-  assert.equal(sellCalls[0].data?.type, 'ORDER_TYPE_SELL');
-  assert.equal(sellCalls[0].data?.sl, undefined, 'sl omitido quando não fornecido');
-  assert.equal(sellCalls[0].data?.tp, undefined, 'tp omitido quando não fornecido');
-
-  // Broker NUNCA relança — erro do bridge (ReadModelError) vira {ok:false, error}.
-  const failingBridge = { request: async () => { throw new ReadModelError('DEMO_ONLY', 'Execução restrita a conta DEMO (WR_TRADING_DEMO_ONLY=true).'); } };
-  const failResult = await new Mt5DemoBroker(failingBridge).send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:test-3' });
-  assert.equal(failResult.ok, false);
-  assert.match(failResult.error ?? '', /DEMO/);
-
-  // Erro genérico (não ReadModelError) também nunca relança.
-  const throwingBridge = { request: async () => { throw new Error('erro cru inesperado'); } };
-  const genericFail = await new Mt5DemoBroker(throwingBridge).send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:test-4' });
-  assert.equal(genericFail.ok, false);
-  assert.equal(genericFail.error, 'erro cru inesperado');
-
-  console.log('Mt5DemoBroker: OK (mapeamento BUY/SELL, sl/tp omitidos quando ausentes, nunca relança)');
+  console.log('Mt5DemoBroker: OK (fail-closed, bridge nunca chamado, MT5_TRADING_UNAVAILABLE)');
 }
 
 async function bridgeSnapshotTests(): Promise<void> {
-  const calls: Array<{ type: string; data?: Record<string, unknown> }> = [];
-  const bridge = {
-    request: async (type: string, data?: Record<string, unknown>) => {
-      calls.push({ type, data });
-      if (type === 'GET_ACCOUNT_INFO') return { equity: 123_456 };
-      if (type === 'GET_POSITIONS_SNAPSHOT') return { positions: [{ symbol: 'PETR4', volume: 200 }, { symbol: 'VALE3', volume: 50 }] };
-      if (type === 'GET_CHART_DATA') return { candles: [{ close: 10 }, { close: 30.5 }] };
-      throw new Error('tipo inesperado');
+  // createBridgeSnapshot ignora o bridge e chama os wrappers nativos
+  // (getAccountInfo/getPositions/getRates) — sem MT5_MCP_API_KEY,
+  // getAccountInfo() falha fail-closed com Mt5McpError('MT5_MCP_NOT_CONFIGURED')
+  // antes de qualquer chamada de rede; o bridge nunca é acionado.
+  delete process.env.MT5_MCP_API_KEY;
+  const snapshot = createBridgeSnapshot();
+  await assert.rejects(
+    snapshot.get('PETR4'),
+    (error: unknown) => {
+      assert.ok(error instanceof Mt5McpError, `esperava Mt5McpError, recebeu ${(error as Error)?.constructor?.name}`);
+      assert.equal((error as Mt5McpError).code, 'MT5_MCP_NOT_CONFIGURED');
+      return true;
     },
-  };
-  const snapshot = createBridgeSnapshot(bridge);
-  const result = await snapshot.get('PETR4');
-  assert.deepEqual(result, { referencePrice: 30.5, currentPositionQty: 200, portfolioNav: 123_456 });
-  assert.ok(calls.some((c) => c.type === 'GET_CHART_DATA' && c.data?.timeframe === 'M1' && c.data?.count === 1));
-  console.log('createBridgeSnapshot: OK (equity->portfolioNav, soma volume por símbolo, close do último candle)');
+  );
+  console.log('createBridgeSnapshot: OK (MT5 MCP nativo, fail-closed sem MT5_MCP_API_KEY, bridge nunca chamado)');
 }
 
 async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
   const cfg = resolvePilotConfig(fakeEnv({ WR_MCP_HTTP_TOKEN: TOKEN, WR_SERVICE_TOKEN: TOKEN, WR_MCP_HTTP_PORT: '0' }));
-  const stubBridge = { request: async () => ({}) };
   const stubExecution: PilotExecutionPort = { send: async () => ({ ok: true }) };
   const stubSnapshot: MarketSnapshotPort = { get: async () => ({ referencePrice: 1, currentPositionQty: 0, portfolioNav: 1 }) };
   const tradeService = new McpTradeService({
@@ -904,7 +795,7 @@ async function fullCatalogTests(prisma: PrismaClient): Promise<void> {
     ...buildCvmRichTools(createHttpJson('http://127.0.0.1:1')),
     ...buildMonitoringTools(createHttpJson('http://127.0.0.1:1')),
     ...buildAgentActionTools(createHttpJson('http://127.0.0.1:1')),
-    ...buildPortfolioTools(stubBridge),
+    ...buildPortfolioTools(),
     ...buildMarketLiveTools(createHttpJson('http://127.0.0.1:1'), createHttpJson('http://127.0.0.1:1')),
     ...buildMlDirectionalTools(prisma),
     ...buildTradeTools(tradeService),
@@ -935,7 +826,6 @@ async function main(): Promise<void> {
   configTests();
   await proxyToolsTests();
   await portfolioToolsTests();
-  await bridgeSerializationTests();
   await marketLiveToolsTests();
   await marketFindSpreadPairsTests();
   await marketLiveMt5DisconnectedTests();

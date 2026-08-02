@@ -47,7 +47,6 @@ src/app/api/
 ### Python Services
 ```
 python/
-├── mt5_bridge.py        # WebSocket :8766 — bridge MT5 ↔ frontend
 ├── spread_api.py        # Flask :5000 — API de spreads
 ├── volatility_api.py    # Flask :5555 — API de volatilidade
 ├── profitdll_bridge.py  # Bridge Profit DLL (ainda não ativo)
@@ -57,7 +56,7 @@ python/
 ### Desktop (Electron)
 ```
 electron/
-├── main.ts             # Main process: inicia Next.js + 3 serviços Python
+├── main.ts             # Main process: inicia Next.js + serviços Python (spread_api, volatility_api); MCP Pilot e ML Engine sob demanda
 ├── preload.ts           # Preload script
 └── dist/                # JavaScript compilado
 ```
@@ -73,21 +72,18 @@ Regra arquitetural: dados locais do WR Trading Pro devem ficar dentro de `wr_tra
 
 ## Como Rodar
 
-### Modo desenvolvimento (5 terminais)
+### Modo desenvolvimento (4 terminais)
 ```bash
 # Terminal 1
-python python/mt5_bridge.py
-
-# Terminal 2
 python python/spread_api.py
 
-# Terminal 3
+# Terminal 2
 python python/volatility_api.py
 
-# Terminal 4
+# Terminal 3
 python python/ml_api.py
 
-# Terminal 5
+# Terminal 4
 npm run dev
 ```
 
@@ -116,7 +112,7 @@ release/build/win-unpacked/WR Trade Pro.exe
 
 1. **ML client-side:** tabs ML (`MLPredictionsTab`, `MLModelsTab`) buscam candles via `mt5Service` client-side, não via API routes server-side
 2. **Profit DLL:** integrado como types e stub de serviço, aguardando chave de ativação da Nelogica
-3. **Electron auto-start:** `electron/main.ts` faz spawn dos 3 serviços Python automaticamente
+3. **Electron auto-start:** `electron/main.ts` faz spawn automático de `spread_api`/`volatility_api`; MCP Pilot e ML Engine são iniciados sob demanda pela aba Admin
 4. **SQLite cache:** candles histórico salvo no Prisma/SQLite via `historicalDataService.syncCandles()` / `upsertCandles()`
 5. **Static export:** projeto NÃO usa `output: 'export'` — mantém Next.js como servidor (API routes funcionam)
 6. **Dados locais:** persistência runtime fica dentro de `data/` no repositório; o banco de opções oficial é `data/options/options_data.db`

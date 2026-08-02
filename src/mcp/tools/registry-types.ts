@@ -5,6 +5,7 @@
  */
 import { z, type ZodRawShape, type ZodTypeAny } from 'zod';
 import { ReadModelError } from '../../application/read-models-v1/errors';
+import { Mt5McpError } from '../../lib/server/mt5-mcp-client';
 
 export interface McpToolContent {
   readonly type: 'text';
@@ -36,6 +37,12 @@ export function parseToolArgs<Shape extends ZodRawShape>(shape: Shape, args: Rec
 
 /** Translates a thrown error into a sanitized, stable `isError: true` tool result. */
 export function toToolError(error: unknown): McpToolResult {
+  if (error instanceof Mt5McpError) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify(error.toPayload()) }],
+    };
+  }
   if (error instanceof ReadModelError) {
     return {
       isError: true,

@@ -15,9 +15,11 @@ padrão) nenhuma ordem é enviada.
 Antes de subir o `mcp-pilot`, os seguintes processos precisam estar rodando
 (mesma ordem do modo desenvolvimento do projeto — ver `CLAUDE.md`):
 
-1. `python python/mt5_bridge.py` (WebSocket `:8766`) — com o **terminal MT5
-   aberto e logado** numa conta (idealmente DEMO). Sem isso, tools de
-   mercado/conta/trade retornam `MT5_DISCONNECTED`.
+1. **Terminal MT5 aberto e logado** numa conta (idealmente DEMO), com o
+   servidor MCP nativo ligado (Tools > Options > MCP > "Ativar servidor
+   interno") e `MT5_MCP_API_KEY` configurada no `.env`. Sem isso, tools de
+   mercado/conta/trade retornam erro classificado do MCP nativo
+   (`MT5_MCP_NOT_CONFIGURED`/`MT5_MCP_UNREACHABLE`/`MT5_DISCONNECTED`).
 2. `python python/spread_api.py` (Flask `:5000`)
 3. `python python/volatility_api.py` (Flask `:5555`)
 4. `npm run dev` — Next.js servindo em **`:3001`** (não a porta 3000 padrão;
@@ -45,9 +47,8 @@ Rode o comando duas vezes e preencha no `.env`:
   as API routes do Next (validado pelo middleware do lado do servidor
   Next.js). Não é o mesmo valor do token acima.
 
-Nunca reutilizar `WR_AUTH_SESSION_SECRET` ou `WR_WS_TOKEN_SECRET` (já
-existentes no projeto) para esses dois — são segredos de superfícies
-diferentes.
+Nunca reutilizar `WR_AUTH_SESSION_SECRET` (já existente no projeto) para
+esses dois — são segredos de superfícies diferentes.
 
 ## 3. Envs e defaults
 
@@ -60,13 +61,12 @@ diferentes.
 | `WR_MCP_NEXT_BASE_URL` | `http://127.0.0.1:3001` | Base URL do servidor Next (nota: porta `3001`, não `3000`) |
 | `WR_MCP_SPREAD_API_URL` | `http://127.0.0.1:5000` | `spread_api.py` (Flask, sem auth própria — bind loopback) |
 | `WR_MCP_VOLATILITY_API_URL` | `http://127.0.0.1:5555` | `volatility_api.py` (Flask, sem auth própria — bind loopback) |
-| `WR_MCP_BRIDGE_URL` | `ws://127.0.0.1:8766` | WebSocket do `mt5_bridge.py` |
 | `WR_MCP_TRADE_ALLOWLIST` | `PETR4,VALE3,ITUB4,BBDC4,ABEV3,WEGE3` | Símbolos B3 permitidos em `trade.propose` (via `RiskPolicy`) |
 | `WR_MCP_TRADE_MAX_NOTIONAL` | `50000` | Notional máximo por proposta |
 | `WR_MCP_TRADE_MAX_CONCENTRATION_PCT` | `20` | Concentração máxima da posição no portfólio (%) |
 | `WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR` | `10` | Rate limit de `trade.propose` por `requestedBy` (fixo em `mcp:hermes` no servidor — ver §6) |
-| `WR_TRADING_ENABLED` | `false` | Kill switch real — lido tanto pelo `OrderIntentService` (TS) quanto pelo guard em `python/mt5_bridge.py`. Só `true` habilita envio ao broker |
-| `WR_TRADING_DEMO_ONLY` | `true` | Guarda DEMO do lado Python (`mt5_bridge.py`): com `true`, ordens só são enviadas se a conta MT5 logada for DEMO |
+| `WR_TRADING_ENABLED` | `false` | Kill switch lido pelo `OrderIntentService` (TS). O envio real ao broker é fail-closed do lado TS (`Mt5DemoBroker`/`Mt5TradingUnavailableError`) independentemente deste valor — ver §8/§9 |
+| `WR_TRADING_DEMO_ONLY` | `true` | Mantida por compatibilidade; a guarda DEMO do lado Python foi removida junto com o bridge (Ponto 4) e não tem efeito atual |
 
 `spread_api.py`/`volatility_api.py` não recebem Bearer — são serviços Flask
 locais sem autenticação própria, protegidos por bind em loopback + CORS
@@ -172,10 +172,10 @@ docblock de `src/mcp/pilot/tools/trade.ts`).
 **Comitê de agentes** (`agent-actions.ts`, 4 tools, free): `agent_run.submit`,
 `agent_run.advance`, `agent_run.cancel`, `agent_run.list`
 
-**Conta/ordens/mercado ao vivo via bridge MT5** (`portfolio.ts`, 6 tools,
-free): `portfolio.get_positions`, `portfolio.get_account`,
-`orders.list_open`, `orders.history`, `market.get_live_candles`,
-`market.get_order_book`
+**Conta/ordens/mercado ao vivo via MCP nativo do MT5** (`portfolio.ts`, 6
+tools, free, wrappers de `src/lib/server/mt5-mcp-tools.ts`):
+`portfolio.get_positions`, `portfolio.get_account`, `orders.list_open`,
+`orders.history`, `market.get_live_candles`, `market.get_order_book`
 
 **Opções/spread/volatilidade via serviços Python** (`market-live.ts`, 3
 tools, free): `market.scan_options`, `market.find_spread_pairs`,
@@ -212,7 +212,7 @@ trade.propose(symbol, direction, volume, rationale, ...)
    │   fixo em "mcp:hermes" no servidor — nunca vem do argumento, ver
    │   docblock de trade.ts: evita burlar a cota trocando de "identidade")
    │
-   ├─ snapshot real via bridge MT5 (conta/posições/preço)
+   ├─ snapshot real via MCP nativo do MT5 (conta/posições/preço)
    │
    ├─ RiskPolicy.evaluate (allowlist, notional máx., concentração máx.)
    │     │
@@ -241,13 +241,12 @@ trade.approve(proposalId, confirmationCode)
    │     │     └─ kill switch ON  → intent criada (idempotente por
    │     │           proposalId) → Mt5DemoBroker.send()
    │     │              │
-   │     │              ├─ guarda DEMO Python (WR_TRADING_DEMO_ONLY):
-   │     │              │    conta não-DEMO → ordem bloqueada no bridge
-   │     │              │
-   │     │              ├─ sucesso → status=EXECUTED,
-   │     │              │    executionState=SENT, ticket do MT5
-   │     │              │
-   │     │              └─ falha/exceção → status=EXECUTION_FAILED
+   │     │              └─ fail-closed: sempre retorna {ok:false, error:
+   │     │                   Mt5TradingUnavailableError.MESSAGE} → status=
+   │     │                   EXECUTION_FAILED. Nenhuma ordem é enviada ao
+   │     │                   MT5, independentemente do kill switch (a
+   │     │                   ponte Python que antes enviava a ordem foi
+   │     │                   removida no Ponto 4 da migração)
 
 trade.reject(proposalId)  → status=REJECTED (só se PENDING_HUMAN)
 trade.status(proposalId)  → status atual + RiskDecision + OrderIntents
@@ -255,9 +254,11 @@ trade.status(proposalId)  → status atual + RiskDecision + OrderIntents
 
 `execution.send` (broker) **nunca** é chamado em nenhum caminho de falha
 (risco rejeitado, código errado/expirado, estado inválido, kill switch
-desligado) — só depois que a `OrderIntent` é criada com sucesso.
+desligado) — só depois que a `OrderIntent` é criada com sucesso. Mesmo
+quando chamado, hoje sempre retorna falha (ver acima) — não há caminho de
+execução real neste catálogo.
 
-## 9. Rollout em 2 etapas
+## 9. Rollout em 2 etapas — ATUALMENTE: etapa 2 não resulta em execução
 
 **Etapa 1 — validação do trilho sem risco de execução.**
 `WR_TRADING_ENABLED=false` (default). Fluxo completo `propose → approve`
@@ -267,18 +268,13 @@ executionState=BLOCKED_KILL_SWITCH`. Nada é enviado ao broker. Usar esta
 etapa para validar rate limit, risco, código de confirmação, expiração e
 auditoria — com o usuário aprovando de verdade no chat do Hermes.
 
-**Etapa 2 — execução real em conta DEMO.**
-Após validar a etapa 1, decisão consciente do usuário: setar
-`WR_TRADING_ENABLED=true` (mantendo `WR_TRADING_DEMO_ONLY=true`, o default).
-Reexecutar `propose`/`approve`: a ordem é enviada de fato ao MT5, mas **só**
-se a conta logada for DEMO — a guarda Python (`mt5_bridge.py`) bloqueia
-qualquer envio em conta real independentemente do que o TypeScript decidir.
-Resultado esperado: `status=EXECUTED` com `ticket` de uma conta demo (ex.
-XPMT5-DEMO).
-
-Nunca setar `WR_TRADING_DEMO_ONLY=false` neste piloto sem uma decisão
-explícita e documentada separadamente — isso remove a última guarda contra
-execução em conta real.
+**Etapa 2 — execução real em conta DEMO (NÃO disponível neste catálogo).**
+A ponte Python que enviava a ordem ao MT5 foi removida no Ponto 4 da
+migração para o MCP nativo. Mesmo com `WR_TRADING_ENABLED=true`,
+`Mt5DemoBroker.send()` é fail-closed e sempre retorna falha — o resultado
+de `approve` é sempre `status=EXECUTION_FAILED`, nunca `EXECUTED`. Setar
+`WR_TRADING_ENABLED=true` não habilita envio real; serve só para validar
+que o trilho chega até a chamada do broker antes de falhar.
 
 ## 10. Limitações conhecidas
 
@@ -288,15 +284,15 @@ execução em conta real.
   nunca volta para `PENDING_HUMAN`. Consultável via `trade.status`; requer
   intervenção manual (não há retry automático por design, para não
   duplicar ordens).
-- **Order book desconectado paga o timeout completo.** Se o `mt5_bridge.py`
-  não estiver rodando ou o MT5 não estiver logado, tools que dependem do
-  bridge (`market.get_order_book`, `portfolio.*`, `trade.propose`, etc.)
-  esperam o timeout do `BridgeClient` (15s) antes de retornar
-  `MT5_DISCONNECTED` — não falham instantaneamente.
+- **Terminal MT5 fechado ou sem `MT5_MCP_API_KEY`.** Tools que dependem do
+  MCP nativo (`market.get_order_book`, `portfolio.*`, `trade.propose`, etc.)
+  falham com erro classificado (`MT5_MCP_NOT_CONFIGURED`/
+  `MT5_MCP_UNREACHABLE`/`MT5_MCP_TERMINAL_DISCONNECTED`), não mais um
+  timeout de WebSocket.
 - **`trade.propose` exige MT5 aberto.** O snapshot de risco
   (`createBridgeSnapshot`) busca conta, posições e preço de referência via
-  bridge em tempo real — sem o terminal MT5 aberto e logado, `propose`
-  falha antes mesmo de avaliar o risco.
+  MCP nativo do MT5 em tempo real — sem o terminal MT5 aberto/logado (ou
+  sem `MT5_MCP_API_KEY`), `propose` falha antes mesmo de avaliar o risco.
 - **`spread_api.py`/`volatility_api.py` sem autenticação própria** — a
   segurança dessas duas rotas depende inteiramente de bind em loopback e
   não devem ser expostas fora de `127.0.0.1`.

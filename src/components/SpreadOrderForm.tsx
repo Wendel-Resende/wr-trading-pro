@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Play, TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
-import { MT5ServiceSingleton } from '@/services/mt5Service';
+import { MT5ServiceSingleton, Mt5TradingUnavailableError } from '@/services/mt5Service';
 import { spreadOrderService } from '@/services/spreadOrderService';
 import { MT5Tick } from '@/types/mt5';
 import type { SpreadPendingOrder } from '@/types/spread';
@@ -68,135 +68,6 @@ export default function SpreadOrderForm({ symbol1: initialSymbol1 = '', symbol2:
     };
   }, [symbol1, symbol2]);
 
-  // Escutar evento de execução de ordem
-  useEffect(() => {
-    const handleExecuteOrder = (order: SpreadPendingOrder) => {
-      // Executar ordem via MT5 quando solicitado pelo serviço
-      executeMT5Orders(order);
-    };
-
-    spreadOrderService.on('executeOrder', handleExecuteOrder);
-
-    return () => {
-      spreadOrderService.off('executeOrder', handleExecuteOrder);
-    };
-  }, []);
-
-  const executeMT5Orders = async (order: SpreadPendingOrder) => {
-    try {
-      // Enviar ordem 1
-      mt5Service.sendOrder({
-        action: 'TRADE_ACTION_DEAL',
-        symbol: order.symbol1,
-        volume: order.quantity1,
-        type: order.action1 === 'buy' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
-        price: order.price1,
-      });
-
-      // Enviar ordem 2
-      mt5Service.sendOrder({
-        action: 'TRADE_ACTION_DEAL',
-        symbol: order.symbol2,
-        volume: order.quantity2,
-        type: order.action2 === 'buy' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
-        price: order.price2,
-      });
-
-      // Aguardar execução
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Marcar como executada com sucesso
-      spreadOrderService.markAsExecuted(order.id);
-    } catch (error) {
-      console.error('Erro ao executar ordens MT5:', error);
-      spreadOrderService.markAsExecuted(order.id, undefined, String(error));
-    }
-  };
-
-  const handleSendOrders = async () => {
-    if (!symbol1 || !symbol2 || price1 === null || price2 === null) {
-      return;
-    }
-
-    setSending(true);
-
-    try {
-      // Executar ordens imediatamente
-      const spreadValue = price1 - price2;
-      const newOrder = await spreadOrderService.addPendingOrder({
-        symbol1,
-        symbol2,
-        quantity1,
-        quantity2,
-        price1,
-        price2,
-        action1,
-        action2,
-        targetSpread: spreadValue,
-        condition: 'equal_to',
-      });
-
-      // Executar imediatamente
-      await executeMT5Orders(newOrder);
-
-      setSuccessMessage('Ordens de spread executadas com sucesso!');
-      
-      // Limpar campos após executar
-      setSymbol1('');
-      setSymbol2('');
-      setQuantity1(100);
-      setQuantity2(100);
-      setAction1('sell');
-      setAction2('buy');
-      setTargetSpread(0.20);
-      setCondition('greater_than');
-    } catch (error) {
-      console.error('Erro ao executar ordens de spread:', error);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleActivateAutomation = async () => {
-    if (!symbol1 || !symbol2 || price1 === null || price2 === null) {
-      return;
-    }
-
-    setSending(true);
-
-    try {
-      // Adicionar ordem pendente ao serviço
-      spreadOrderService.addPendingOrder({
-        symbol1,
-        symbol2,
-        quantity1,
-        quantity2,
-        price1,
-        price2,
-        action1,
-        action2,
-        targetSpread,
-        condition,
-      });
-
-      setSuccessMessage('Automação ativada! Aguardando spread alvo...');
-      
-      // Limpar campos após ativar
-      setSymbol1('');
-      setSymbol2('');
-      setQuantity1(100);
-      setQuantity2(100);
-      setAction1('sell');
-      setAction2('buy');
-      setTargetSpread(0.20);
-      setCondition('greater_than');
-    } catch (error) {
-      console.error('Erro ao ativar automação:', error);
-    } finally {
-      setSending(false);
-    }
-  };
-
   const formatCurrency = (value: number) => {
     return `R$ ${value.toFixed(2)}`;
   };
@@ -241,6 +112,12 @@ export default function SpreadOrderForm({ symbol1: initialSymbol1 = '', symbol2:
         <h2 className="font-orbitron text-lg font-bold text-white neon-text-cyan mb-4">
           Boleta Spread
         </h2>
+
+        <div className="flex items-start gap-2 bg-yellow-500/10 p-3 rounded border border-yellow-500/30 mb-3">
+          <p className="text-xs text-yellow-200 font-space">
+            {Mt5TradingUnavailableError.MESSAGE}
+          </p>
+        </div>
 
         {/* Ação 1 */}
         <div className="bg-cyber-dark/50 border border-cyber-border rounded-lg p-3 mb-3">
@@ -392,21 +269,11 @@ export default function SpreadOrderForm({ symbol1: initialSymbol1 = '', symbol2:
 
         {/* Botão Enviar Ordens */}
         <button
-          onClick={handleSendOrders}
-          disabled={sending || !symbol1 || !symbol2 || price1 === null || price2 === null}
+          disabled={true}
           className="cyber-button cyber-button-primary w-full flex items-center justify-center gap-2 py-2 text-sm"
+          title={Mt5TradingUnavailableError.MESSAGE}
         >
-          {sending ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              Ativando...
-            </>
-          ) : (
-            <>
-              <TrendingUp className="w-4 h-4" />
-              Ativar Ordem de Spread
-            </>
-          )}
+          TRADING INDISPONÍVEL
         </button>
 
         {/* Mensagem de sucesso */}
@@ -487,29 +354,17 @@ export default function SpreadOrderForm({ symbol1: initialSymbol1 = '', symbol2:
 
           {/* Botão Ativar Automação */}
           <button
-            onClick={handleActivateAutomation}
-            disabled={sending || !symbol1 || !symbol2 || price1 === null || price2 === null}
+            disabled={true}
             className="cyber-button cyber-button-pink w-full flex items-center justify-center gap-2 py-2 text-sm"
+            title={Mt5TradingUnavailableError.MESSAGE}
           >
-            {sending ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Ativando...
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4" />
-                Ativar Automação
-              </>
-            )}
+            TRADING INDISPONÍVEL
           </button>
 
           {/* Explicação */}
           <div className="bg-cyber-dark/30 rounded-lg p-3">
             <p className="text-xs text-gray-400 font-space">
-              A automação monitorará o spread entre {symbol1 || 'ação 1'} e {symbol2 || 'ação 2'} 
-              e executará as ordens automaticamente quando o spread for {condition === 'greater_than' ? 'maior que' : condition === 'less_than' ? 'menor que' : 'igual a'} 
-              R$ {targetSpread.toFixed(2)}.
+              A automação e a execução de ordens por spread estão indisponíveis nesta versão.
             </p>
           </div>
         </div>

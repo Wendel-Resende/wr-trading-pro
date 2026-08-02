@@ -9,7 +9,6 @@ declare global {
     managedByElectron: boolean;
     pid: number | null;
     error: string | null;
-    wsAuthReady: boolean;
   }
 
   type MlEngineState = 'online' | 'offline' | 'starting' | 'error';

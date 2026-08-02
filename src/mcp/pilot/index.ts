@@ -15,7 +15,6 @@ import { buildPortfolioTools } from './tools/portfolio';
 import { buildMarketLiveTools } from './tools/market-live';
 import { buildTradeTools } from './tools/trade';
 import { buildMlDirectionalTools } from './tools/ml-directional';
-import { createBridgeClient } from './clients/mt5-bridge';
 import { Mt5DemoBroker } from './execution/mt5-demo-broker';
 import { createBridgeSnapshot } from './execution/bridge-snapshot';
 import { createMcpTradeService } from '../../application/mcp-trade/compose';
@@ -29,15 +28,14 @@ async function main(): Promise<void> {
   // por isso nenhum Bearer é passado a esses dois clientes.
   const spread = createHttpJson(config.spreadApiUrl);
   const volatility = createHttpJson(config.volatilityApiUrl);
-  const bridge = createBridgeClient(config.bridgeUrl);
-  const broker = new Mt5DemoBroker(bridge);
-  const snapshot = createBridgeSnapshot(bridge);
+  const broker = new Mt5DemoBroker();
+  const snapshot = createBridgeSnapshot();
   const tradeService = createMcpTradeService(prisma, broker, snapshot);
   const extraTools = [
     ...buildCvmRichTools(next),
     ...buildMonitoringTools(next),
     ...buildAgentActionTools(next),
-    ...buildPortfolioTools(bridge),
+    ...buildPortfolioTools(),
     ...buildMarketLiveTools(spread, volatility),
     ...buildMlDirectionalTools(prisma),
     ...buildTradeTools(tradeService),

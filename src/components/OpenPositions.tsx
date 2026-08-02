@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { mt5Service } from '@/services/mt5Service';
+import { mt5Service, Mt5TradingUnavailableError } from '@/services/mt5Service';
 import { MT5Position } from '@/types/mt5';
-import { ArrowUp, ArrowDown, X, Activity } from 'lucide-react';
+import { ArrowUp, ArrowDown, Activity } from 'lucide-react';
 
 export default function OpenPositions() {
   const [positions, setPositions] = useState<MT5Position[]>([]);
-  const [closingPositions, setClosingPositions] = useState<Set<number>>(new Set());
 
   const totalProfit = positions.reduce((sum: number, pos: MT5Position) => sum + (pos.profit ?? 0), 0);
 
@@ -82,43 +81,6 @@ export default function OpenPositions() {
     };
   }, []);
 
-  const handleClosePosition = async (ticket: number) => {
-    console.log('=== FECHAR POSIÇÃO ===');
-    console.log('Ticket:', ticket);
-    
-    const position = positions.find(p => p.ticket === ticket);
-    console.log('Posição encontrada:', position);
-    
-    if (!position) {
-      console.error('Posição não encontrada!');
-      return;
-    }
-
-    setClosingPositions(prev => new Set(prev).add(ticket));
-
-    try {
-      console.log('Enviando comando para fechar posição...');
-      // Usar o método closePosition do mt5Service
-      mt5Service.closePosition(ticket, position.volume ?? 0);
-      console.log('Comando enviado com sucesso!');
-      
-      // Solicitar atualização das posições e da conta após tentar fechar
-      setTimeout(() => {
-        console.log('[OpenPositions] Solicitando atualização de posições e conta após fechamento');
-        mt5Service.getPositions();
-        mt5Service.getAccountInfo();
-      }, 1000);
-    } catch (error) {
-      console.error('Erro ao fechar posição:', error);
-    } finally {
-      setClosingPositions(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(ticket);
-        return newSet;
-      });
-    }
-  };
-
   const getOrderTypeIcon = (type: string) => {
     return type === 'BUY' ? (
       <ArrowUp className="w-4 h-4 text-green-400" />
@@ -143,6 +105,12 @@ export default function OpenPositions() {
         <div className={`font-jetbrains text-sm ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
           {totalProfit >= 0 ? '+' : ''}R$ {totalProfit.toFixed(2)}
         </div>
+      </div>
+
+      <div className="mb-4 bg-yellow-500/10 p-3 rounded border border-yellow-500/30">
+        <p className="text-xs text-yellow-200 font-space">
+          {Mt5TradingUnavailableError.MESSAGE}
+        </p>
       </div>
 
       {positions.length === 0 ? (
@@ -182,23 +150,12 @@ export default function OpenPositions() {
                     {(position.profit ?? 0) >= 0 ? '+' : ''}R$ {(position.profit ?? 0).toFixed(2)}
                   </p>
                 </div>
-                <button
-                  onClick={(e) => {
-                    console.log('BOTÃO CLICADO! Ticket:', position.ticket);
-                    e.stopPropagation();
-                    handleClosePosition(position.ticket);
-                  }}
-                  disabled={closingPositions.has(position.ticket)}
-                  className="p-2 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer pointer-events-auto"
-                  title={`Fechar posição #${position.ticket}`}
-                  style={{ zIndex: 9999, position: 'relative' }}
+                <span
+                  className="p-2 rounded-lg bg-gray-700 text-gray-400 text-xs font-space"
+                  title={Mt5TradingUnavailableError.MESSAGE}
                 >
-                  {closingPositions.has(position.ticket) ? (
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <X className="w-4 h-4" />
-                  )}
-                </button>
+                  SOMENTE LEITURA
+                </span>
               </div>
             </div>
           ))}

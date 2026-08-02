@@ -40,7 +40,6 @@ const electron_1 = require("electron");
 const env_1 = require("@next/env");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
-const crypto_1 = __importDefault(require("crypto"));
 const net_1 = __importDefault(require("net"));
 const child_process_1 = require("child_process");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -95,21 +94,8 @@ const PROJECT_ROOT = getProjectRoot();
 // O Electron não carrega .env automaticamente. Carregue-o antes de criar
 // qualquer filho para que Next, bridge e MCP compartilhem a mesma configuração.
 (0, env_1.loadEnvConfig)(PROJECT_ROOT);
-/**
- * Secret compartilhado do token WS do MT5 Bridge (Fase 0, Item 10).
- * Se não vier do ambiente (>= 32 chars), gera um valor criptográfico efêmero
- * por processo e passa o MESMO valor, via env, ao servidor Next e ao
- * mt5_bridge.py. Nunca persistido nem logado.
- */
-function resolveWsTokenSecret() {
-    const fromEnv = process.env.WR_WS_TOKEN_SECRET?.trim() ?? '';
-    if (fromEnv.length >= 32)
-        return fromEnv;
-    return crypto_1.default.randomBytes(32).toString('hex');
-}
-const WS_TOKEN_SECRET = resolveWsTokenSecret();
 function childEnv() {
-    return { ...process.env, WR_WS_TOKEN_SECRET: WS_TOKEN_SECRET };
+    return { ...process.env };
 }
 function isProjectRoot(candidate) {
     try {
@@ -162,7 +148,6 @@ function getProjectRoot() {
 const APP_DATA_DIR = path_1.default.join(PROJECT_ROOT, 'data');
 const OPTIONS_DATA_DIR = path_1.default.join(APP_DATA_DIR, 'options');
 const CRITICAL_SERVICES = [
-    { name: 'mt5_bridge', scriptName: 'mt5_bridge.py', port: 8766, waitFor: 'Servidor WebSocket iniciado com sucesso' },
     { name: 'spread_api', scriptName: 'spread_api.py', port: 5000, waitFor: 'Debug mode' },
     { name: 'volatility_api', scriptName: 'volatility_api.py', port: 5555, waitFor: 'localhost:5555' },
 ];
@@ -259,8 +244,8 @@ function startPythonService(cfg) {
             const text = data.toString();
             output += text;
             console.log(`[${cfg.name} stderr]`, text.trim());
-            // O logging do Python escreve no stderr por padrão — o "pronto" do
-            // mt5_bridge chega aqui, não no stdout.
+            // O logging do Python escreve no stderr por padrão — o "pronto" de
+            // spread_api/volatility_api chega aqui, não no stdout.
             if (cfg.waitFor && text.includes(cfg.waitFor)) {
                 if (resolved)
                     return;
@@ -379,7 +364,7 @@ async function getMcpPilotStatus() {
     const host = getMcpPilotHost();
     const hostError = getMcpHostError(host);
     if (hostError) {
-        return { state: 'error', endpoint, managedByElectron: false, pid: null, error: hostError, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+        return { state: 'error', endpoint, managedByElectron: false, pid: null, error: hostError };
     }
     const port = Number(process.env.WR_MCP_HTTP_PORT?.trim() || '8790');
     const managedAlive = mcpPilotProcess !== null && mcpPilotProcess.exitCode === null;
@@ -387,15 +372,15 @@ async function getMcpPilotStatus() {
         ? await isPortInUse(port, 1000, host)
         : false;
     if (managedAlive && portOpen) {
-        return { state: 'online', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+        return { state: 'online', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null };
     }
     if (managedAlive) {
-        return { state: 'starting', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+        return { state: 'starting', endpoint, managedByElectron: true, pid: mcpPilotProcess?.pid ?? null, error: null };
     }
     if (portOpen) {
-        return { state: 'online', endpoint, managedByElectron: false, pid: null, error: null, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+        return { state: 'online', endpoint, managedByElectron: false, pid: null, error: null };
     }
-    return { state: mcpPilotError ? 'error' : 'offline', endpoint, managedByElectron: false, pid: null, error: mcpPilotError, wsAuthReady: WS_TOKEN_SECRET.length >= 32 };
+    return { state: mcpPilotError ? 'error' : 'offline', endpoint, managedByElectron: false, pid: null, error: mcpPilotError };
 }
 async function startMcpPilotInternal() {
     const existing = await getMcpPilotStatus();
