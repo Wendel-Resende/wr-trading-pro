@@ -1,8 +1,64 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-02 (MCP nativo do MT5 — nomes reais de tool corrigidos, conexão restaurada)
+Última atualização: 2026-08-02 (execução de ordem HABILITADA — UI manual + agente de IA governado)
 
-## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO: ponte Python/WS (mt5_bridge.py, ws-token, porta 8766) removida; leituras via MCP nativo com os nomes de tool REAIS do servidor (build 6090); trading fail-closed TS (eligibleForExecution=false); commit `c748e73` na `main`, push feito.
+## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO, trading HABILITADO por decisão do usuário: ponte Python/WS removida; leituras via MCP nativo com nomes reais (build 6090); envio/modificação/cancelamento/fechamento de ordem ligados (UI manual + fluxo governado do agente de IA `trade.propose/approve`, `WR_TRADING_ENABLED=true`); commit pendente nesta sessão.
+
+## Sessão 2026-08-02 (cont.) — Execução de ordem habilitada (UI manual + agente de IA)
+
+Decisão explícita do usuário: "a WR também é pra executar ordens quando o usuário quiser... a plataforma
+é pra um Agente de IA executar operações também". Antes desta sessão, TODO envio/modificação/cancelamento/
+fechamento de ordem era fail-closed por decisão de governança (não limitação técnica — o servidor MCP
+nativo do MT5 sempre expôs tools de trade, confirmado por sonda real na sessão anterior).
+
+### Duas superfícies religadas, separadamente
+
+1. **UI manual** (`OrderForm.tsx`, `OpenPositions.tsx` → `mt5Service.sendOrder/closePosition` →
+   `/api/mt5/mcp/order/*`). Novas rotas WRITE (únicas sob `/api/mt5/mcp/**` que não são read-only):
+   `market`, `pending`, `modify-sltp`, `delete`, `close`, `close-by`. Cada uma chama
+   `assertTradingEligible()` (`src/lib/server/mt5-mcp-tools.ts`) — lê `account_info.terminal` do MT5 e
+   bloqueia com `MT5_MCP_TRADING_NOT_ALLOWED` se o AutoTrading do terminal estiver desligado — ANTES de
+   qualquer tool de trade ser chamada.
+2. **Fluxo governado do agente de IA** (`trade.propose/approve`, usado pelo Hermes via MCP Piloto):
+   `Mt5DemoBroker` (`src/mcp/pilot/execution/mt5-demo-broker.ts`) chama `sendMarketOrder` de verdade,
+   reaproveitando `mt5-mcp-tools.ts` via import relativo (o módulo é livre de alias `@/`, então não quebra
+   o runtime `node` puro dos testes que roda sem `tsc-alias`). **Nenhum guard-rail existente foi tocado**:
+   allowlist (`WR_MCP_TRADE_ALLOWLIST`), limite de notional (`WR_MCP_TRADE_MAX_NOTIONAL`), rate limit
+   (`WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR`), código de confirmação de 6 dígitos (hash-only, timing-safe),
+   claim atômico `PENDING_HUMAN→APPROVED`, idempotência por `idempotencyKey`. Kill switch
+   `WR_TRADING_ENABLED=true` ligado no `.env` no final da sessão — sem ele, `approve` para em
+   `BLOCKED_KILL_SWITCH` e nunca chama o broker.
+
+### Tools reais de trade (verificadas por sonda ao vivo, build 6090)
+
+```
+trade_send_market_order    { symbol, type: buy|sell, volume, sl?, tp?, comment? }
+trade_send_pending_order   { symbol, type: buy_limit|sell_limit|buy_stop|sell_stop|..., volume, price, stoplimit?, sl?, tp?, ... }
+trade_modify_sl_tp         { symbol, position_ticket? | order_ticket?, sl?, tp? }  — sl/tp=0 remove; omitido mantém
+trade_delete_order         { symbol, order_ticket }
+trade_close_single_position{ symbol, position_ticket }  — fecha volume TOTAL, sem fechamento parcial
+trade_close_by_position    { symbol, position_ticket, position_ticket_by }
+```
+
+`symbol` é checagem de segurança do PRÓPRIO servidor em todas — precisa bater com o símbolo real da
+posição/ordem alvo. `additionalProperties: false` em todos os schemas — nunca enviar campo além do
+documentado.
+
+### O que NÃO foi tocado (fora de escopo desta sessão)
+
+- `SpreadOrderForm.tsx`/`spreadOrderService.ts` (ordens de spread com 2 pernas, monitor de execução
+  automática) continuam fail-closed — superfície maior e separada, não pedida explicitamente ainda.
+- `eligibleForExecution` hardcoded `false` em `src/app/api/agents/route.ts` (4 ocorrências) — é um flag de
+  REPORTE nas respostas do agente (o que a IA relata que pode/não pode fazer), não é o gate real de
+  `trade.propose` (que nunca leu esse campo). Deixado como está.
+- `history` (deals), `symbol_info`, `market_book`/DOM continuam sem tool real mapeada — gaps já
+  documentados na sessão anterior, não relacionados a trade.
+
+### Verificação
+
+`npm run test:mcp-pilot` (suíte completa, incluindo `Mt5DemoBroker` e o fluxo
+`propose→approve→EXECUTED` com kill switch ligado) verde; `tsc --noEmit` e `npm run build` limpos.
+`.exe` reempacotado (`npm run electron:package`).
 
 ## Sessão 2026-08-02 — MCP nativo do MT5: da migração "no papel" à conexão de verdade (branch `main`)
 

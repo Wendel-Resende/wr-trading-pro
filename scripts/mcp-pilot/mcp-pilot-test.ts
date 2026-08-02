@@ -19,7 +19,6 @@ import { Mt5DemoBroker } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createBridgeSnapshot } from '../../src/mcp/pilot/execution/bridge-snapshot';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 import { Mt5McpError } from '../../src/lib/server/mt5-mcp-client';
-import { Mt5TradingUnavailableError } from '../../src/mcp/pilot/execution/mt5-demo-broker';
 import { createRiskPolicyService } from '../../src/application/risk-policy';
 import { createOrderIntentService } from '../../src/application/order-intent';
 import { McpTradeService, type MarketSnapshotPort } from '../../src/application/mcp-trade/service';
@@ -754,15 +753,18 @@ async function tradeToolsTests(): Promise<void> {
 }
 
 async function mt5DemoBrokerTests(): Promise<void> {
-  // Mt5DemoBroker.send() é fail-closed: nunca chama o bridge, nunca monta
-  // corpo de ordem, sempre devolve {ok:false, error: MESSAGE} do contrato
-  // MT5_TRADING_UNAVAILABLE (mesma classe do app principal).
+  // Mt5DemoBroker.send() foi religado em 2026-08-02 para chamar
+  // trade_send_market_order de verdade via MCP nativo — mas neste teste,
+  // sem MT5_MCP_API_KEY configurada, continua fail-closed: nunca chama
+  // nada, sempre devolve {ok:false} com o erro tipado MT5_MCP_NOT_CONFIGURED.
+  delete process.env.MT5_MCP_API_KEY;
   const broker = new Mt5DemoBroker();
   const result = await broker.send({ symbol: 'PETR4', direction: 'BUY', volume: 1, comment: 'mcp:d3-test' });
   assert.equal(result.ok, false);
-  assert.equal(result.error, Mt5TradingUnavailableError.MESSAGE);
+  assert.equal(typeof result.error, 'string');
+  assert.equal(result.ticket, undefined);
 
-  console.log('Mt5DemoBroker: OK (fail-closed, bridge nunca chamado, MT5_TRADING_UNAVAILABLE)');
+  console.log('Mt5DemoBroker: OK (fail-closed sem MT5_MCP_API_KEY; com config real, envia ordem via trade_send_market_order)');
 }
 
 async function bridgeSnapshotTests(): Promise<void> {

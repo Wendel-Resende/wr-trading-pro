@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { ArrowUp, ArrowDown, AlertTriangle, Loader2 } from 'lucide-react';
-import { mt5Service, Mt5TradingUnavailableError } from '@/services/mt5Service';
-import { MT5Tick } from '@/types/mt5';
+import { mt5Service } from '@/services/mt5Service';
+import { MT5Tick, MT5OrderRequest } from '@/types/mt5';
 import { useToast } from '@/contexts/ToastContext';
 
 interface OrderFormProps {
@@ -22,6 +22,7 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
   const [tickData, setTickData] = useState<MT5Tick | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [symbolError, setSymbolError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Obter preço atual (bid para venda, ask para compra)
   const currentPrice = orderType === 'BUY' 
@@ -101,9 +102,57 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
     }
   }, [orderType, tickData, orderStyle]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    toast.error(Mt5TradingUnavailableError.MESSAGE);
+    const symbol = inputSymbol.trim().toUpperCase();
+    if (!symbol) {
+      toast.error('Informe um ativo.');
+      return;
+    }
+    if (quantity <= 0) {
+      toast.error('Quantidade deve ser maior que zero.');
+      return;
+    }
+
+    let request: MT5OrderRequest;
+    if (orderStyle === 'MARKET') {
+      request = {
+        action: 'TRADE_ACTION_DEAL',
+        symbol,
+        volume: quantity,
+        type: orderType === 'BUY' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL',
+        sl: stopLoss,
+        tp: takeProfit,
+      };
+    } else {
+      if (!price || price <= 0) {
+        toast.error('Informe o preço da ordem.');
+        return;
+      }
+      const pendingType =
+        orderStyle === 'LIMIT'
+          ? orderType === 'BUY' ? 'ORDER_TYPE_BUY_LIMIT' : 'ORDER_TYPE_SELL_LIMIT'
+          : orderType === 'BUY' ? 'ORDER_TYPE_BUY_STOP' : 'ORDER_TYPE_SELL_STOP';
+      request = {
+        action: 'TRADE_ACTION_PENDING',
+        symbol,
+        volume: quantity,
+        type: pendingType,
+        price,
+        sl: stopLoss,
+        tp: takeProfit,
+      };
+    }
+
+    setIsSubmitting(true);
+    try {
+      const result = await mt5Service.sendOrder(request);
+      toast.success(`Ordem enviada — ticket ${result.order || result.deal || '—'}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Falha ao enviar ordem.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -342,21 +391,24 @@ export default function OrderForm({ symbols = [] }: OrderFormProps) {
           )}
         </div>
 
-        {/* Aviso persistente: trading indisponível */}
+        {/* Aviso: operação real na conta MT5 conectada */}
         <div className="flex items-start gap-2 bg-yellow-500/10 p-3 rounded border border-yellow-500/30">
           <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
           <p className="text-xs text-yellow-200 font-space">
-            {Mt5TradingUnavailableError.MESSAGE}
+            Ordem enviada de verdade para a conta conectada no terminal MT5 — confira símbolo, quantidade e preço antes de enviar.
           </p>
         </div>
 
         {/* Submit Button */}
         <button
           type="submit"
-          disabled={true}
-          className="w-full cyber-button font-bold text-lg opacity-50 cursor-not-allowed"
+          disabled={isSubmitting}
+          className={`w-full cyber-button font-bold text-lg ${
+            orderType === 'BUY' ? 'cyber-button-primary' : 'bg-red-600 text-white'
+          } disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2`}
         >
-          TRADING INDISPONÍVEL
+          {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+          {isSubmitting ? 'ENVIANDO...' : orderType === 'BUY' ? 'ENVIAR ORDEM DE COMPRA' : 'ENVIAR ORDEM DE VENDA'}
         </button>
       </form>
     </div>

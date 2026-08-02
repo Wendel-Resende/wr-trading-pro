@@ -24,6 +24,8 @@ export const MT5_MCP_ERROR_CODES = [
   'MT5_MCP_TERMINAL_DISCONNECTED',
   /** Erro não classificado do servidor nativo (payload de erro JSON-RPC com código/mensagem próprios). */
   'MT5_MCP_TOOL_ERROR',
+  /** Conta/terminal não permite trading agora (AutoTrading desligado, permissão da conta) — checado ANTES de qualquer envio de ordem. */
+  'MT5_MCP_TRADING_NOT_ALLOWED',
 ] as const;
 
 export type Mt5McpErrorCode = (typeof MT5_MCP_ERROR_CODES)[number];
@@ -50,4 +52,6 @@ export const MT5_MCP_ERROR_MESSAGES: Record<Mt5McpErrorCode, string> = {
     'O MT5 MCP nativo respondeu, mas nenhuma conta está logada no terminal. Faça login pela própria interface do MetaTrader 5.',
   MT5_MCP_TOOL_ERROR:
     'O MT5 MCP nativo retornou um erro ao processar a solicitação.',
+  MT5_MCP_TRADING_NOT_ALLOWED:
+    'Trading não permitido pelo terminal/conta MT5 no momento (verifique o botão AutoTrading e a permissão da conta).',
 };

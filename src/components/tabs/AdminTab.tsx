@@ -299,7 +299,7 @@ function McpCard({
   return (
     <div className={`cyber-card p-4 hud-corner border ${border}`}>
       <div className="flex items-start justify-between mb-3">
-        <h3 className="font-orbitron text-sm text-white leading-tight">MCP</h3>
+        <h3 className="font-orbitron text-sm text-white leading-tight">MCP Agente IA</h3>
         {loading || isStarting
           ? <Loader2 className="w-4 h-4 text-cyber-cyan animate-spin flex-shrink-0" />
           : isOnline

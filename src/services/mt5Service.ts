@@ -758,53 +758,147 @@ class MT5Service {
     };
   }
 
-  /** Emite o evento 'error' compatível e SEMPRE lança em seguida — nunca retorna normalmente. */
-  private emitAndThrowTradingUnavailable(type: string, extra: Record<string, unknown> = {}): never {
-    this.emit('error', {
-      type,
-      code: Mt5TradingUnavailableError.CODE,
-      message: Mt5TradingUnavailableError.MESSAGE,
-      ...extra,
+  /**
+   * Erro de execução de ordem — carrega o código tipado do servidor (ver
+   * src/types/mt5-mcp.ts) para a UI mostrar mensagem acionável (ex.
+   * MT5_MCP_TRADING_NOT_ALLOWED quando o AutoTrading do terminal está
+   * desligado), nunca um erro genérico.
+   */
+  private async postMcpOrder(path: string, body: Record<string, unknown>): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await fetch(`/api/mt5/mcp/order/${path}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.STATUS_FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error('Falha de rede ao enviar ordem ao MT5.');
+    }
+    const responseBody = await response.json().catch(() => null);
+    if (!response.ok || !responseBody?.success) {
+      const message =
+        (responseBody?.error?.message as string | undefined) || `Falha ao enviar ordem (HTTP ${response.status})`;
+      this.emit('error', { type: 'order', message, code: responseBody?.error?.code });
+      throw new Error(message);
+    }
+    return responseBody.data?.result;
+  }
+
+  /** Tolerante a snake_case — schema de retorno das tools de trade não é documentado publicamente. */
+  private normalizeMcpOrderResult(raw: any): MT5OrderResult {
+    const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return {
+      retcode: Number(obj.retcode ?? 0),
+      deal: Number(obj.deal ?? 0),
+      order: Number(obj.order ?? obj.order_ticket ?? obj.position_ticket ?? 0),
+      volume: Number(obj.volume ?? 0),
+      price: Number(obj.price ?? 0),
+      bid: Number(obj.bid ?? 0),
+      ask: Number(obj.ask ?? 0),
+      comment: String(obj.comment ?? ''),
+      request_id: Number(obj.request_id ?? 0),
+      retcodeExternal: Number(obj.retcode_external ?? obj.retcodeExternal ?? 0),
+    };
+  }
+
+  /**
+   * Enviar ordem — via MCP nativo server-side (POST /api/mt5/mcp/order/*).
+   * Habilitado em 2026-08-02; antes era fail-closed por decisão de
+   * governança. Traduz o contrato antigo (action/type) para o schema real
+   * das tools de trade do MT5 nativo.
+   */
+  async sendOrder(request: MT5OrderRequest): Promise<MT5OrderResult> {
+    if (request.action === 'TRADE_ACTION_DEAL') {
+      const side = request.type === 'ORDER_TYPE_SELL' ? 'sell' : 'buy';
+      const result = await this.postMcpOrder('market', {
+        symbol: request.symbol,
+        side,
+        volume: request.volume,
+        sl: request.sl,
+        tp: request.tp,
+        comment: request.comment,
+      });
+      return this.normalizeMcpOrderResult(result);
+    }
+    if (request.action === 'TRADE_ACTION_PENDING') {
+      const typeMap: Partial<Record<MT5OrderRequest['type'], string>> = {
+        ORDER_TYPE_BUY_LIMIT: 'buy_limit',
+        ORDER_TYPE_SELL_LIMIT: 'sell_limit',
+        ORDER_TYPE_BUY_STOP: 'buy_stop',
+        ORDER_TYPE_SELL_STOP: 'sell_stop',
+      };
+      const type = typeMap[request.type];
+      if (!type) throw new Error(`Tipo de ordem pendente não suportado: ${request.type}`);
+      const result = await this.postMcpOrder('pending', {
+        symbol: request.symbol,
+        type,
+        volume: request.volume,
+        price: request.price,
+        sl: request.sl,
+        tp: request.tp,
+        comment: request.comment,
+      });
+      return this.normalizeMcpOrderResult(result);
+    }
+    if (request.action === 'TRADE_ACTION_SLTP') {
+      const result = await this.postMcpOrder('modify-sltp', {
+        symbol: request.symbol,
+        positionTicket: request.position,
+        sl: request.sl,
+        tp: request.tp,
+      });
+      return this.normalizeMcpOrderResult(result);
+    }
+    if (request.action === 'TRADE_ACTION_REMOVE') {
+      const result = await this.postMcpOrder('delete', { symbol: request.symbol, orderTicket: request.order });
+      return this.normalizeMcpOrderResult(result);
+    }
+    if (request.action === 'TRADE_ACTION_CLOSE_BY') {
+      const result = await this.postMcpOrder('close-by', {
+        symbol: request.symbol,
+        positionTicket: request.position,
+        positionTicketBy: request.positionBy,
+      });
+      return this.normalizeMcpOrderResult(result);
+    }
+    throw new Error(`Ação de ordem não suportada: ${request.action}`);
+  }
+
+  /** Modificar SL/TP de uma ordem pendente (não de posição — ver closePosition para isso). */
+  async modifyOrder(ticket: number, request: Partial<MT5OrderRequest> & { symbol: string }): Promise<MT5OrderResult> {
+    const result = await this.postMcpOrder('modify-sltp', {
+      symbol: request.symbol,
+      orderTicket: ticket,
+      sl: request.sl,
+      tp: request.tp,
     });
-    throw new Mt5TradingUnavailableError();
+    return this.normalizeMcpOrderResult(result);
   }
 
-  /**
-   * Enviar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
-   */
-  sendOrder(request: MT5OrderRequest): never {
-    void request;
-    return this.emitAndThrowTradingUnavailable('sendOrder');
+  /** Cancelar ordem pendente. */
+  async cancelOrder(ticket: number, symbol: string): Promise<MT5OrderResult> {
+    const result = await this.postMcpOrder('delete', { symbol, orderTicket: ticket });
+    return this.normalizeMcpOrderResult(result);
   }
 
-  /**
-   * Modificar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
-   */
-  modifyOrder(ticket: number, request: Partial<MT5OrderRequest>): never {
-    void request;
-    return this.emitAndThrowTradingUnavailable('modifyOrder', { ticket });
+  /** Fechar posição — fecha o volume total (o MCP nativo não aceita fechamento parcial por volume). */
+  async closePosition(ticket: number, symbol: string): Promise<MT5OrderResult> {
+    const result = await this.postMcpOrder('close', { symbol, positionTicket: ticket });
+    return this.normalizeMcpOrderResult(result);
   }
 
-  /**
-   * Cancelar ordem — indisponível nesta versão, nunca migrado ao MCP nativo.
-   */
-  cancelOrder(ticket: number): never {
-    return this.emitAndThrowTradingUnavailable('cancelOrder', { ticket });
-  }
-
-  /**
-   * Fechar posição — indisponível nesta versão, nunca migrado ao MCP nativo.
-   */
-  closePosition(ticket: number, volume?: number): never {
-    void volume;
-    return this.emitAndThrowTradingUnavailable('closePosition', { ticket });
-  }
-
-  /**
-   * Fechar posição por posição oposta — indisponível nesta versão, nunca migrado ao MCP nativo.
-   */
-  closePositionBy(ticket: number, ticketBy: number): never {
-    return this.emitAndThrowTradingUnavailable('closePositionBy', { ticket, ticketBy });
+  /** Fechar posição por posição oposta (mesmo símbolo, lados opostos). */
+  async closePositionBy(ticket: number, ticketBy: number, symbol: string): Promise<MT5OrderResult> {
+    const result = await this.postMcpOrder('close-by', {
+      symbol,
+      positionTicket: ticket,
+      positionTicketBy: ticketBy,
+    });
+    return this.normalizeMcpOrderResult(result);
   }
 
   /**

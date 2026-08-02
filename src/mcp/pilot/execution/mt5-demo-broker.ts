@@ -1,39 +1,51 @@
 /**
- * MCP Piloto — Task 7 → Legacy-D Gate D3: broker de execução FAIL-CLOSED
- * para o trilho de trade governado (`McpTradeService.approve`).
+ * MCP Piloto — broker de execução do trilho de trade governado
+ * (`McpTradeService.approve`).
  *
- * Envio real de ordem via bridge Python (`SEND_ORDER`/`handle_send_order`)
- * nunca migra ao MCP nativo — e não deve. `Mt5DemoBroker.send()` nunca
- * chama o bridge, nunca monta corpo de ordem, nunca retorna `ok: true`:
- * sempre falha com o mesmo contrato `MT5_TRADING_UNAVAILABLE` já usado no
- * app principal.
+ * Habilitado em 2026-08-02: envia ordem a mercado de verdade via
+ * `trade_send_market_order` do MCP nativo do MT5, reaproveitando
+ * `sendMarketOrder` de `src/lib/server/mt5-mcp-tools.ts` — cujo módulo é
+ * livre de alias de path (só imports relativos), então pode ser importado
+ * aqui sem quebrar o runtime `node` puro dos testes
+ * (`scripts/mcp-pilot/run-mcp-pilot-tests.cjs`, sem `tsc-alias`).
  *
- * `Mt5TradingUnavailableError` abaixo é uma CÓPIA deliberada (não import)
- * de `src/services/mt5Service.ts:37-47` — mesmo CODE/MESSAGE literais.
- * Gate D3-FIX: importar `mt5Service.ts` puxa `@/lib/redact`/`@/types/mt5`
- * (alias de path), que `tsc` não reescreve para caminho relativo ao
- * compilar; `node` puro (pipeline de `scripts/mcp-pilot/run-mcp-pilot-tests.cjs`,
- * sem `tsc-alias`) falha com `MODULE_NOT_FOUND` em runtime. Duplicar aqui
- * evita essa dependência transitiva. Se o texto de MESSAGE em
- * `mt5Service.ts` mudar, esta cópia precisa ser atualizada manualmente.
+ * Este broker NÃO substitui nenhum guard-rail do `McpTradeService`
+ * (rate-limit, allowlist, limite de notional/concentração, código de
+ * confirmação de 6 dígitos, kill switch `WR_TRADING_ENABLED`) — `send()` só
+ * é chamado depois que todos esses já passaram (ver `service.ts:approve`).
  */
 import type { PilotExecutionPort, PilotOrderRequest, PilotOrderResult } from '../../../domain/v1/ports/pilot-execution';
+import { sendMarketOrder } from '../../../lib/server/mt5-mcp-tools';
+import { Mt5McpError } from '../../../lib/server/mt5-mcp-client';
 
-export class Mt5TradingUnavailableError extends Error {
-  static readonly CODE = 'MT5_TRADING_UNAVAILABLE' as const;
-  static readonly MESSAGE =
-    'Envio, alteração e fechamento de ordens não estão disponíveis nesta versão. Nenhuma ordem foi enviada ao MT5.';
-  readonly code = Mt5TradingUnavailableError.CODE;
+function extractTicket(result: unknown): number | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const obj = result as Record<string, unknown>;
+  const candidate = obj.order ?? obj.deal ?? obj.order_ticket ?? obj.position_ticket;
+  return typeof candidate === 'number' ? candidate : undefined;
+}
 
-  constructor() {
-    super(Mt5TradingUnavailableError.MESSAGE);
-    this.name = 'Mt5TradingUnavailableError';
-  }
+function extractPrice(result: unknown): number | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const price = (result as Record<string, unknown>).price;
+  return typeof price === 'number' ? price : undefined;
 }
 
 export class Mt5DemoBroker implements PilotExecutionPort {
   async send(request: PilotOrderRequest): Promise<PilotOrderResult> {
-    void request;
-    return { ok: false, error: Mt5TradingUnavailableError.MESSAGE };
+    try {
+      const result = await sendMarketOrder({
+        symbol: request.symbol,
+        side: request.direction === 'BUY' ? 'buy' : 'sell',
+        volume: request.volume,
+        sl: request.stopLoss,
+        tp: request.takeProfit,
+        comment: request.comment,
+      });
+      return { ok: true, ticket: extractTicket(result), price: extractPrice(result) };
+    } catch (error) {
+      const message = error instanceof Mt5McpError ? error.message : 'Falha ao enviar ordem ao MT5.';
+      return { ok: false, error: message };
+    }
   }
 }

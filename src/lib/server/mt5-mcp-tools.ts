@@ -25,7 +25,13 @@ export type Mt5McpCapability =
   | 'rates'
   | 'tick'
   | 'market_book'
-  | 'ensure_symbol_watch';
+  | 'ensure_symbol_watch'
+  | 'order_send_market'
+  | 'order_send_pending'
+  | 'order_modify_sltp'
+  | 'order_delete_pending'
+  | 'position_close_single'
+  | 'position_close_by';
 
 /**
  * Candidatos por capability, em ordem de preferência. Os nomes reais foram
@@ -66,6 +72,16 @@ const TOOL_NAME_CANDIDATES: Record<Mt5McpCapability, readonly string[]> = {
   tick: ['get_chart_ticks_history', 'get_tick', 'get_symbol_price', 'get_last_tick', 'symbol_info_tick'],
   market_book: ['get_market_book', 'get_depth', 'market_book_get', 'get_order_book'],
   ensure_symbol_watch: ['add_marketwatch_symbol'],
+  // Tools de trade (verificadas por sonda real em 2026-08-02) — cada uma exige
+  // "symbol" como checagem de segurança do próprio servidor, além dos campos
+  // específicos da ação. additionalProperties:false no schema real — nunca
+  // enviar campo além do documentado.
+  order_send_market: ['trade_send_market_order'],
+  order_send_pending: ['trade_send_pending_order'],
+  order_modify_sltp: ['trade_modify_sl_tp'],
+  order_delete_pending: ['trade_delete_order'],
+  position_close_single: ['trade_close_single_position'],
+  position_close_by: ['trade_close_by_position'],
 };
 
 /** Cache de tools descobertas — válido pela vida do processo; nomes de tool não mudam entre sessões. */
@@ -191,12 +207,12 @@ const TRADE_ALLOWED_FIELD_CANDIDATES = [
 ] as const;
 
 /**
- * Gate SOMENTE LEITURA para uso futuro da UI (ex.: desabilitar botão de
- * ordem quando o terminal não permite trading). Deriva exclusivamente de
- * account_info — nunca referencia nenhuma tool de envio/escrita de ordem, e
- * não abre nenhum caminho de execução. `eligibleForExecution` da
- * plataforma continua hardcoded false nos gates existentes,
- * independentemente do resultado desta função.
+ * Gate de leitura da conta (AutoTrading/permissão) usado por duas coisas:
+ * (1) a UI para desabilitar o botão de ordem quando o terminal não permite
+ * trading; (2) as rotas de execução (`/api/mt5/mcp/order/*`), que chamam
+ * `assertTradingEligible()` abaixo ANTES de qualquer tool de trade — nunca
+ * enviam ordem sem essa checagem passar primeiro. Deriva exclusivamente de
+ * account_info, nunca de estado local/cache.
  */
 export async function getTradingEligibility(): Promise<Mt5TradingEligibility> {
   const info = (await getAccountInfo()) as Record<string, unknown> | null;
@@ -214,6 +230,17 @@ export async function getTradingEligibility(): Promise<Mt5TradingEligibility> {
   return tradeAllowed
     ? { tradeAllowed: true }
     : { tradeAllowed: false, reason: 'Trading desabilitado no terminal ou na conta (AutoTrading/permissão da conta)' };
+}
+
+/** Lança `MT5_MCP_TRADING_NOT_ALLOWED` se a conta/terminal não permitir trading — chamado por TODA rota de execução antes de qualquer tool de trade. */
+export async function assertTradingEligible(): Promise<void> {
+  const eligibility = await getTradingEligibility();
+  if (!eligibility.tradeAllowed) {
+    throw new Mt5McpError(
+      'MT5_MCP_TRADING_NOT_ALLOWED',
+      eligibility.reason || 'Trading não permitido pelo terminal/conta MT5 no momento.'
+    );
+  }
 }
 
 /**
@@ -505,4 +532,113 @@ export async function getMarketBook(symbol: string): Promise<unknown> {
   const toolName = await resolveMt5ToolName('market_book');
   const result = await callMt5Tool(toolName, { symbol });
   return normalizeMarketBookPayload(redactSensitiveFields(extractToolValue(result)));
+}
+
+/**
+ * Envio/alteração/cancelamento/fechamento de ordem — habilitado em
+ * 2026-08-02. O servidor MCP nativo do MT5 EXPÕE tools reais de trade
+ * (`trade_send_market_order` etc., verificadas por sonda ao vivo) — a
+ * plataforma deixou de ser fail-closed por decisão do usuário. Cada função
+ * abaixo só envia os campos exatamente como o schema real exige
+ * (`additionalProperties: false` no servidor rejeita qualquer campo extra).
+ */
+
+export interface Mt5MarketOrderParams {
+  readonly symbol: string;
+  readonly side: 'buy' | 'sell';
+  readonly volume: number;
+  readonly sl?: number;
+  readonly tp?: number;
+  readonly comment?: string;
+}
+
+export async function sendMarketOrder(params: Mt5MarketOrderParams): Promise<unknown> {
+  await assertTradingEligible();
+  await ensureSymbolInMarketWatch(params.symbol);
+  const toolName = await resolveMt5ToolName('order_send_market');
+  const args: Record<string, unknown> = { symbol: params.symbol, type: params.side, volume: params.volume };
+  if (typeof params.sl === 'number') args.sl = params.sl;
+  if (typeof params.tp === 'number') args.tp = params.tp;
+  if (params.comment) args.comment = params.comment.slice(0, 31);
+  const result = await callMt5Tool(toolName, args);
+  return redactSensitiveFields(extractToolValue(result));
+}
+
+export interface Mt5PendingOrderParams {
+  readonly symbol: string;
+  readonly type: 'buy_limit' | 'sell_limit' | 'buy_stop' | 'sell_stop' | 'buy_stop_limit' | 'sell_stop_limit';
+  readonly volume: number;
+  readonly price: number;
+  readonly stoplimit?: number;
+  readonly sl?: number;
+  readonly tp?: number;
+  readonly comment?: string;
+}
+
+export async function sendPendingOrder(params: Mt5PendingOrderParams): Promise<unknown> {
+  await assertTradingEligible();
+  await ensureSymbolInMarketWatch(params.symbol);
+  const toolName = await resolveMt5ToolName('order_send_pending');
+  const args: Record<string, unknown> = {
+    symbol: params.symbol,
+    type: params.type,
+    volume: params.volume,
+    price: params.price,
+  };
+  if (typeof params.stoplimit === 'number') args.stoplimit = params.stoplimit;
+  if (typeof params.sl === 'number') args.sl = params.sl;
+  if (typeof params.tp === 'number') args.tp = params.tp;
+  if (params.comment) args.comment = params.comment.slice(0, 31);
+  const result = await callMt5Tool(toolName, args);
+  return redactSensitiveFields(extractToolValue(result));
+}
+
+export interface Mt5ModifySlTpParams {
+  readonly symbol: string;
+  readonly positionTicket?: number;
+  readonly orderTicket?: number;
+  readonly sl?: number;
+  readonly tp?: number;
+}
+
+/** `sl`/`tp` = 0 remove o stop/take existente — schema real distingue "0" de "omitido" (mantém atual). */
+export async function modifySlTp(params: Mt5ModifySlTpParams): Promise<unknown> {
+  await assertTradingEligible();
+  const toolName = await resolveMt5ToolName('order_modify_sltp');
+  const args: Record<string, unknown> = { symbol: params.symbol };
+  if (typeof params.positionTicket === 'number') args.position_ticket = params.positionTicket;
+  if (typeof params.orderTicket === 'number') args.order_ticket = params.orderTicket;
+  if (typeof params.sl === 'number') args.sl = params.sl;
+  if (typeof params.tp === 'number') args.tp = params.tp;
+  const result = await callMt5Tool(toolName, args);
+  return redactSensitiveFields(extractToolValue(result));
+}
+
+export async function deletePendingOrder(symbol: string, orderTicket: number): Promise<unknown> {
+  await assertTradingEligible();
+  const toolName = await resolveMt5ToolName('order_delete_pending');
+  const result = await callMt5Tool(toolName, { symbol, order_ticket: orderTicket });
+  return redactSensitiveFields(extractToolValue(result));
+}
+
+export async function closeSinglePosition(symbol: string, positionTicket: number): Promise<unknown> {
+  await assertTradingEligible();
+  const toolName = await resolveMt5ToolName('position_close_single');
+  const result = await callMt5Tool(toolName, { symbol, position_ticket: positionTicket });
+  return redactSensitiveFields(extractToolValue(result));
+}
+
+export async function closePositionByOpposite(
+  symbol: string,
+  positionTicket: number,
+  positionTicketBy: number
+): Promise<unknown> {
+  await assertTradingEligible();
+  const toolName = await resolveMt5ToolName('position_close_by');
+  const result = await callMt5Tool(toolName, {
+    symbol,
+    position_ticket: positionTicket,
+    position_ticket_by: positionTicketBy,
+  });
+  return redactSensitiveFields(extractToolValue(result));
 }

@@ -1,12 +1,29 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { mt5Service, Mt5TradingUnavailableError } from '@/services/mt5Service';
+import { mt5Service } from '@/services/mt5Service';
 import { MT5Position } from '@/types/mt5';
-import { ArrowUp, ArrowDown, Activity } from 'lucide-react';
+import { ArrowUp, ArrowDown, Activity, X, Loader2 } from 'lucide-react';
+import { useToast } from '@/contexts/ToastContext';
 
 export default function OpenPositions() {
+  const toast = useToast();
   const [positions, setPositions] = useState<MT5Position[]>([]);
+  const [closingTicket, setClosingTicket] = useState<number | null>(null);
+
+  const handleClose = async (position: MT5Position) => {
+    if (closingTicket !== null) return;
+    setClosingTicket(position.ticket);
+    try {
+      await mt5Service.closePosition(position.ticket, position.symbol);
+      setPositions((prev) => prev.filter((p) => p.ticket !== position.ticket));
+      toast.success(`Posição ${position.symbol} fechada.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Falha ao fechar posição.');
+    } finally {
+      setClosingTicket(null);
+    }
+  };
 
   const totalProfit = positions.reduce((sum: number, pos: MT5Position) => sum + (pos.profit ?? 0), 0);
 
@@ -107,12 +124,6 @@ export default function OpenPositions() {
         </div>
       </div>
 
-      <div className="mb-4 bg-yellow-500/10 p-3 rounded border border-yellow-500/30">
-        <p className="text-xs text-yellow-200 font-space">
-          {Mt5TradingUnavailableError.MESSAGE}
-        </p>
-      </div>
-
       {positions.length === 0 ? (
         <div className="text-center py-12">
           <Activity className="w-12 h-12 text-gray-600 mx-auto mb-4" />
@@ -150,12 +161,20 @@ export default function OpenPositions() {
                     {(position.profit ?? 0) >= 0 ? '+' : ''}R$ {(position.profit ?? 0).toFixed(2)}
                   </p>
                 </div>
-                <span
-                  className="p-2 rounded-lg bg-gray-700 text-gray-400 text-xs font-space"
-                  title={Mt5TradingUnavailableError.MESSAGE}
+                <button
+                  type="button"
+                  onClick={() => void handleClose(position)}
+                  disabled={closingTicket !== null}
+                  className="p-2 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-space flex items-center gap-1 disabled:opacity-50"
+                  title="Fechar posição"
                 >
-                  SOMENTE LEITURA
-                </span>
+                  {closingTicket === position.ticket ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <X className="w-3 h-3" />
+                  )}
+                  FECHAR
+                </button>
               </div>
             </div>
           ))}

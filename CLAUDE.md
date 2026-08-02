@@ -68,10 +68,26 @@ src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, or
 ```
 
 - Config: `MT5_MCP_ENDPOINT` (default `http://127.0.0.1:22346/mcp`) + `MT5_MCP_API_KEY` no `.env`.
-- **Envio/alteração/cancelamento de ordem está fail-closed de propósito** (`Mt5TradingUnavailableError`,
-  `eligibleForExecution=false` hardcoded) — decisão de governança, **não** limitação técnica: o servidor
-  real EXPÕE tools de trade (`trade_send_market_order`, `trade_modify_sl_tp`, etc.), mas ligar isso exige
-  aprovação explícita, não foi feito.
+- **Envio/alteração/cancelamento/fechamento de ordem foi HABILITADO em 2026-08-02** (decisão explícita do
+  usuário — a WR é para o usuário E para um agente de IA executarem operações, não só consumir dados):
+  - **UI manual:** `OrderForm.tsx` (mercado/limite/stop) e `OpenPositions.tsx` (botão Fechar) chamam
+    `mt5Service.sendOrder/closePosition`, que batem em `/api/mt5/mcp/order/{market,pending,modify-sltp,
+    delete,close,close-by}` (novas rotas WRITE, único lugar sob `/api/mt5/mcp/**` que não é read-only).
+    Cada rota chama `assertTradingEligible()` (AutoTrading do terminal) antes de qualquer tool de trade.
+  - **Fluxo governado do agente de IA** (`trade.propose/approve`, usado pelo Hermes): `Mt5DemoBroker`
+    (`src/mcp/pilot/execution/mt5-demo-broker.ts`) agora chama `trade_send_market_order` de verdade —
+    preserva TODOS os guard-rails existentes (allowlist `WR_MCP_TRADE_ALLOWLIST`, limite de notional
+    `WR_MCP_TRADE_MAX_NOTIONAL`, rate limit `WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR`, código de confirmação de
+    6 dígitos). **Kill switch `WR_TRADING_ENABLED=true`** no `.env` (também ligado em 2026-08-02) — sem ele,
+    `approve` para em `BLOCKED_KILL_SWITCH` e nunca chama o broker.
+  - Tools reais usadas (build 6090, verificadas por sonda): `trade_send_market_order`,
+    `trade_send_pending_order`, `trade_modify_sl_tp`, `trade_delete_order`, `trade_close_single_position`,
+    `trade_close_by_position`.
+  - **Fora desta rodada:** `SpreadOrderForm.tsx`/`spreadOrderService.ts` (ordens de spread, 2 pernas)
+    continuam fail-closed — superfície maior, não abordada ainda.
+  - `eligibleForExecution` em `src/app/api/agents/route.ts` (4 ocorrências) continua hardcoded `false` —
+    é um flag de reporte nas respostas do agente, não usado pelo gate real de `trade.propose`; não foi
+    alterado nesta mudança.
 - Aba **Admin** tem card dedicado "MT5 (MCP Nativo)" com botão Conectar/Desconectar (fluxo: logar na WR →
   Admin → conectar com o terminal MT5 já aberto na máquina).
 - **Nomes de tool do servidor real (build 6090, verificados por sonda) NÃO são os nomes-convenção óbvios**
@@ -190,5 +206,7 @@ release/build/win-unpacked/WR Trade Pro.exe
    configurável ou coordenar com o Guardião
 5. Capabilities do MT5 MCP nativo ainda não testadas contra o servidor real: `history` (deals),
    `symbol_info`, `market_book`/DOM — candidatos de tool só por suposição
-6. Decisão em aberto: habilitar trading via MCP nativo (`trade_send_market_order` etc. existem no
-   servidor real) — bloqueado por governança, não por limitação técnica
+6. ~~Decisão em aberto: habilitar trading via MCP nativo~~ **HABILITADO em 2026-08-02** — UI manual e
+   fluxo do agente de IA (`trade.propose/approve`, `WR_TRADING_ENABLED=true`) ambos enviam ordem real
+7. `SpreadOrderForm.tsx`/`spreadOrderService.ts` (ordens de spread, 2 pernas) continuam fail-closed —
+   não incluído na religação de 2026-08-02, superfície maior e separada
