@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, RefreshCw } from "lucide-react";
 import { CandlestickData, UTCTimestamp } from "lightweight-charts";
 import CandlestickChart from "@/components/CandlestickChart";
@@ -78,13 +78,19 @@ export default function DashboardTab({ accountInfo, tickData }: DashboardTabProp
     loadChartData(selectedSymbol, selectedTimeframe);
   }, [selectedSymbol, selectedTimeframe, loadChartData]);
 
-  // Reload when MT5 connects; keep isConnected reactive
+  // Reload when MT5 connects; keep isConnected reactive.
+  // mt5Service reemite "state" a cada poll de 5s mesmo sem mudança real —
+  // só recarrega o gráfico numa transição real para CONNECTED, senão o
+  // isLoadingChart pisca (desmonta/remonta o CandlestickChart) a cada poll.
+  const wasConnectedRef = useRef(isConnected);
   useEffect(() => {
     const handler = (status: MT5ConnectionStatus) => {
-      setIsConnected(status.state === "CONNECTED");
-      if (status.state === "CONNECTED") {
+      const nowConnected = status.state === "CONNECTED";
+      setIsConnected(nowConnected);
+      if (nowConnected && !wasConnectedRef.current) {
         loadChartData(selectedSymbol, selectedTimeframe);
       }
+      wasConnectedRef.current = nowConnected;
     };
     mt5Service.on("state", handler);
     return () => {
