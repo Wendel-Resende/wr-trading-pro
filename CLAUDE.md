@@ -196,6 +196,23 @@ Regra arquitetural: dados locais do WR Trading Pro devem ficar dentro de `wr_tra
 
 Ver a skill `rodar-dev` (`.claude/skills/rodar-dev/SKILL.md`).
 
+## Como o app é aberto no dia a dia (2026-08-12)
+
+O atalho da área de trabalho (`WR Trading Pro.lnk`) **não aponta para um executável
+empacotado** — ele roda `node_modules/electron/dist/electron.exe "C:\WR\wr_trade_pro_"`,
+ou seja, o Electron direto sobre a pasta do projeto. Consequências:
+
+- O app sempre carrega o código ATUAL do repositório. Não precisa de `electron:package` para
+  ver mudanças — basta `npm run build` (Next) e `npm run electron:compile` (`electron/dist/main.js`).
+- **Trocar de branch troca o que o app mostra.** Se o repositório estiver noutra branch, o
+  atalho abre aquela versão. Isso já causou confusão real ("abri o app e não tem atualização").
+- `npm run electron:package` só é necessário para distribuir a outra máquina.
+
+**Armadilha removida em 2026-08-12:** existia `release/build/win-unpacked/` com um executável
+de **24/04**, enquanto o `electron-builder` escreve em `release/win-unpacked/`. Quem abrisse o
+binário de `release/build/` nunca veria mudança nenhuma. Apagado, junto com os artefatos Linux
+(`linux-unpacked`, AppImage) — 2,9 GB. Tudo regenerável e fora do Git.
+
 ## Convenções
 
 - **Python:** conda env `IA_Day_Trading` — todos scripts rodam aqui
