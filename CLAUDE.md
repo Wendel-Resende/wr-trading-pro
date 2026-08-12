@@ -101,6 +101,47 @@ src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, or
   e a validação estrita do SDK quebrava toda chamada. `client.request()` faz a mesma chamada JSON-RPC sem
   essa camada extra.
 
+### Aba Opções — scan server-side em Python (2026-08-12)
+
+A aba estava MORTA desde 2026-08-02: `optionsService.ts` fazia 5 chamadas ao protocolo
+WebSocket da ponte removida (`GET_SYMBOLS`, `SELECT_SYMBOL`, `UNSELECT_SYMBOL`,
+`SUBSCRIBE_TICKS`, `GET_SYMBOL_INFO`). Como `mt5Service.send()` virou no-op silencioso,
+`getSpotPrice` esperava 15 s e devolvia `{last:0,ask:0,bid:0}` — zero virando dado.
+
+**Não foi religada pelo MCP nativo, e isso é deliberado:** o servidor MCP do terminal **não
+expõe tool de `symbol_info`** (confirmado por sonda em 2026-08-11), e sem ela não há bid, ask
+nem vencimento por opção — o scan sairia sem cotação.
+
+O scan completo **já existia e funcionava** em Python (`python/options/scanner_opcoes.py`,
+exposto por `POST /api/options/scan` do `spread_api.py`), usando o pacote `MetaTrader5`, que
+tem a API completa. Era o caminho que o **agente de IA já usava** pela tool
+`market.scan_options` — a funcionalidade nunca morreu, só a UI perdeu acesso.
+
+- `src/app/api/options/scan/route.ts`: proxy Next -> Flask (o `spread_api` é loopback-only, o
+  navegador não o alcança). Percentuais passam como "humanos" (10 = 10%); quem converte para
+  fração é o handler Flask — converter dos dois lados daria 0,1%.
+- `optionsService.scanOptions` chama o proxy e mapeia o payload snake_case para
+  `OptionStrike`. O `ask` não vem no payload mas é **derivável** de
+  `spread_pct = (ask-bid)/ask`; nada é fabricado.
+- Toda a lógica de score, top 3/top 5 e alertas da UI foi preservada.
+- Helpers mortos removidos: `getOptionSymbols`, `getSpotPrice`, `getSymbolInfo`,
+  `selectSymbol`, `unselectSymbol`.
+- **Efeito colateral bom:** aba e agente passam a enxergar exatamente o mesmo dado. Antes
+  divergiam silenciosamente.
+
+### Guarda DEMO — APOSENTADA (2026-08-12)
+
+`WR_TRADING_DEMO_ONLY` foi **removida** do `.env` e do `.env.example`. A guarda vivia em
+`python/mt5_bridge.py`, deletado em 2026-08-02, e nunca foi reimplantada no MCP nativo —
+enquanto isso a execução de ordem foi HABILITADA, então a variável declarava uma proteção
+inexistente. Config que promete proteção que não existe é pior que config nenhuma.
+
+**Nada hoje distingue conta demo de conta real.** As travas reais são: kill switch
+`WR_TRADING_ENABLED`, aprovação humana com código de 6 dígitos, `maxNotional`,
+`maxPositionConcentrationPct`, rate limit e `assertTradingEligible()` (AutoTrading do
+terminal). Se um dia quiser a guarda de volta, `account_info` do MT5 devolve `"type":"demo"` —
+o conserto é pequeno, mas é decisão de governança, não detalhe técnico.
+
 ### Saúde Financeira — ranking descritivo (2026-08-12)
 
 Aba **Saúde Financeira**, irmã e distinta da **Ranking Fundamentalista**. A diferença é o tipo

@@ -1,6 +1,67 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-12 (nova aba: Saúde Financeira — ranking descritivo)
+Última atualização: 2026-08-12 (guarda DEMO aposentada + aba Opções religada)
+
+## Sessão 2026-08-12 (parte 2) — Guarda DEMO aposentada + aba Opções religada
+
+### Guarda DEMO: APOSENTADA (decisão do usuário)
+
+`WR_TRADING_DEMO_ONLY` removida do `.env` e do `.env.example`. Vivia em
+`python/mt5_bridge.py`, deletado em 2026-08-02, e nunca foi reimplantada no MCP nativo —
+enquanto isso a execução de ordem foi HABILITADA. A variável declarava proteção inexistente.
+
+Dois textos que mentiam, corrigidos de passagem:
+- `.env.example` dizia "não há mais envio de ordem no MCP nativo" — falso desde 02/08.
+- `docs/MCP_PILOT.md` listava a variável na tabela como se tivesse efeito.
+
+**Nada hoje distingue conta demo de conta real.** Travas reais: kill switch, aprovação humana
+(código de 6 dígitos), `maxNotional`, `maxPositionConcentrationPct`, rate limit e
+`assertTradingEligible()` (AutoTrading). Para reimplantar um dia: `account_info` devolve
+`"type":"demo"`.
+
+### Aba Opções: religada por Python, NÃO por MCP
+
+Correção de rota: a recomendação inicial (religar pelo MCP nativo) estava errada e foi
+retificada com o usuário antes de implementar. O servidor MCP do terminal **não expõe
+`symbol_info`** (sonda de 2026-08-11) — sem ela não há bid, ask nem vencimento por opção, e o
+scan sairia sem cotação.
+
+O scan completo já existia e funcionava: `python/options/scanner_opcoes.py` via
+`POST /api/options/scan` do `spread_api.py`, com o pacote `MetaTrader5` (API completa). Era o
+caminho que o agente já usava por `market.scan_options`. **A funcionalidade nunca morreu — só
+a UI perdeu acesso**, presa ao protocolo WebSocket removido.
+
+- Novo `src/app/api/options/scan/route.ts`: proxy Next -> Flask (spread_api é loopback-only).
+  Percentuais "humanos" (10 = 10%); a conversão para fração é do lado Flask — converter dos
+  dois lados daria 0,1%.
+- `scanOptions` consome o proxy; `ask` é DERIVADO de `spread_pct = (ask-bid)/ask`, não
+  fabricado. Score, top 3/5 e alertas da UI preservados.
+- Removidos: `getOptionSymbols`, `getSpotPrice`, `getSymbolInfo`, `selectSymbol`,
+  `unselectSymbol` (todos falavam com o protocolo morto).
+- Aba e agente passam a ver o mesmo dado; antes divergiam em silêncio.
+
+### Incidente: checkout inesperado para main
+
+O reflog registra `checkout: moving from feat/ranking-saude-financeira to main` que **não
+partiu de comando desta sessão**. Efeito: arquivos da Saúde Financeira sumiram do working
+tree. Nada perdido (commits na branch e no remoto); resolvido com checkout de volta. Se há
+outro terminal ou o Guardião operando neste repositório, atenção a isso.
+
+### Verificação
+
+`tsc --noEmit` e `npm run build` limpos (rota `/api/options/scan` registrada);
+`test:financial-health` verde.
+
+**NÃO verificado:** `npm run test:mcp-pilot` não completou em 3 tentativas (duas travaram sem
+emitir linha; a única que terminou rodou durante o intervalo em que o repo estava na `main`,
+sem a correção do teste obsoleto da allowlist). Havia 12 processos `node` vivos — suspeita de
+resquício segurando a porta do servidor de teste. **Rodar com o app Electron fechado.**
+
+### Pendências
+
+1. Retreino do modelo de fator (único conserto do universo de 138 vs 129).
+2. Bloco das financeiras na aba Saúde — depende de coletar Basileia/inadimplência da CVM.
+3. Reconfirmar `test:mcp-pilot`.
 
 ## Sessão 2026-08-12 — Nova aba: Saúde Financeira (ranking descritivo)
 
