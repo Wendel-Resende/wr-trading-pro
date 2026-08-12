@@ -1,6 +1,60 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-12 (guarda DEMO aposentada + aba Opções religada)
+Última atualização: 2026-08-12 (retreino do modelo de fator — universo corrigido)
+
+## Sessão 2026-08-12 (parte 3) — Retreino: universo de 138 -> 129 CORRIGIDO
+
+### Resultado
+
+Treino `cmsqoehq70000i1uwtxp6ld00` -> SUCCEEDED. Modelo `13b831f2ae…bbc23f` APROVADO no
+gate e ATIVADO. O anterior (`ab236072…`) virou SUPERSEDED.
+
+| | Antigo (26/07) | Novo (12/08) |
+|---|---|---|
+| IC | 0,096 | 0,093 |
+| t-stat | 4,32 | 4,20 |
+| Spread topo-fundo | 2,58% | 2,69% |
+| Anos positivos | — | 77% |
+| Amostras / trimestres | — | 5.256 / 49 |
+
+Métricas praticamente idênticas — **é o resultado esperado de uma correção bem-feita**: as 9
+empresas removidas não tinham série de preços, então nunca contribuíram com informação real.
+O spread até melhorou.
+
+### A correção confirmada no artefato
+
+```
+data/ml/directional_models/13b831f2…/model.json
+chaves: candidates, featureIc, minTStat, selected, universe   <- `universe` agora existe
+universe: 129 tickers · GUAR3, NEOE3, STBP3, SRNA3 FORA
+```
+
+O artefato antigo NÃO tinha `universe` (arquivo de 26/07 00:04, anterior à correção), e por
+isso `if model.universe:` em `directional_classifier.py:876` nunca filtrava. Regerar previsões
+não resolvia — só retreinar, como diagnosticado. **Confirmado na tela: 129 empresas, GUAR3 e
+SRNA3 fora dos extremos.**
+
+### Bug corrigido de passagem: seleção de modelo congelada
+
+`RankingFundamentalistaView.loadModels` fazia
+`setSelectedVersion((current) => current || …)` — o `current ||` impedia a seleção de mudar
+para sempre. Ao terminar o treino, o polling recarregava a lista mas a tela continuava
+apontando para a versão que o próprio treino acabara de tornar SUPERSEDED, e "Gerar ranking
+agora" falhava com INVALID_STATE.
+
+- `loadModels(preferActive = false)`; o polling chama `loadModels(true)` ao terminar. Fora
+  disso a escolha do usuário é respeitada — inspecionar modelo antigo é legítimo.
+- Botão "Gerar ranking agora" desabilitado quando o modelo selecionado não é ACTIVE, com
+  explicação no title.
+
+**Nota:** o erro só apareceu porque o SERVIDOR recusou gerar previsões de modelo SUPERSEDED e
+disse por quê. Se fosse permissivo, teria gerado silenciosamente um ranking de 138 pelo modelo
+velho. A trava funcionou; o defeito era só de UI.
+
+### Pendências restantes
+
+1. Bloco das financeiras na aba Saúde — depende de coletar Basileia/inadimplência da CVM.
+2. `npm run test:mcp-pilot` segue sem reconfirmação (rodar com o app Electron fechado).
 
 ## Sessão 2026-08-12 (parte 2) — Guarda DEMO aposentada + aba Opções religada
 

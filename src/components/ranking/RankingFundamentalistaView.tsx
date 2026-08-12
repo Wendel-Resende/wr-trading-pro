@@ -76,7 +76,14 @@ export default function RankingFundamentalistaView(): React.ReactElement {
   );
 
   // --- carregamento ------------------------------------------------------
-  const loadModels = useCallback(async () => {
+  /**
+   * `preferActive`: força a seleção a saltar para o modelo ACTIVE. Usado quando
+   * um treino termina — sem isso a tela continuaria apontando para a versão
+   * anterior, que o próprio treino acabou de mover para SUPERSEDED, e "Gerar
+   * ranking agora" falharia com INVALID_STATE. Fora desse caso a escolha do
+   * usuário é respeitada: inspecionar um modelo antigo é legítimo.
+   */
+  const loadModels = useCallback(async (preferActive = false) => {
     setLoadingModels(true);
     try {
       const [active, all] = await Promise.all([
@@ -86,7 +93,8 @@ export default function RankingFundamentalistaView(): React.ReactElement {
       setActiveModels(active.data);
       setAllModels(all.data);
       setModelsError(null);
-      setSelectedVersion((current) => current || active.data[0]?.modelVersion || '');
+      const activeVersion = active.data[0]?.modelVersion ?? '';
+      setSelectedVersion((current) => (preferActive && activeVersion ? activeVersion : current || activeVersion));
     } catch (error) {
       // Falha fecha a tela: melhor não mostrar modelo nenhum do que mostrar
       // uma lista parcial como se fosse a completa.
@@ -173,7 +181,7 @@ export default function RankingFundamentalistaView(): React.ReactElement {
         try {
           const { data } = await getJson<TrainingRun>(`/api/v1/ml/training-runs/${trainingRun.trainingRunId}`);
           setTrainingRun(data);
-          if (!ACTIVE_RUN_STATUSES.has(data.status)) await loadModels();
+          if (!ACTIVE_RUN_STATUSES.has(data.status)) await loadModels(true);
         } catch {
           // Falha pontual de polling não derruba a tela — a próxima tentativa segue.
         }
@@ -333,7 +341,17 @@ export default function RankingFundamentalistaView(): React.ReactElement {
             </select>
             <button
               onClick={() => void handleGenerate()}
-              disabled={!selectedVersion || generating || activeModels.length === 0}
+              /* Só modelo ACTIVE gera ranking (regra do servidor). Desabilitar
+                 aqui evita oferecer uma ação que sempre falharia com
+                 INVALID_STATE ao inspecionar uma versão antiga. */
+              disabled={
+                !selectedVersion || generating || activeModels.length === 0 || selectedModel?.status !== 'ACTIVE'
+              }
+              title={
+                selectedModel && selectedModel.status !== 'ACTIVE'
+                  ? `Somente modelos ACTIVE geram ranking — este está ${selectedModel.status}.`
+                  : undefined
+              }
               className="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 rounded px-3 py-1 text-xs font-semibold"
             >
               {generating ? 'Gerando…' : 'Gerar ranking agora'}
