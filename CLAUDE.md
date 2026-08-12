@@ -9,49 +9,7 @@ O conhecimento do projeto vive no vault Obsidian `C:\Users\rwres\hermes-knowledg
 - Divisão de papéis: o vault é a fonte de verdade de decisões e conhecimento; `docs/CODEX_HANDOFF.md` é o handoff operacional entre sessões; o histórico técnico fica no git.
 - Em conflito entre vault e código/git, o git vence para fatos técnicos — anotar a divergência no vault com data (política de update do `SCHEMA.md`).
 
-## Stack
-
-- **Frontend:** Next.js 15.1.3 (App Router), React 19, TypeScript 5, Tailwind CSS 3.4
-- **UI:** Recharts, lightweight-charts, Lucide React, CVA
-- **Backend:** Prisma 6 + SQLite, API Routes (Next.js)
-- **Desktop:** Electron 35 + electron-builder 26
-- **Python Services:** conda env `IA_Day_Trading` (Python 3.x via Anaconda)
-- **ML:** TypeScript puro — MA Crossover, Linear Regression, backtesting engine
-- **State:** React Query, React Context, Zustand (não confirmado)
-
 ## Arquitetura
-
-### Frontend
-```
-src/
-├── app/                  # Next.js App Router (pages, API routes)
-├── components/tabs/      # 8 tabs: Dashboard, Orders, Portfolio, Spread, Monitoring, MLPredictions, MLModels, Admin
-├── components/ui/        # Toast, componentes reutilizáveis
-├── contexts/             # ToastContext
-├── services/            # mt5Service, historicalDataService, stockMonitoringService
-├── lib/                 # Prisma client, utilitários
-└── types/               # TypeScript types (mt5, admin, profit, stock-reports)
-```
-
-### API Routes
-```
-src/app/api/
-├── historical-candles/   # GET candles do SQLite, POST para salvar candles do cliente
-├── stock-monitoring/    # CRUD posições, sync-prices, summary
-├── stock-alerts/         # CRUD alertas
-├── stock-reports/        # CRUD relatórios
-├── volatility/          # API de volatilidade
-└── spread-orders/        # Ordens de spread
-```
-
-### Python Services
-```
-python/
-├── spread_api.py        # Flask :5000 — API de spreads
-├── volatility_api.py    # Flask :5555 — API de volatilidade
-├── profitdll_bridge.py  # Bridge Profit DLL (ainda não ativo)
-└── ml_api.py           # Flask :5560 — motor ML (backfill D1, TimesFM, LightGBM)
-```
 
 ### MT5 — MCP nativo (não é mais ponte Python)
 
@@ -143,50 +101,59 @@ src/app/api/mt5/mcp/**             # rotas Next read-only (status, positions, or
   e a validação estrita do SDK quebrava toda chamada. `client.request()` faz a mesma chamada JSON-RPC sem
   essa camada extra.
 
-### Desktop (Electron)
+### Saúde Financeira — ranking descritivo (2026-08-12)
+
+Aba **Saúde Financeira**, irmã e distinta da **Ranking Fundamentalista**. A diferença é o tipo
+de afirmação, não o assunto:
+
+- **Ranking Fundamentalista** é PREDITIVO ("tende a render acima das pares no próximo
+  trimestre") — por isso tem walk-forward, IC, t-stat e gate.
+- **Saúde Financeira** é DESCRITIVO ("manteve as contas em ordem ao longo do tempo") — é
+  contagem sobre balanço já publicado. **Não tem gate nem modelo, e não pode reprovar.**
+
+Por isso não usa Python nem o ML Engine. Tudo em TypeScript, lendo
+`data/cvm/cvm_fundamentos.db` com `node:sqlite` read-only, no padrão de `cvm-sector-ranking.ts`:
+
 ```
-electron/
-├── main.ts             # Main process: inicia Next.js + serviços Python (spread_api, volatility_api); MCP Pilot e ML Engine sob demanda
-├── preload.ts           # Preload script
-└── dist/                # JavaScript compilado
+src/lib/server/cvm-financial-health-rules.ts   PURO: 5 pilares + agregação, zero I/O
+src/lib/server/cvm-financial-health.ts         query + point-in-time + exclusões
+src/app/api/cvm/financial-health/route.ts      GET (?asOf=YYYY-MM-DD opcional)
+src/components/saude/**                        só a View faz fetch
 ```
 
+- **Cinco pilares por trimestre**, critérios absolutos: `divida_bruta_pl` ≤ 1,
+  `liquidez_corrente` ≥ 1, `icj` ≥ 2, `lucro_liquido` > 0, `fco` > 0. Escolhidos pela
+  COBERTURA real, não pela elegância — por isso dívida bruta/PL (99%) e não dívida
+  líquida/EBITDA (83%), e lucro/FCO da demonstração crua e não `margem_liquida` (69%).
+- **Escore** = média de (pilares aprovados ÷ pilares MEDIDOS). Pilar sem dado não aprova e
+  **não reprova** — fingir doença por dado ausente seria o mesmo defeito de exibir zero como
+  cotação.
+- **Coluna "recente" (8 trimestres) fica SEPARADA do escore histórico.** A média não sabe
+  *quando* a empresa falhou; a divergência entre as duas colunas é a informação. Fundir num
+  peso único a destruiria. Confirmado no dado real: DASA3, YDUQ3, HAPV3 e MRVE3 aparecem em
+  declínio.
+- **Universo: 117** = 138 − 18 do setor financeiro − 3 sem história (piso de 20 trimestres:
+  JALL3, CAML3, SRNA3). Exclusões aparecem NA TELA com a razão, nunca por omissão.
+- Financeiras usam `empresas.setor_cvm` (classificação oficial), nunca o campo `setor` de
+  texto livre. Ficam fora porque num banco o passivo circulante é o depósito do cliente e
+  alavancagem alta é o modelo de negócio — a régua da indústria faria ITUB4 parecer doente.
+  **Bloco próprio para elas depende de coletar Basileia e inadimplência da CVM**; com só
+  lucro e ROE seria fachada.
+- **Sem tool MCP de propósito:** o agente já recebe o ranking de fator no trilho
+  `trade.propose`; um segundo ranking convidaria as duas listas a virarem recomendação.
+- Testes: `npm run test:financial-health` (limiares na fronteira, dado ausente, piso,
+  desempate, janela recente + prova de fumaça sobre o banco real).
+- Spec: `docs/superpowers/specs/2026-08-12-ranking-saude-financeira-design.md`
+
 ### Dados locais do projeto
-```
-data/
-└── options/
-    └── options_data.db  # gerado em runtime; ignorado pelo Git
-```
+
+O banco de opções oficial é `data/options/options_data.db` (gerado em runtime; ignorado pelo Git).
 
 Regra arquitetural: dados locais do WR Trading Pro devem ficar dentro de `wr_trade_pro_`. Não usar `AppData`/`Roaming` como fonte de verdade do app.
 
 ## Como Rodar
 
-### Modo desenvolvimento (4 terminais)
-```bash
-# Terminal 1
-python python/spread_api.py
-
-# Terminal 2
-python python/volatility_api.py
-
-# Terminal 3
-python python/ml_api.py
-
-# Terminal 4
-npm run dev
-```
-
-### Executável Electron (auto-start dos serviços)
-```bash
-# Executável em (criar com):
-npm run electron:package
-
-# Ou usar o executável já buildado:
-dist_electron/win-unpacked/WR Trade Pro.exe
-# ou
-release/build/win-unpacked/WR Trade Pro.exe
-```
+Ver a skill `rodar-dev` (`.claude/skills/rodar-dev/SKILL.md`).
 
 ## Convenções
 
@@ -229,13 +196,6 @@ release/build/win-unpacked/WR Trade Pro.exe
   `ensureSymbolInMarketWatch` adiciona símbolos ausentes do Market Watch antes de candles/tick (só
   visibilidade, nunca abre posição) — sem isso `get_chart_history` falhava com "symbol not found" para
   PETR4/VALE3/BBDC4 (watchlist padrão do app)
-
-## Histórico de Superpowers (SP)
-
-- **SP1:** Fundação — Git, scripts organizados, Toast, page.tsx em 8 tabs
-- **SP2:** Core Fixes — mt5Service.getChartData(), candles reais, SQLite, debounce
-- **SP3:** ML Pipeline — HistoricalCandle, API candles, mlModels, backtesting
-- **SP4:** UX & Admin — buildMarketContext(), AdminTab real, debounce 200ms
 
 ## Pending / A Fazer
 

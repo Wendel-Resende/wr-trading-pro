@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { useRouter } from "next/navigation";
 import {
   LayoutDashboard, FileText, BarChart3, Brain,
-  ArrowDownLeft, TrendingUp, Database, Wifi, WifiOff, Zap, LogOut, Bot, Landmark
+  ArrowDownLeft, TrendingUp, Database, Wifi, WifiOff, Zap, LogOut, Bot, Landmark, HeartPulse
 } from "lucide-react";
 import MT5ConnectionForm from "@/components/MT5ConnectionForm";
 import Modal from "@/components/Modal";
@@ -18,18 +18,20 @@ const PortfolioTab = lazy(() => import("@/components/tabs/PortfolioTab"));
 const SpreadTab = lazy(() => import("@/components/tabs/SpreadTab"));
 const MonitoringTab = lazy(() => import("@/components/tabs/MonitoringTab"));
 const RankingFundamentalistaTab = lazy(() => import("@/components/tabs/RankingFundamentalistaTab"));
+const SaudeFinanceiraTab = lazy(() => import("@/components/tabs/SaudeFinanceiraTab"));
 const OptionsTab = lazy(() => import("@/components/tabs/OptionsTab"));
 const AdminTab = lazy(() => import("@/components/tabs/AdminTab"));
 const AgentTab = lazy(() => import("@/components/tabs/AgentTab"));
 const CvmFundamentalsTab = lazy(() => import("@/components/tabs/CvmFundamentalsTab"));
 
-type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "opcoes" | "fundamentos" | "admin" | "agentes";
+type TabId = "dashboard" | "orders" | "portfolio" | "spread" | "monitoramento" | "ml" | "saude" | "opcoes" | "fundamentos" | "admin" | "agentes";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "orders", label: "Ordens", icon: FileText },
   { id: "portfolio", label: "Portfólio", icon: BarChart3 },
   { id: "ml", label: "Ranking Fundamentalista", icon: Brain },
+  { id: "saude", label: "Saúde Financeira", icon: HeartPulse },
   { id: "spread", label: "Spread B3", icon: ArrowDownLeft },
   { id: "opcoes", label: "Opções", icon: TrendingUp },
   { id: "fundamentos", label: "Fundamentos CVM", icon: Landmark },
@@ -246,6 +248,11 @@ export default function Dashboard() {
         {mountedTabs.has("ml") && (
           <div style={{ display: activeTab === "ml" ? "block" : "none" }}>
             <Suspense fallback={<TabLoader />}><RankingFundamentalistaTab /></Suspense>
+          </div>
+        )}
+        {mountedTabs.has("saude") && (
+          <div style={{ display: activeTab === "saude" ? "block" : "none" }}>
+            <Suspense fallback={<TabLoader />}><SaudeFinanceiraTab /></Suspense>
           </div>
         )}
         {mountedTabs.has("opcoes") && (
