@@ -1,6 +1,325 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-02 (múltiplas contas MT5 — perfis de conexão dinâmicos)
+Última atualização: 2026-08-12 (guarda DEMO aposentada + aba Opções religada)
+
+## Sessão 2026-08-12 (parte 2) — Guarda DEMO aposentada + aba Opções religada
+
+### Guarda DEMO: APOSENTADA (decisão do usuário)
+
+`WR_TRADING_DEMO_ONLY` removida do `.env` e do `.env.example`. Vivia em
+`python/mt5_bridge.py`, deletado em 2026-08-02, e nunca foi reimplantada no MCP nativo —
+enquanto isso a execução de ordem foi HABILITADA. A variável declarava proteção inexistente.
+
+Dois textos que mentiam, corrigidos de passagem:
+- `.env.example` dizia "não há mais envio de ordem no MCP nativo" — falso desde 02/08.
+- `docs/MCP_PILOT.md` listava a variável na tabela como se tivesse efeito.
+
+**Nada hoje distingue conta demo de conta real.** Travas reais: kill switch, aprovação humana
+(código de 6 dígitos), `maxNotional`, `maxPositionConcentrationPct`, rate limit e
+`assertTradingEligible()` (AutoTrading). Para reimplantar um dia: `account_info` devolve
+`"type":"demo"`.
+
+### Aba Opções: religada por Python, NÃO por MCP
+
+Correção de rota: a recomendação inicial (religar pelo MCP nativo) estava errada e foi
+retificada com o usuário antes de implementar. O servidor MCP do terminal **não expõe
+`symbol_info`** (sonda de 2026-08-11) — sem ela não há bid, ask nem vencimento por opção, e o
+scan sairia sem cotação.
+
+O scan completo já existia e funcionava: `python/options/scanner_opcoes.py` via
+`POST /api/options/scan` do `spread_api.py`, com o pacote `MetaTrader5` (API completa). Era o
+caminho que o agente já usava por `market.scan_options`. **A funcionalidade nunca morreu — só
+a UI perdeu acesso**, presa ao protocolo WebSocket removido.
+
+- Novo `src/app/api/options/scan/route.ts`: proxy Next -> Flask (spread_api é loopback-only).
+  Percentuais "humanos" (10 = 10%); a conversão para fração é do lado Flask — converter dos
+  dois lados daria 0,1%.
+- `scanOptions` consome o proxy; `ask` é DERIVADO de `spread_pct = (ask-bid)/ask`, não
+  fabricado. Score, top 3/5 e alertas da UI preservados.
+- Removidos: `getOptionSymbols`, `getSpotPrice`, `getSymbolInfo`, `selectSymbol`,
+  `unselectSymbol` (todos falavam com o protocolo morto).
+- Aba e agente passam a ver o mesmo dado; antes divergiam em silêncio.
+
+### Incidente: checkout inesperado para main
+
+O reflog registra `checkout: moving from feat/ranking-saude-financeira to main` que **não
+partiu de comando desta sessão**. Efeito: arquivos da Saúde Financeira sumiram do working
+tree. Nada perdido (commits na branch e no remoto); resolvido com checkout de volta. Se há
+outro terminal ou o Guardião operando neste repositório, atenção a isso.
+
+### Verificação
+
+`tsc --noEmit` e `npm run build` limpos (rota `/api/options/scan` registrada);
+`test:financial-health` verde.
+
+**NÃO verificado:** `npm run test:mcp-pilot` não completou em 3 tentativas (duas travaram sem
+emitir linha; a única que terminou rodou durante o intervalo em que o repo estava na `main`,
+sem a correção do teste obsoleto da allowlist). Havia 12 processos `node` vivos — suspeita de
+resquício segurando a porta do servidor de teste. **Rodar com o app Electron fechado.**
+
+### Pendências
+
+1. Retreino do modelo de fator (único conserto do universo de 138 vs 129).
+2. Bloco das financeiras na aba Saúde — depende de coletar Basileia/inadimplência da CVM.
+3. Reconfirmar `test:mcp-pilot`.
+
+## Sessão 2026-08-12 — Nova aba: Saúde Financeira (ranking descritivo)
+
+Sem commit (aguardando pedido do usuário).
+Spec: `docs/superpowers/specs/2026-08-12-ranking-saude-financeira-design.md`
+Plano: `docs/superpowers/plans/2026-08-12-ranking-saude-financeira.md`
+
+### O que é, e por que não é a mesma coisa que a aba irmã
+
+Pedido do usuário: *"rankear as empresas que tiveram sua saúde financeira ao longo do tempo
+boa, isso mostra que a empresa é organizada e se preocupa em não ficar negativada"*.
+
+A diferença com o Ranking Fundamentalista é o TIPO DE AFIRMAÇÃO:
+
+| | Ranking Fundamentalista | Saúde Financeira |
+|---|---|---|
+| Afirma | tende a render acima das pares | manteve as contas em ordem |
+| Natureza | preditiva | descritiva |
+| Precisa de | walk-forward, IC, t-stat, gate | contagem sobre balanço publicado |
+| Pode reprovar | sim (modelo fica FAILED) | não existe gate |
+| Motor | Python + ML Engine | TypeScript puro |
+
+As duas convivem, cada uma em sua aba (decisão explícita do usuário).
+
+### Cinco decisões do usuário
+
+1. **Convivem** — não substitui o escore de fator.
+2. **Critérios absolutos por trimestre**, contando consistência (não posição relativa às
+   pares: "não ficar negativada" é limiar absoluto, não posição no pelotão).
+3. **Cinco pilares** — alavancagem, liquidez, cobertura de juros, lucro e geração de caixa
+   (o usuário pediu explicitamente o pilar de caixa junto).
+4. **Financeiras excluídas** com a razão na tela; bloco próprio depois.
+5. **Nota parcial por trimestre**, sem pesos.
+
+### Escolhas guiadas pela COBERTURA do dado, não pela elegância
+
+Conferido no banco antes de escolher (`data/cvm/cvm_fundamentos.db`, 138 empresas,
+2011-06 a 2026-03):
+
+| Campo | Cobertura | Usado? |
+|---|---|---|
+| `endividamento` | 100% | não — é percentual 0-100, evita a armadilha de escala |
+| `divida_bruta_pl` | 99% | **sim** (alavancagem) |
+| `fco` | 99% | **sim** (caixa) |
+| `liquidez_corrente` | 97% | **sim** (liquidez) |
+| `icj` | 90% | **sim** (juros) |
+| `divida_liquida_ebitda` | 83% | não — explode com EBITDA pequeno |
+| `margem_liquida` | 69% | não — `lucro_liquido` cru tem 100% |
+
+Limiares: dívida/PL ≤ 1 (~72% de aprovação), liquidez ≥ 1 (~78%), icj ≥ 2 (~50%, a mediana
+do mercado é 2,09), lucro > 0, FCO > 0.
+
+### Universo: 117
+
+138 − 18 do setor financeiro − 3 sem história. O piso de 20 trimestres corta JALL3 (11),
+CAML3 (17) e SRNA3 (19) — **SRNA3 é uma das quatro que apareciam indevidamente nos extremos
+do ranking de fator**; aqui o piso a retira sozinho, sem regra especial.
+
+Financeiras identificadas por `empresas.setor_cvm` (classificação oficial da CVM), nunca pelo
+campo `setor` de texto livre. Os 5 buckets dão exatamente as mesmas 18 da varredura por texto.
+**Cinco delas estão na watchlist do usuário** (ITUB4, BBDC4, BBAS3, B3SA3, ITSA4) — por isso a
+exclusão aparece na tela com a razão, nunca como omissão silenciosa.
+
+### A coluna "recente", e por que ela é separada
+
+A média histórica não sabe QUANDO a empresa falhou: impecável de 2011-2018 e quebrada desde
+2022 sai com escore alto. Correção sem inventar pesos: coluna com a taxa dos últimos 8
+trimestres, exibida ao lado e **nunca misturada** ao escore histórico.
+
+Validado no dado real — 14 empresas em declínio (≥15 p.p. de queda), entre elas DASA3, YDUQ3,
+HAPV3 e MRVE3, todos casos conhecidos de deterioração recente.
+
+### Sanidade do resultado
+
+Topo: EZTC3 0,963 · TOTS3 0,957 · LREN3 0,947 · GRND3 0,933 — nomes de baixa alavancagem.
+Fundo: MRFG3 0,360 · ORVR3 0,362 · LIGT3 0,387 (Light, que foi a recuperação judicial).
+
+### Arquitetura
+
+```
+src/lib/server/cvm-financial-health-rules.ts   PURO: 5 pilares + agregação, zero I/O
+src/lib/server/cvm-financial-health.ts         query + point-in-time + exclusões
+src/app/api/cvm/financial-health/route.ts      GET (?asOf opcional)
+src/components/saude/{types,SaudeTable,ExclusoesPanel,SaudeFinanceiraView}
+src/components/tabs/SaudeFinanceiraTab.tsx     + TabId "saude" em page.tsx
+scripts/financial-health/**                    npm run test:financial-health
+```
+
+Padrão de acesso copiado de `cvm-sector-ranking.ts` (`node:sqlite` read-only). Point-in-time
+reaproveita `knowledgeDateFor`/`LEGAL_LAG_RULE` de `cvm-fundamentals-derive.ts`.
+
+**Sem tool MCP, de propósito:** o agente já recebe o ranking de fator no trilho
+`trade.propose`; um segundo ranking convidaria as duas listas a se fundirem numa recomendação.
+
+### Verificação
+
+`tsc --noEmit` limpo · `npm run build` OK (rota `/api/cvm/financial-health` registrada) ·
+`test:financial-health` e `test:cvm-fundamentals` verdes.
+
+Handler da rota exercitado direto (a rota exige login e as credenciais são do usuário):
+200 com 117 ranqueadas, nenhuma financeira vazando, `asOf` malformado → 400.
+
+Servidor de verificação rodou sobre CÓPIA do `dev.db`, com env inline em vez de `.env.local`
+— não há arquivo temporário a esquecer. Cópia apagada, porta 3210 liberada.
+
+### Pendências desta sessão
+
+1. **Bloco das financeiras** — depende de coletar índice de Basileia e inadimplência da CVM
+   (o usuário já coleta os relatórios; falta extrair esses campos). Com só lucro e ROE seria
+   fachada.
+2. `asOf` muito antigo (ex. 2015) devolve 0 ranqueadas, porque ninguém tinha 20 trimestres
+   publicados ainda. Correto, mas a mensagem de vazio da UI fala em banco ausente. A UI não
+   expõe `asOf`, então não aparece na prática.
+
+## Sessão 2026-08-11 — Auditoria geral + reposicionamento Previsões ML → Ranking Fundamentalista
+
+Sem commit (aguardando pedido do usuário). Spec:
+`docs/superpowers/specs/2026-08-11-ranking-fundamentalista-design.md`.
+
+### Auditoria: 5 abas que independem do pregão
+
+Servidor Next real sobre **cópia** do `dev.db` (nunca o original), `.env.local`
+temporário, porta 3210 — receita de `.claude/skills/verify/SKILL.md` adaptada.
+
+| Aba | Veredito |
+|---|---|
+| Fundamentos CVM | Funciona bem — 138 empresas, 34 séries × 61 trimestres, DuPont, valuation, as-of (61→35 pontos), 400/404 corretos |
+| Agente | Funciona — 25 runs (23 SUCCEEDED, 2 CANCELLED), reaper idempotente, 401 sem cookie |
+| Portfólio | Fonte íntegra — XPMT5-DEMO, equity R$ 838.353,99, sem vazamento |
+| Admin | Funciona; MCP Pilot/ML Engine dependem de `window.electronAPI` (não testáveis fora do Electron) |
+| Previsões ML | Rotas ok, **dados errados** — ver abaixo |
+
+**Não auditado:** renderização (só a camada de dados foi exercitada) e as 5 abas
+que dependem de pregão aberto.
+
+### ACHADO GRAVE: aba Opções está morta
+
+`mt5Service.send()` exige `this.ws` aberto, mas **não existe mais `new WebSocket`
+no arquivo** e `python/mt5_bridge.py` foi removido em 02/08. Todo `send()` é
+no-op silencioso (em produção nem avisa). O único consumidor remanescente do
+protocolo morto é `optionsService.ts`, com 5 chamadas (`GET_SYMBOLS`,
+`SELECT_SYMBOL`, `UNSELECT_SYMBOL`, `SUBSCRIBE_TICKS`, `GET_SYMBOL_INFO`).
+
+Efeito: `getSpotPrice` espera 15 s e devolve `{last:0,ask:0,bid:0}`;
+`getSymbolInfo` espera 5 s e devolve `null`. **Zero vira dado**, contra o
+princípio nº 1. O agente de IA ainda escaneia opções (caminho server-side
+`POST /api/options/scan` no spread_api) — quem perdeu acesso foi a UI.
+`subscribeTicks`/`orderBook` FORAM migrados para polling MCP; só o
+`optionsService` ficou para trás. **NÃO corrigido nesta sessão.**
+
+### ACHADO: guarda DEMO desapareceu com a ponte
+
+`WR_TRADING_DEMO_ONLY=true` segue no `.env` e no `.env.example`, mas **nenhum
+código lê essa variável** (o único hit real é um `.pyc` órfão da ponte
+deletada). `assertTradingEligible()` checa só AutoTrading, não o tipo da conta.
+A guarda dura decidida em 17/07 ("execução v1 só em conta DEMO") vivia em
+`mt5_bridge.py` e não foi reimplantada no caminho MCP nativo.
+
+**Sonda ao vivo mostrou que o conserto é trivial:** `account_info` do MT5
+devolve `"type":"demo"`. Decisão do usuário pendente.
+
+### Sonda de ticks MT5 (leitura pura, conta B3-XP)
+
+- **Tick a tick EXISTE:** `{time_ms, bid, ask, last, volume}` com precisão de ms;
+  `last` preenchido em 100% dos 6.030 ticks do pregão de 10/08.
+- **Volume é real** (139 valores distintos), em escala estranha (x1e6 p/ unidade).
+- **Profundidade: ~88 dias.** Dados em -85d (18/05), nada em -90d nem além.
+- **Agressão inferível:** 2.083 no ask, 2.519 no bid, 1.428 no meio.
+- **NÃO é a fita completa:** ~1 tick a cada 3,5 s para PETR4 — amostragem.
+- **Fuso:** carimbos de 09:35 a 19:45 (B3 negocia 10h-17h) — offset do servidor.
+- **Book/DOM e `symbol_info`: confirmados AUSENTES** (`MT5_MCP_TOOL_MISSING`).
+- `getTick` pede 1.000 ticks e **descarta 999**, devolvendo só o último — herança
+  do contrato do WebSocket. Tempo & Negócios é construível sem ProfitDLL.
+
+### Reposicionamento (6 decisões do usuário)
+
+Aba própria renomeada; renomeação em UI + respostas de API (banco intacto);
+quintil+escore no lugar de COMPRA/VENDA/NEUTRO; tools MCP mantêm os NOMES e
+mudam descrições/retornos; componente de 803 linhas separado.
+
+- `src/components/ranking/{types,RankingTable,EvidenciaModelo,TreinoControls,RankingFundamentalistaView}`
+- `src/components/tabs/RankingFundamentalistaTab.tsx`
+- Removidos: `src/components/ml/DirectionalSignalsView.tsx`, `MLPredictionsTab.tsx`
+- DTO: `signal` e `confidence` REMOVIDOS, `prob` -> **`percentil`**,
+  `meta.highConfidence` removido (derivava de `signal`). **Só na fronteira do
+  DTO** — domínio, adapters e coluna seguem com os nomes herdados.
+- Tool `ml.directional_ranking`: filtro `signal` -> **`quantile`** (1-5).
+
+### ARMADILHA: regerar previsões NÃO corrige o universo
+
+A auditoria achou o modelo ACTIVE servindo **138** previsões (deveriam ser 129),
+com GUAR3/NEOE3/STBP3 em Q5 e SRNA3 em Q1 — as mesmas 4 que a correção de
+26/07 deveria ter excluído; quintis 28/27/28/27/28, idênticos à rodada com bug.
+
+Regeneração executada de verdade (ML Engine ligado, admin, cópia do banco):
+**HTTP 201 em 0,35 s e o MESMO resultado**, `excludedFromUniverse: []`.
+
+Causa: o filtro é condicional (`directional_classifier.py:876`,
+`if model.universe:`) e o artefato
+`data/ml/directional_models/ab236072.../model.json` **não tem o campo
+`universe`** (chaves: `selected, featureIc, minTStat, candidates`; arquivo de
+26/07 00:04, anterior à correção). Sem universo gravado não há contra o que
+filtrar — e isso é deliberado, com teste cobrindo ("artefato sem universo não
+filtra e não quebra").
+
+**Só RETREINAR resolve.** Decisão do usuário pendente (custo: tempo do
+walk-forward + risco de o modelo novo não passar no gate).
+
+Efeito colateral: a nota de exclusão derivada (138 universo - 138 ranqueadas)
+dá zero e não aparece — a aba mostraria 138 sem aviso. Aviso na tela **não
+implementado**, aguardando a decisão.
+
+### Testes corrigidos de passagem
+
+1. **`test:read-models-v1` não compilava** — `@/lib/b3-ticker` em
+   `src/app/api/v1/ml/training-runs/route.ts` (TS2307; o alias não resolve no
+   tsconfig das suítes). Trocado por relativo, como os outros 5 consumidores.
+   Estava registrado desde 25/07 como "aceitável"; envelheceu mal.
+2. **`test:mcp-pilot` — `mcpTradeAllowlistRejectionTests` obsoleto.** Esperava
+   `RISK_REJECTED`, recebia `PENDING_HUMAN`: dependia do default hardcoded de 6
+   tickers B3 removido em `0e25d0d`. Passou a setar allowlist EXPLÍCITA. A
+   governança sempre esteve íntegra (`risk-policy.ts:111`) — o teste é que media
+   um mundo que não existe mais. **Ele bloqueava `mlDirectionalToolsTests`**, que
+   roda depois e nunca era alcançado.
+3. **Teste novo:** `mcpTradeEmptyAllowlistAllowsAnyMarketTests` trava a decisão
+   de 02/08 (allowlist vazia = sem restrição de instrumento), que não tinha
+   cobertura nenhuma.
+
+### Correção de diagnóstico anterior
+
+O handoff de 02/08 atribuiu a falha do `test:mt5-mcp` a "processos node
+remanescentes". **Não era.** `getMt5McpConfig()` passou a ler o banco antes do
+`.env`, e o teste só limpa env — com o perfil **B3-XP ativo** no `dev.db`, a
+asserção fail-closed (`=== null`) falha. Provado rodando com DB de sondagem sem
+perfil ativo. O runner do `mcp-pilot` já é hermético (DB temp); o do `mt5-mcp`
+não. **NÃO corrigido** — fora do escopo desta sessão.
+
+Nota: com o perfil desativado, a suíte avança e revela uma 2a falha —
+`tickTests`, pelo `getTick` não-commitado que devolve `null` e descarta os
+shapes de tick documentados (objeto direto e `{tick:{...}}`).
+
+### Verificação
+
+`tsc --noEmit` limpo · `npm run build` OK · `test:directional-classifier`,
+`test:read-models-v1`, `test:ml-training-run` e `test:mcp-pilot`
+(39 tools, 4 gated, tools ml.* verificadas) **todos verdes**.
+Contrato novo conferido em runtime: `signal`/`confidence` ausentes,
+`percentil` presente, `prob` ausente.
+
+### Pendências desta sessão
+
+1. Aba Opções morta (protocolo WebSocket removido) — decisão: religar pelo MCP
+   ou congelar até a ProfitDLL.
+2. Guarda DEMO — reimplantar via `account_info.type`, aposentar formalmente, ou
+   manter como está.
+3. Retreinar o modelo do ranking (único conserto do universo) e/ou avisar na tela.
+4. `test:mt5-mcp` não-hermético + regressão do `getTick`.
+5. Auditar as 5 abas de mercado com o pregão aberto.
 
 ## Status 2026-08-02 — Ponto 4 concluído E CORRIGIDO, trading HABILITADO, MÚLTIPLAS CONTAS MT5 suportadas: ponte Python/WS removida; leituras via MCP nativo com nomes reais (build 6090); envio/modificação/cancelamento/fechamento de ordem ligados (UI manual + fluxo governado do agente de IA `trade.propose/approve`, `WR_TRADING_ENABLED=true`); endpoint/API key não são mais fixos no `.env` — usuário cadastra e troca perfis de conexão (B3, Forex, etc.) em Configurações; commit pendente nesta sessão.
 

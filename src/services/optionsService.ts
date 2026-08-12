@@ -173,61 +173,6 @@ export const calcExerciseProb = pureCalcExerciseProb;
 // ─── Busca de opções no MT5 ───────────────────────────────────────────────────
 
 /**
- * Obtém todos os símbolos de opções de um ativo base no MT5
- * Ex: PETR4 → todas as opções PETR (PETRA276, PETRB400, etc.)
- */
-export async function getOptionSymbols(asset: string): Promise<string[]> {
-  return new Promise((resolve) => {
-    const symbols: string[] = [];
-
-    const handler = (data: { symbols?: string[] }) => {
-      if (data.symbols && data.symbols.length > 0) {
-        const assetBase = asset.replace(/\d+$/, '');
-        // Filter by B3 option code shape. Do not block month letters like F/M/W,
-        // because they can be valid option codes depending on the symbol.
-        const filtered = data.symbols.filter((s: string) => {
-          const namePart = s.slice(assetBase.length);
-          if (!namePart) return false;
-          if (!s.startsWith(assetBase)) return false;
-          return determineType(s) !== 'UNKNOWN' && parseStrike(s) > 0;
-        });
-        if (filtered.length > 0) {
-          console.log(`[Options] GET_SYMBOLS: ${data.symbols.length} total, ${filtered.length} matched '${assetBase}'`);
-          symbols.push(...filtered);
-          mt5Service.off('symbols', handler);
-          resolve(symbols);
-        }
-      }
-    };
-
-    mt5Service.on('symbols', handler);
-
-    // Use group search like the Python script (more reliable than path prefix)
-    mt5Service.send({ type: 'GET_SYMBOLS', data: { group: asset.replace(/\d+$/, '') } });
-
-    setTimeout(() => {
-      mt5Service.off('symbols', handler);
-      console.log(`[Options] GET_SYMBOLS timeout — resolved with ${symbols.length} symbols`);
-      resolve(symbols);
-    }, 10000);
-  });
-}
-
-/**
- * Seleciona símbolo no MT5 (necessário antes de consultar)
- */
-function selectSymbol(symbol: string): void {
-  mt5Service.send({ type: 'SELECT_SYMBOL', data: { symbol } });
-}
-
-/**
- * Remove símbolo do Market Watch (libera memória RAM do MT5)
- */
-function unselectSymbol(symbol: string): void {
-  mt5Service.send({ type: 'UNSELECT_SYMBOL', data: { symbol } });
-}
-
-/**
  * Obtém lista de ações (equities) disponíveis na B3
  */
 export async function getEquities(): Promise<string[]> {
@@ -255,105 +200,121 @@ export async function getEquities(): Promise<string[]> {
  * Escaneia opções de um ativo (CALLs e PUTs) com filtros de faixa e DTE
  * v4: volatilidade, score ranking, P.Exerc, estilo, semanal
  */
+/**
+ * Item de opção como o `spread_api` devolve (snake_case, prêmio já escolhido
+ * entre bid/last/ask do lado Python).
+ */
+interface ScanBackendOption {
+  symbol: string;
+  exp: string;
+  dte: number;
+  strike: number;
+  bid: number;
+  otm_pct: number;
+  premio_total: number;
+  anual: number;
+  roi: number;
+  p_exerc?: number;
+  spread_pct?: number;
+  margem?: number;
+  cabe?: boolean;
+}
+
+interface ScanBackendResult {
+  spot: number;
+  calls?: ScanBackendOption[];
+  puts?: ScanBackendOption[];
+  top?: unknown[];
+  scan_id?: number;
+}
+
+/**
+ * Converte o item do backend para o contrato da UI.
+ *
+ * O `ask` não vem no payload, mas é DERIVÁVEL sem inventar nada: o Python
+ * calcula `spread_pct = (ask - bid) / ask * 100`, então `ask = bid / (1 - s)`.
+ * Quando o spread não é utilizável, o ask fica igual ao prêmio em vez de virar
+ * zero — zero seria lido como "sem oferta de venda", que é outra afirmação.
+ */
+function toOptionStrike(o: ScanBackendOption, type: 'CALL' | 'PUT', loteSize: number): OptionStrike {
+  const spreadPct = typeof o.spread_pct === 'number' && Number.isFinite(o.spread_pct) ? o.spread_pct : 0;
+  const ask = spreadPct > 0 && spreadPct < 100 ? o.bid / (1 - spreadPct / 100) : o.bid;
+  const premioTotal = o.bid * loteSize;
+  const expDate = /^\d{4}-\d{2}-\d{2}$/.test(o.exp) ? new Date(`${o.exp}T00:00:00`) : new Date();
+
+  return {
+    symbol: o.symbol,
+    type,
+    strike: o.strike,
+    bid: o.bid,
+    ask,
+    dte: o.dte,
+    expiration: expDate,
+    otmPct: o.otm_pct,
+    premioTotal,
+    premioPct: o.strike > 0 ? premioTotal / (o.strike * loteSize) : 0,
+    anualizado: o.anual,
+    roi: o.roi,
+    margem: o.margem,
+    cabeNoCapital: o.cabe,
+    pExerc: o.p_exerc,
+    spreadPct,
+    estilo: getOptStyle(o.dte),
+    isWeekly: isWeekly(o.symbol),
+  };
+}
+
 export async function scanOptions(
   asset: string,
   config: OptionsConfig = DEFAULT_OPTIONS_CONFIG
 ): Promise<OptionsScanResult> {
   const { capital, loteSize, rangePct, minAnualizado } = config;
 
-  // Obter preço spot do ativo
-  const spotInfo = await getSpotPrice(asset);
-  const spot = spotInfo.last > 0 ? spotInfo.last : spotInfo.ask;
-
-  // Guard: se spot=0, o filtro de faixa rejeita tudo — abortar
-  if (spot <= 0) {
-    throw new Error(`Preço spot não disponível para ${asset} (timeout do MT5). Verifique a conexão.`);
-  }
-
-  // Obter volatilidade (v4)
+  // Volatilidade (v4) — serviço próprio, independente do scan
   const vol = await getVolatility(asset);
-  const dailyStd = vol?.dailyStd ?? 0;
 
-  // Buscar símbolos de opções
-  const optionSymbols = await getOptionSymbols(asset);
-  console.log(`[Options] scanOptions: found ${optionSymbols.length} option symbols for ${asset}`);
-
-  // Selecionar cada opção no MT5 (para poder consultar dados)
-  const selectedSymbols: string[] = [];
-  optionSymbols.forEach((sym) => {
-    selectSymbol(sym);
-    selectedSymbols.push(sym);
-  });
-
-  // Coletar dados de cada opção
-  const allOptions: OptionStrike[] = [];
-
-  for (const sym of optionSymbols) {
-    const info = await getSymbolInfo(sym);
-    if (!info) continue;
-
-    const strike = parseStrike(sym);
-    if (strike <= 0) continue;
-
-    const tipo = determineType(sym);
-    if (tipo === 'UNKNOWN') continue;
-
-    const dte = getDTE(info.expiration_time ?? 0);
-    if (dte < 5) continue;
-
-    // Filtro de faixa ±rangePct
-    if (!(spot * (1 - rangePct) <= strike && strike <= spot * (1 + rangePct))) continue;
-
-    const bid = info.bid ?? 0;
-    const ask = info.ask ?? 0;
-    const last = info.last ?? 0;
-    const premium = bid > 0 ? bid : (last > 0 ? last : (ask > 0 ? ask : 0));
-
-    if (premium <= 0) continue;
-
-    const expDate = info.expiration_time ? new Date(info.expiration_time * 1000) : new Date();
-    const premioTotal = premium * loteSize;
-    const premioPct = premioTotal / (strike * loteSize);
-    const anu = anualizar(premium, strike, dte);
-    const isOtm = tipo === 'CALL' ? strike > spot : strike < spot;
-    if (!isOtm) continue;
-
-    const otmPct = tipo === 'CALL'
-      ? ((strike - spot) / spot) * 100
-      : ((spot - strike) / spot) * 100;
-    const roi = (premioTotal / capital) * 100;
-
-    // v4: spread %, P.Exerc, estilo, semanal
-    const spreadPct = ask > 0 && bid > 0 ? ((ask - bid) / ask) * 100 : (ask > 0 ? 0 : 999);
-    const pExerc = calcExerciseProb(spot, strike, dte, dailyStd, tipo);
-    const estilo = getOptStyle(dte);
-    const isWk = isWeekly(sym);
-
-    allOptions.push({
-      symbol: sym,
-      type: tipo,
-      strike,
-      bid,
-      ask,
-      dte,
-      expiration: expDate,
-      otmPct,
-      premioTotal,
-      premioPct,
-      anualizado: anu,
-      roi,
-      spreadPct,
-      pExerc,
-      estilo,
-      isWeekly: isWk,
+  // O scan roda SERVER-SIDE, no `spread_api` (Python + pacote MetaTrader5), via
+  // proxy em /api/options/scan. Não é preferência de estilo: o servidor MCP do
+  // terminal MT5 NÃO expõe tool de `symbol_info` (sonda de 2026-08-11), e sem
+  // ela não há bid, ask nem vencimento por opção. Este é também o caminho que o
+  // agente de IA já usa (`market.scan_options`) — antes desta mudança a aba e o
+  // agente enxergavam coisas diferentes.
+  let response: Response;
+  try {
+    response = await fetch('/api/options/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        symbol: asset,
+        capital,
+        strike_range_pct: rangePct * 100,
+        min_annual_pct: minAnualizado * 100,
+      }),
     });
+  } catch {
+    throw new Error('Falha de rede ao chamar o scan de opções.');
   }
 
-  // Limpar symbols não usados
-  const processedSymbols = new Set(allOptions.map((o) => o.symbol));
-  selectedSymbols.forEach((sym) => {
-    if (!processedSymbols.has(sym)) unselectSymbol(sym);
-  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.success) {
+    throw new Error(payload?.error || `Falha no scan de opções (HTTP ${response.status}).`);
+  }
+
+  const scan = payload.data as ScanBackendResult;
+  const spot = typeof scan.spot === 'number' ? scan.spot : 0;
+  if (spot <= 0) {
+    // Estado honesto: sem spot não há faixa de strikes válida. Nunca seguir com
+    // zero, que faria o filtro rejeitar tudo e a aba mostrar "nenhuma opção"
+    // como se fosse resultado de mercado.
+    throw new Error(`Preço spot não disponível para ${asset}. Verifique se o MetaTrader 5 está aberto e conectado.`);
+  }
+
+  const allOptions: OptionStrike[] = [
+    ...(scan.calls ?? []).map((o) => toOptionStrike(o, 'CALL', loteSize)),
+    ...(scan.puts ?? []).map((o) => toOptionStrike(o, 'PUT', loteSize)),
+  ];
+  console.log(`[Options] scan server-side: ${allOptions.length} opções para ${asset} (spot ${spot})`);
 
   // Separar calls e puts
   const calls = allOptions.filter((o) => o.type === 'CALL');
@@ -438,48 +399,3 @@ export async function scanOptions(
 }
 
 // ─── Helpers MT5 ──────────────────────────────────────────────────────────────
-
-export async function getSpotPrice(asset: string): Promise<{ last: number; ask: number; bid: number }> {
-  return new Promise((resolve) => {
-    const handler = (data: { symbol: string; last?: number; ask?: number; bid?: number }) => {
-      if (data.symbol === asset) {
-        mt5Service.off('tick', handler);
-        resolve({ last: data.last ?? 0, ask: data.ask ?? 0, bid: data.bid ?? 0 });
-      }
-    };
-
-    mt5Service.on('tick', handler);
-    mt5Service.send({ type: 'SUBSCRIBE_TICKS', data: { symbol: asset } });
-
-    setTimeout(() => {
-      mt5Service.off('tick', handler);
-      resolve({ last: 0, ask: 0, bid: 0 });
-    }, 15000);
-  });
-}
-
-interface SymbolInfo {
-  bid?: number;
-  ask?: number;
-  last?: number;
-  expiration_time?: number;
-}
-
-async function getSymbolInfo(symbol: string): Promise<SymbolInfo | null> {
-  return new Promise((resolve) => {
-    const handler = (data: { symbol: string; bid?: number; ask?: number; last?: number; expiration_time?: number }) => {
-      if (data.symbol === symbol) {
-        mt5Service.off('symbolInfo', handler);
-        resolve(data);
-      }
-    };
-
-    mt5Service.on('symbolInfo', handler);
-    mt5Service.send({ type: 'GET_SYMBOL_INFO', data: { symbol } });
-
-    setTimeout(() => {
-      mt5Service.off('symbolInfo', handler);
-      resolve(null);
-    }, 5000);
-  });
-}

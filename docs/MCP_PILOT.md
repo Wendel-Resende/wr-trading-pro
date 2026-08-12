@@ -66,7 +66,7 @@ esses dois — são segredos de superfícies diferentes.
 | `WR_MCP_TRADE_MAX_CONCENTRATION_PCT` | `20` | Concentração máxima da posição no portfólio (%) |
 | `WR_MCP_TRADE_MAX_PROPOSALS_PER_HOUR` | `10` | Rate limit de `trade.propose` por `requestedBy` (fixo em `mcp:hermes` no servidor — ver §6) |
 | `WR_TRADING_ENABLED` | `false` | Kill switch lido pelo `OrderIntentService` (TS). O envio real ao broker é fail-closed do lado TS (`Mt5DemoBroker`/`Mt5TradingUnavailableError`) independentemente deste valor — ver §8/§9 |
-| `WR_TRADING_DEMO_ONLY` | `true` | Mantida por compatibilidade; a guarda DEMO do lado Python foi removida junto com o bridge (Ponto 4) e não tem efeito atual |
+| ~~`WR_TRADING_DEMO_ONLY`~~ | — | **APOSENTADA em 2026-08-12.** A guarda vivia em `python/mt5_bridge.py`, removido em 2026-08-02, e nunca foi reimplantada no MCP nativo. Como a execução de ordem foi HABILITADA em 2026-08-02, a variável passou a declarar uma proteção inexistente. **Nada hoje distingue conta demo de conta real** — as travas reais são o kill switch, a aprovação humana, o limite de notional, o teto de concentração e o rate limit |
 
 `spread_api.py`/`volatility_api.py` não recebem Bearer — são serviços Flask
 locais sem autenticação própria, protegidos por bind em loopback + CORS

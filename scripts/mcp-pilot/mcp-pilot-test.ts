@@ -368,7 +368,15 @@ async function mcpTradeMigrationTests(): Promise<void> {
 async function mcpTradeAllowlistRejectionTests(prisma: PrismaClient): Promise<void> {
   const clock = mkClock(Date.UTC(2099, 0, 1));
   const execution = new FakeExecutionPort();
-  const service = buildMcpTradeService(prisma, execution, clock.now);
+  // Allowlist EXPLÍCITA. Antes de 2026-08-02 este teste passava sem env porque
+  // `instrumentAllowlist` tinha um default hardcoded de 6 tickers B3; o commit
+  // 0e25d0d removeu esse default de propósito (allowlist vazia = sem restrição
+  // de instrumento, para o agente poder operar qualquer mercado do MT5). Sem
+  // env, a proposta agora vira PENDING_HUMAN e o teste media o mundo que não
+  // existe mais. A trava em si continua íntegra — é o que este teste prova.
+  const service = buildMcpTradeService(prisma, execution, clock.now, {
+    WR_MCP_TRADE_ALLOWLIST: 'PETR4,VALE3,ITUB4',
+  });
   const result = await service.propose({
     requestedBy: 'tester-allow',
     symbol: 'FORA-DA-LISTA',
@@ -381,6 +389,38 @@ async function mcpTradeAllowlistRejectionTests(prisma: PrismaClient): Promise<vo
   assert.equal(result.confirmationCode, undefined);
   assert.equal(execution.calls.length, 0);
   console.log('propose fora da allowlist: OK (RISK_REJECTED, sem code, broker não chamado)');
+}
+
+/**
+ * Allowlist VAZIA = sem restrição de instrumento (decisão explícita do usuário
+ * em 2026-08-02, commit 0e25d0d): a WR analisa e opera qualquer ativo que o MT5
+ * conectado cote — forex, cripto, B3 —, não só uma lista fixa de tickers.
+ *
+ * Este teste trava esse comportamento. Sem ele, alguém "consertaria" a ausência
+ * de default reintroduzindo a lista B3 hardcoded e voltaria a restrição sem
+ * ninguém perceber. O que continua barrando aqui é o RESTO da governança
+ * (notional, concentração, kill switch, aprovação humana) — não o instrumento.
+ */
+async function mcpTradeEmptyAllowlistAllowsAnyMarketTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 11));
+  const execution = new FakeExecutionPort();
+  const service = buildMcpTradeService(prisma, execution, clock.now, {
+    WR_MCP_TRADE_ALLOWLIST: '',
+  });
+  const result = await service.propose({
+    requestedBy: 'tester-any-market',
+    symbol: 'EURUSD',
+    direction: 'BUY',
+    volume: 1,
+    rationale: 'instrumento fora de qualquer lista B3',
+  });
+  assert.equal(result.status, 'PENDING_HUMAN', 'allowlist vazia não deve barrar por instrumento');
+  assert.equal(result.riskOutcome, 'APPROVED');
+  assert.ok(!(result.riskReasons ?? []).includes('INSTRUMENT_NOT_ALLOWED'));
+  // Continua exigindo aprovação humana: liberar mercado não é liberar execução.
+  assert.ok(result.confirmationCode && /^\d{6}$/.test(result.confirmationCode));
+  assert.equal(execution.calls.length, 0, 'propose nunca chama o broker');
+  console.log('allowlist vazia: OK (qualquer mercado passa no gate de instrumento, aprovação humana intacta)');
 }
 
 async function mcpTradeProposeValidTests(prisma: PrismaClient): Promise<string> {
@@ -661,6 +701,7 @@ async function expectReadModelErrorLocal(promise: Promise<unknown>, code: string
 async function mcpTradeServiceTests(prisma: PrismaClient): Promise<void> {
   await mcpTradeMigrationTests();
   await mcpTradeAllowlistRejectionTests(prisma);
+  await mcpTradeEmptyAllowlistAllowsAnyMarketTests(prisma);
   await mcpTradeProposeValidTests(prisma);
   await mcpTradeWrongCodeExpiresTests(prisma);
   await mcpTradeKillSwitchBlockedTests(prisma);

@@ -58,13 +58,33 @@ export function toDirectionalModelVersionPublicDTO(
   };
 }
 
+/**
+ * Ranking fundamentalista — DTO público (reposicionado em 2026-08-11).
+ *
+ * O motor é um ESCORE COMPOSTO DE FATOR: ele ORDENA empresas na seção
+ * transversal do trimestre. Ele não prevê direção de preço e não estima
+ * probabilidade. Por isso três campos do motor anterior NÃO saem daqui:
+ *
+ * - `signal` (COMPRA/VENDA/NEUTRO): linguagem de recomendação sobre uma
+ *   saída que é ordenação. Quem carrega a informação é `quantile`.
+ * - `confidence`: constante (1) para todo o ranking — não informa nada.
+ * - `prob`: mantido no banco e no domínio por compatibilidade com as linhas
+ *   do motor de classificação anterior, mas NÃO é probabilidade: guarda o
+ *   percentil transversal. Sai daqui com o nome honesto, `percentil`.
+ *
+ * A renomeação vive nesta fronteira de propósito: domínio, repositório,
+ * adapters e coluna do banco seguem com os nomes herdados, e o histórico de
+ * auditoria continua legível. Ver
+ * docs/superpowers/specs/2026-08-11-ranking-fundamentalista-design.md.
+ */
 export interface DirectionalPredictionPublicDTO {
   readonly ticker: string;
   readonly cdCvm: string;
-  readonly signal: string;
-  readonly confidence: number;
-  readonly prob: number;
+  /** Percentil transversal do trimestre (0–1). Não é probabilidade. */
+  readonly percentil: number;
+  /** Escore bruto do fator, centrado em 0: positivo = acima da mediana das pares. */
   readonly score?: number | null;
+  /** Quintil no período: 1 = fundo, 5 = topo. Não é recomendação de compra. */
   readonly quantile?: number | null;
   readonly knowledgeDate: string;
   readonly topFeatures: readonly { readonly feature: string; readonly importance: number }[];
@@ -77,9 +97,7 @@ export function toDirectionalPredictionPublicDTO(p: DirectionalPrediction): Dire
   return {
     ticker: p.ticker,
     cdCvm: p.cdCvm,
-    signal: p.signal,
-    confidence: p.confidence,
-    prob: p.prob,
+    percentil: p.prob,
     score: p.score,
     quantile: p.quantile,
     knowledgeDate: p.knowledgeDate,

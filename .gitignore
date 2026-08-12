@@ -96,6 +96,8 @@ data/**/*.sqlite
 data/**/*.sqlite-journal
 python/options/options_data.db
 data/ml/
+# artefatos de modelo (Kronos e afins) — 110 MB, gerados em runtime
+data/models/
 
 # artefatos de build dos runners de teste/servico MCP
 scripts/*/.dist/
