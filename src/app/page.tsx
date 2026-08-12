@@ -17,7 +17,7 @@ const OrdersTab = lazy(() => import("@/components/tabs/OrdersTab"));
 const PortfolioTab = lazy(() => import("@/components/tabs/PortfolioTab"));
 const SpreadTab = lazy(() => import("@/components/tabs/SpreadTab"));
 const MonitoringTab = lazy(() => import("@/components/tabs/MonitoringTab"));
-const MLPredictionsTab = lazy(() => import("@/components/tabs/MLPredictionsTab"));
+const RankingFundamentalistaTab = lazy(() => import("@/components/tabs/RankingFundamentalistaTab"));
 const OptionsTab = lazy(() => import("@/components/tabs/OptionsTab"));
 const AdminTab = lazy(() => import("@/components/tabs/AdminTab"));
 const AgentTab = lazy(() => import("@/components/tabs/AgentTab"));
@@ -29,7 +29,7 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "orders", label: "Ordens", icon: FileText },
   { id: "portfolio", label: "Portfólio", icon: BarChart3 },
-  { id: "ml", label: "Previsões ML", icon: Brain },
+  { id: "ml", label: "Ranking Fundamentalista", icon: Brain },
   { id: "spread", label: "Spread B3", icon: ArrowDownLeft },
   { id: "opcoes", label: "Opções", icon: TrendingUp },
   { id: "fundamentos", label: "Fundamentos CVM", icon: Landmark },
@@ -245,7 +245,7 @@ export default function Dashboard() {
         )}
         {mountedTabs.has("ml") && (
           <div style={{ display: activeTab === "ml" ? "block" : "none" }}>
-            <Suspense fallback={<TabLoader />}><MLPredictionsTab /></Suspense>
+            <Suspense fallback={<TabLoader />}><RankingFundamentalistaTab /></Suspense>
           </div>
         )}
         {mountedTabs.has("opcoes") && (

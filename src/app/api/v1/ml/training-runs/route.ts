@@ -12,7 +12,11 @@ import { ReadModelError } from '../../../../../application/read-models-v1';
 import { extractStrictQuery, jsonError, jsonSuccess, parseWithSchema } from '../../_shared/http';
 import { resolveRequestedBy } from '../../agent-runs/_requested-by';
 import { requireKnownPrincipal } from './_authz';
-import { isB3Ticker } from '@/lib/b3-ticker';
+// Import relativo (não `@/`): o tsconfig das suítes de teste não resolve o
+// alias, e este arquivo já usa caminho relativo em todos os demais imports.
+// Ver docs/CODEX_HANDOFF.md — o alias aqui quebrava `test:read-models-v1`
+// inteiro com TS2307.
+import { isB3Ticker } from '../../../../../lib/b3-ticker';
 
 export const dynamic = 'force-dynamic';
 

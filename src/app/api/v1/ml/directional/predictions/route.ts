@@ -67,10 +67,12 @@ export async function GET(request: Request): Promise<Response> {
     const predictions = await service.listPredictions(query.modelVersion);
     const dtos = predictions.map(toDirectionalPredictionPublicDTO);
 
-    const highConfidence = dtos.filter((p) => p.signal !== 'NEUTRO').length;
+    // `highConfidence` saiu junto com `signal`: contava os não-NEUTRO, ou seja,
+    // os extremos do ranking. Extremo de ordenação não é "alta confiança" —
+    // o motor não estima confiança. Quem quiser os extremos filtra por
+    // `quantile` 1 ou 5, que é o que eles de fato são.
     return jsonSuccess(dtos, {
       count: dtos.length,
-      highConfidence,
       generatedAt: dtos[0]?.generatedAt ?? null,
       universeDigest: dtos[0]?.universeDigest ?? null,
     });
@@ -100,7 +102,6 @@ export async function POST(request: Request): Promise<Response> {
 
     return jsonSuccess(dtos, {
       count: dtos.length,
-      highConfidence: dtos.filter((p) => p.signal !== 'NEUTRO').length,
       saved: result.saved,
       excludedFromUniverse: result.excludedFromUniverse,
       generatedAt: result.generatedAt,

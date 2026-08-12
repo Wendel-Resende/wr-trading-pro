@@ -94,13 +94,15 @@ export function buildMlDirectionalTools(prisma: PrismaClient): readonly McpToolD
         + 'acompanhado da evidência do modelo e das empresas excluídas do universo validado.',
       privilege: 'free',
       inputSchema: {
-        signal: z.enum(['COMPRA', 'VENDA', 'NEUTRO']).optional(),
+        // Filtro por QUINTIL, não por sinal de compra/venda: o motor ordena,
+        // não recomenda. 1 = fundo do ranking, 5 = topo.
+        quantile: z.number().int().min(1).max(5).optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
       handler: async (args) => {
         try {
-          const { signal, limit } = parseToolArgs(
-            { signal: z.enum(['COMPRA', 'VENDA', 'NEUTRO']).optional(), limit: z.number().int().min(1).max(200).optional() },
+          const { quantile, limit } = parseToolArgs(
+            { quantile: z.number().int().min(1).max(5).optional(), limit: z.number().int().min(1).max(200).optional() },
             args,
           );
           const service = directional();
@@ -113,7 +115,7 @@ export function buildMlDirectionalTools(prisma: PrismaClient): readonly McpToolD
           }
           const modelo = ativos[0];
           const previsoes = await service.listPredictions(modelo.modelVersion);
-          const filtradas = (signal ? previsoes.filter((p) => p.signal === signal) : previsoes)
+          const filtradas = (quantile ? previsoes.filter((p) => p.quantile === quantile) : previsoes)
             .slice(0, limit ?? 200)
             .map(toDirectionalPredictionPublicDTO);
 
@@ -131,7 +133,8 @@ export function buildMlDirectionalTools(prisma: PrismaClient): readonly McpToolD
             },
             ressalvas: [
               'O escore ORDENA empresas dentro do trimestre; não estima probabilidade de alta.',
-              'O sinal vem do quintil (topo = COMPRA, fundo = VENDA), não de um limiar de confiança.',
+              'A posição é o QUINTIL (5 = topo, 1 = fundo). Não é recomendação de compra ou venda — '
+                + 'estar no quintil 5 significa "melhor ranqueada entre as pares neste trimestre", nada além disso.',
               'Métricas herdam viés de sobrevivência: o universo são as empresas listadas hoje.',
               'Empresas sem série de preços ficam FORA do ranking — ver `excluidasDoUniverso` na geração.',
             ],
