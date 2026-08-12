@@ -54,7 +54,10 @@ velho. A trava funcionou; o defeito era só de UI.
 ### Pendências restantes
 
 1. Bloco das financeiras na aba Saúde — depende de coletar Basileia/inadimplência da CVM.
-2. `npm run test:mcp-pilot` segue sem reconfirmação (rodar com o app Electron fechado).
+2. ~~`npm run test:mcp-pilot` sem reconfirmação~~ **RESOLVIDO**: suíte VERDE (117 linhas,
+   todas OK). **Achado operacional: ela exige o app Electron FECHADO.** Sobe servidor próprio
+   e cria banco temporário; com o app rodando ela trava sem emitir uma linha sequer, o que
+   engana — parece pendurada por outro motivo. Com o app fechado, roda em menos de 1 minuto.
 
 ## Sessão 2026-08-12 (parte 2) — Guarda DEMO aposentada + aba Opções religada
 
