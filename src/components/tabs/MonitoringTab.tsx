@@ -30,6 +30,60 @@ export default function MonitoringTab({ mt5Connected = false }: MonitoringTabPro
   const [refreshKey, setRefreshKey] = useState(0);
   const pendingPriceUpdate = useRef<Map<string, number>>(new Map());
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const subscribedSymbolsRef = useRef<Set<string>>(new Set());
+
+  // Assinar ticks dos símbolos monitorados — sem isso 'tick' nunca dispara
+  // para esses ativos e sync-prices nunca roda, a menos que outra aba
+  // (gráfico/ticker) por coincidência já tenha assinado o mesmo símbolo.
+  useEffect(() => {
+    if (!mt5Connected) return;
+
+    let cancelled = false;
+
+    const syncSubscriptions = async () => {
+      try {
+        const res = await fetch("/api/stock-monitoring");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data.success) return;
+
+        const symbols: string[] = Array.from(
+          new Set(
+            (data.data as StockMonitoring[])
+              .map((s) => s.asset?.symbol)
+              .filter((symbol): symbol is string => Boolean(symbol))
+          )
+        );
+
+        const previous = subscribedSymbolsRef.current;
+        const next = new Set(symbols);
+
+        for (const symbol of symbols) {
+          if (!previous.has(symbol)) mt5Service.subscribeTicks(symbol);
+        }
+        for (const symbol of previous) {
+          if (!next.has(symbol)) mt5Service.unsubscribeTicks(symbol);
+        }
+        subscribedSymbolsRef.current = next;
+      } catch (err) {
+        console.error("Erro ao assinar ticks dos ativos monitorados:", err);
+      }
+    };
+
+    void syncSubscriptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mt5Connected, refreshKey]);
+
+  // Ao desmontar a aba, encerrar todas as assinaturas de tick abertas por ela.
+  useEffect(() => {
+    return () => {
+      subscribedSymbolsRef.current.forEach((symbol) => mt5Service.unsubscribeTicks(symbol));
+      subscribedSymbolsRef.current.clear();
+    };
+  }, []);
 
   // Sincronizar preços via MT5 ticks com debounce de 5s
   useEffect(() => {

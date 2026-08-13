@@ -44,12 +44,6 @@ export default function Portfolio({ positions = [] }: PortfolioProps) {
       });
     };
 
-    const handleAccount = (info: MT5AccountInfo) => {
-      setAccountInfo(info);
-      // Obter o saldo inicial do dia
-      setInitialDailyBalance(mt5Service.getInitialDailyBalance());
-    };
-
     const handlePositionClosed = (ticket: number) => {
       console.log('Portfolio: Posição fechada, ticket:', ticket);
       setMt5Positions(prev => prev.filter(p => p.ticket !== ticket));
@@ -63,6 +57,7 @@ export default function Portfolio({ positions = [] }: PortfolioProps) {
         // Usar as informações da conta se disponíveis no estado
         if (state.accountInfo) {
           setAccountInfo(state.accountInfo);
+          setInitialDailyBalance(mt5Service.getInitialDailyBalance());
         }
       } else if (state.state === 'DISCONNECTED') {
         setMt5Positions([]);
@@ -71,7 +66,6 @@ export default function Portfolio({ positions = [] }: PortfolioProps) {
     };
 
     mt5Service.on('position', handlePosition);
-    mt5Service.on('account', handleAccount);
     mt5Service.on('state', handleStateChange);
     mt5Service.on('positionClosed', handlePositionClosed);
 
@@ -82,12 +76,12 @@ export default function Portfolio({ positions = [] }: PortfolioProps) {
       mt5Service.getPositions();
       if (currentState.accountInfo) {
         setAccountInfo(currentState.accountInfo);
+        setInitialDailyBalance(mt5Service.getInitialDailyBalance());
       }
     }
 
     return () => {
       mt5Service.off('position', handlePosition);
-      mt5Service.off('account', handleAccount);
       mt5Service.off('state', handleStateChange);
       mt5Service.off('positionClosed', handlePositionClosed);
     };
