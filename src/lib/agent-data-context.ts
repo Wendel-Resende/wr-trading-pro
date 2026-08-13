@@ -14,6 +14,7 @@ import {
   type CvmQuarter,
 } from './server/cvm-legacy-db';
 import { getDividendQuarters, getPortfolio12 } from './server/cvm-exports';
+import { getBcbEntityLinks, getBcbPrudencialCapital, getBcbFinanceiroAtivoTotal } from './server/bcb-legacy-db';
 
 // ── Tipos ──────────────────────────────────────────────────────────
 
@@ -232,6 +233,11 @@ export function buildSingleTickerContext(ticker: string): {
   ctx += `Setor: ${company.setor ?? 'não informado'}\n\n`;
   ctx += buildTickerContext(company.ticker, company);
 
+  if (BCB_COVERAGE_SET.has(company.ticker.toUpperCase())) {
+    const bcb = bcbContext(company.ticker);
+    if (bcb) ctx += `\n${bcb}`;
+  }
+
   return { context: ctx, company };
 }
 
@@ -351,6 +357,51 @@ function riscoContext(ticker: string, company: CvmCompany): string {
  * Papel desconhecido cai no contexto genérico (`buildPromptContext`) —
  * retrocompatível com roles antigos como `analista-pesquisa`.
  */
+// ── Contexto BCB (referência factual, read-only) ───────────────────
+//
+// Só para os 10 bancos B3 cobertos pela integração BCB/IFData. Puramente
+// DESCRITIVO (dados prudenciais/financeiros já publicados pelo BCB) — o
+// LLM NUNCA escreve dado BCB nem usa isso para alterar RiskDecision ou
+// OrderIntent; é só texto de referência injetado no prompt, igual ao
+// contexto CVM acima. Não cria ranking, sinal nem recomendação.
+function bcbContext(ticker: string): string {
+  const links = getBcbEntityLinks(ticker);
+  if (links.length === 0) return '';
+
+  let ctx = `## Dados BCB/IFData para ${ticker} (referência factual, não usar para decisão automática)\n`;
+  ctx += 'Fonte: BCB/IFData, por conglomerado. Prudencial (1004/1009) e financeiro (1005) têm ';
+  ctx += 'códigos de conglomerado DIFERENTES — nunca somados/misturados.\n\n';
+
+  const prud = links.find((l) => l.perimetro === 'prudencial');
+  if (prud) {
+    ctx += `Prudencial — cod_inst ${prud.codInst}${prud.nomeEntidadeBcb ? ` (${prud.nomeEntidadeBcb})` : ''}.\n`;
+    const capital = getBcbPrudencialCapital(ticker);
+    const last = capital.length > 0 ? capital[capital.length - 1] : null;
+    if (last) {
+      ctx += `  Último data_base ${last.dataBase}: Índice de Basileia ${last.indiceBasileiaPct ?? 'N/D'}% | `;
+      ctx += `Capital Nível I ${last.indiceCapitalNivelIPct ?? 'N/D'}% | Razão de Alavancagem ${last.razaoAlavancagemPct ?? 'N/D'}%\n`;
+    }
+  }
+
+  const fin = links.find((l) => l.perimetro === 'financeiro');
+  if (fin) {
+    ctx += `Financeiro — cod_inst ${fin.codInst}${fin.tipoConsolidacao ? ` (${fin.tipoConsolidacao})` : ''}.\n`;
+    const ativos = getBcbFinanceiroAtivoTotal(ticker);
+    const last = ativos.length > 0 ? ativos[ativos.length - 1] : null;
+    if (last && last.valor !== null) {
+      ctx += `  Ativo Total (data_base ${last.dataBase}): R$ ${(last.valor / 1e9).toFixed(1)} bi\n`;
+    }
+  }
+
+  ctx += '\nEste bloco é DESCRITIVO/prudencial-regulatório, não é recomendação nem sinal de trading.\n';
+  return ctx;
+}
+
+/** Os 10 bancos B3 cobertos pela integração BCB. */
+const BCB_COVERAGE_SET = new Set([
+  'ABCB4', 'BBAS3', 'BBDC4', 'BEES3', 'BMGB4', 'BPAC11', 'BRSR6', 'ITUB4', 'PINE4', 'SANB11',
+]);
+
 export function buildRoleContext(roleKey: string, ticker: string): string {
   const company = findCompanyByTicker(ticker);
   if (!company) return `Ticker ${ticker} não encontrado na base CVM (138 empresas).`;

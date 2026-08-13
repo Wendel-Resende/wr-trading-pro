@@ -54,3 +54,47 @@ Consumidos read-only por `/api/cvm/dividends` e pelo detalhe de empresa
 silenciosamente duas vezes (os arquivos nunca chegaram); quem copia da
 fonte (`/root/.hermes/workspace/cvm_fundamentos/data/exports/`) para cá é
 o Claude Code, validando contagens/2026T1 após cada cópia.
+
+## Tabelas `bcb_*` — dados BCB/IFData (integração 2026-08-13)
+
+O mesmo arquivo `cvm_fundamentos.db` também carrega as tabelas `bcb_prudencial_*`
+(14) e `bcb_financeiro_*` (13) — **27 no total**, publicadas pelo Banco Central
+(IFData) para os 10 bancos B3 cobertos: ABCB4, BBAS3, BBDC4, BEES3, BMGB4,
+BPAC11, BRSR6, ITUB4, PINE4, SANB11. Cobertura confirmada 10/10 em ambos os
+perímetros (prudencial e financeiro).
+
+- **Proveniência:** BCB/IFData, `fonte='BCB_IFDATA'` em cada linha. Ver
+  `docs/architecture/phase-bcb-wr-integration.md` (spec) e
+  `src/lib/server/bcb-legacy-db.ts` (reader, regras de identidade/dados
+  documentadas no topo do arquivo).
+- **Sincronização:** `node scripts/bcb-sync/sync-bcb-snapshot.cjs` — copia
+  SOMENTE as 27 tabelas `bcb_*` da fonte canônica (WSL,
+  `/root/.hermes/workspace/cvm_fundamentos/data/cvm_fundamentos.db`) para
+  este destino, com backup datado em `backups/`, validação
+  `PRAGMA integrity_check` e checagem de que nenhuma tabela CVM
+  pré-existente regride em contagem. Não sobrescreve o arquivo inteiro
+  (o destino às vezes tem tabelas CVM mais atualizadas que o snapshot BCB
+  da fonte — sobrescrever tudo regrediria essas tabelas).
+- **Dois perímetros, nunca misturados:** `tipo_instituicao` 1004 (até
+  202306) / 1009 (202309+) = **prudencial**; 1009 → 1005 = **financeiro**.
+  Os códigos de conglomerado (`cod_inst`) de cada perímetro são
+  DIFERENTES entre si — nunca somados/combinados num mesmo agregado.
+- **Unidade monetária:** BRL nas colunas `*_brl`; campo `unidade` (`brl` |
+  `usd` | `ratio` | `contagem` | `booleano`) identifica percentuais/frações
+  explicitamente nas tabelas EAV (`*_resumo` etc.). Datas-base no formato
+  `AAAAMM` (fim de trimestre BCB), preservadas como publicadas — nunca
+  recalculadas.
+- **Limitações conhecidas (não inventadas, documentadas):**
+  - Não existe CNPJ do líder do conglomerado nem nome de entidade BCB como
+    colunas confiáveis na fonte atual — `cod_lider_bcb` (só em
+    `bcb_prudencial_capital`) é explicitamente "código interno do BCB, NÃO
+    é CNPJ" no schema-fonte, e não é reaproveitado como tal. Esses dois
+    campos do vínculo de identidade ficam `null`/pendentes.
+  - `tipo_consolidacao` só existe no lado financeiro (1005) na fonte atual;
+    fica `null` no lado prudencial.
+  - Ausência de métrica é sempre `null`, nunca `0`.
+- **Escopo deliberadamente fora desta integração:** ranking, sinal ou
+  recomendação de trading com dados BCB; qualquer escrita de dado BCB em
+  `CvmFiling`/`CvmFact`/`ShareCapitalFact`/`fundamental_indicators`/
+  `StockMonitoring`/`Prediction` (Prisma); atribuição automática de saúde de
+  banco operacional a holding listada.
