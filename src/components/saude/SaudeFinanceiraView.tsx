@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import SaudeTable from './SaudeTable';
 import ExclusoesPanel from './ExclusoesPanel';
+import BancosPanel from './BancosPanel';
 import { getJson, emDeclinio, type HealthResponse } from './types';
 
 /**
@@ -101,6 +102,8 @@ export default function SaudeFinanceiraView(): React.ReactElement {
               }
             />
           </div>
+
+          <BancosPanel />
 
           {data && <ExclusoesPanel excluidas={data.universo.excluidas} />}
         </>

@@ -52,6 +52,8 @@
     "test:b3-ticker": "node scripts/b3-ticker/run-b3-ticker-tests.cjs",
     "test:cvm-fundamentals": "node scripts/cvm-fundamentals/run-cvm-fundamentals-tests.cjs",
     "test:financial-health": "node scripts/financial-health/run-financial-health-tests.cjs",
+    "test:bcb-fundamentals": "node scripts/bcb-fundamentals/run-bcb-fundamentals-tests.cjs",
+    "test:bcb-financial-health": "node scripts/bcb-financial-health/run-bcb-financial-health-tests.cjs",
     "test:directional-classifier": "node scripts/directional/run-directional-tests.cjs",
     "test:directional:py": "python python/tests/test_directional_classifier.py && python python/tests/test_directional_api.py"
   },

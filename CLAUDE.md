@@ -186,6 +186,51 @@ src/components/saude/**                        só a View faz fetch
   desempate, janela recente + prova de fumaça sobre o banco real).
 - Spec: `docs/superpowers/specs/2026-08-12-ranking-saude-financeira-design.md`
 
+### Bloco de bancos na Saúde Financeira — dados BCB/IFData (2026-08-13)
+
+Os 10 bancos B3 estavam fora do ranking de Saúde Financeira porque a régua da indústria
+descreve doença num banco (o passivo circulante é o depósito do cliente). O CLAUDE.md
+registrava que um bloco próprio "depende de coletar Basileia e inadimplência". **Esses dados
+agora existem** — 27 tabelas `bcb_*` / 245.590 linhas em `data/cvm/cvm_fundamentos.db`.
+
+```
+src/lib/server/bcb-financial-health-rules.ts   PURO: 5 pilares + agregação, zero I/O
+src/lib/server/bcb-financial-health.ts         query prudencial + inadimplência financeira
+src/app/api/bcb/financial-health/route.ts      GET read-only, devolve os critérios junto
+src/components/saude/BancosPanel.tsx           bloco na view existente
+src/components/saude/bancos-types.ts           contratos da UI (nada importado do servidor)
+```
+
+- **Limiares são REGULATÓRIOS, não calibrados por distribuição** — essa é a diferença de fundo
+  para a aba da indústria, onde os limiares foram escolhidos pela cobertura real do dado. Aqui:
+  Basileia ≥ 10,5% (8% + conservação 2,5%), Capital Nível I ≥ 8,5% (6% + 2,5%), alavancagem ≥ 3%
+  (Basileia III), imobilização ≤ 50% (limite BCB), lucro > 0. Não há limiar nosso a defender.
+- **Agregação idêntica à da indústria:** aprovados ÷ MEDIDOS, piso de 20 trimestres, janela
+  recente de 8 separada do escore. Pilar sem dado não aprova e **não reprova** — com alvo
+  concreto aqui: a razão de alavancagem só é publicada a partir de 2017 (30 das 450 linhas
+  são NULL), e tratá-la como reprovação puniria o banco pelo silêncio do regulador.
+- **O escore quase não discrimina, e a tela diz isso.** Contra mínimos regulatórios, banco
+  listado aprova quase sempre: 8 dos 10 ficam em 1,00 (só BMGB4 0,99 e PINE4 0,94). A saída
+  NÃO foi apertar a régua até aparecer variação — isso seria inventar um critério para
+  fabricar um ranking. Foi exibir os **valores atuais** ao lado (Basileia/Nível I/alavancagem/
+  imobilização da última data-base), que variam de verdade: 10 valores distintos de Basileia
+  contra 3 escores. O escore diz se houve descumprimento; a Basileia diz de quanto é a folga.
+  Há teste travando essa razão (`basileiasDistintas > escoresDistintos`).
+- **Perímetros nunca fundidos.** O escore sai INTEIRO do prudencial (1004/1009,
+  `bcb_prudencial_capital` + lucro de `bcb_prudencial_resumo`). A inadimplência (níveis D–H
+  sobre o total) vem do FINANCEIRO (1005), com `cod_inst` e data-base próprios — fica em coluna
+  à parte, fora do escore, e o teste exige que os dois `cod_inst` sejam diferentes. As
+  data-bases de fato divergem: prudencial 1T26, financeiro 4T24.
+- Total ausente ou ≤ 0 na carteira classificada devolve inadimplência `null`, nunca 0% — a
+  divisão por zero viraria um percentual fabricado.
+- `ExclusoesPanel` agora diz que os financeiros com dado BCB **são avaliados no bloco de
+  bancos**, em vez de sumirem. Os 3 sem história (JALL3, CAML3, SRNA3) continuam excluídos.
+- **Sem tool MCP nova, sem ranking unificado:** um banco com Basileia alta e uma indústria com
+  liquidez alta não são comparáveis; uma lista única convidaria a comparação. O agente já
+  recebe contexto BCB por `agent-data-context.ts`.
+- Testes: `npm run test:bcb-financial-health` (fronteira exata dos limiares, ausência não
+  reprovando, piso, janela recente, perímetros distintos + prova de fumaça sobre o banco real).
+
 ### Dados locais do projeto
 
 O banco de opções oficial é `data/options/options_data.db` (gerado em runtime; ignorado pelo Git).

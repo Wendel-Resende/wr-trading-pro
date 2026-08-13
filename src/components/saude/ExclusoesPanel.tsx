@@ -28,7 +28,11 @@ export default function ExclusoesPanel({ excluidas }: Props): React.ReactElement
             <strong className="text-gray-300">{setor.length} do setor financeiro.</strong>{' '}
             Num banco, o passivo circulante é o depósito do cliente e a alavancagem alta é o
             modelo de negócio — os critérios de liquidez e endividamento não têm o mesmo
-            significado, e aplicá-los faria empresas sadias parecerem doentes.
+            significado, e aplicá-los faria empresas sadias parecerem doentes.{' '}
+            <strong className="text-gray-300">
+              Os que têm dados no BCB são avaliados no bloco de bancos acima
+            </strong>
+            , com a régua prudencial do regulador; os demais permanecem sem avaliação.
           </p>
           <p className="mt-1 font-mono text-[11px] text-gray-500">
             {setor.map((e) => e.ticker).join(' · ')}
