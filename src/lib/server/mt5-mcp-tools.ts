@@ -53,12 +53,10 @@ export type Mt5McpCapability =
  *   Não mapeado aqui: a capability atual chama só com `{symbol}`, incompatível
  *   com o schema real (params obrigatórios diferentes). Pendência registrada.
  *
- * `rates` (`get_chart_history`) e `history` (`get_trading_history_*`) TÊM
- * tool real, mas com schema de argumentos diferente do que este módulo envia
- * hoje (`period`+`datetime_from`+`datetime_to` em vez de `timeframe`+`count`).
- * Mapeados aqui para não regredir a listagem de tools, mas as funções
- * `getRates`/`getHistoryDeals` ainda precisam de ajuste de argumentos — ver
- * pendência no handoff.
+ * `rates` (`get_chart_history`) e `history` (`get_trading_history_*`) têm
+ * tool real; ambas exigem `datetime_from`/`datetime_to` (não
+ * `timeframe`+`count`/`from`+`to` livres) — `getRates` e `getHistoryDeals`
+ * já traduzem os argumentos recebidos para esse schema.
  */
 const TOOL_NAME_CANDIDATES: Record<Mt5McpCapability, readonly string[]> = {
   workspace_info: ['get_workspace_info', 'workspace_info'],
@@ -266,16 +264,6 @@ export async function getPositions(symbol?: string): Promise<unknown[]> {
   return normalizePositionsPayload(redacted);
 }
 
-/** Tick de um símbolo não vem documentado como shape fixo — pode ser o objeto direto ou envelopado sob 'tick'/'result'. */
-function normalizeTickPayload(value: unknown): unknown {
-  if (value && typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    if ('tick' in obj) return obj.tick;
-    if ('result' in obj && typeof obj.result === 'object') return obj.result;
-  }
-  return value;
-}
-
 /**
  * `get_chart_history`/`get_chart_ticks_history` falham com "symbol not
  * found" se o símbolo não estiver no Market Watch do terminal (verificado
@@ -314,7 +302,9 @@ export async function getTick(symbol: string): Promise<unknown> {
   });
   const redacted = redactSensitiveFields(extractToolValue(result));
   const ticks = normalizeRatesPayload(redacted); // mesmo formato de envelope (array/'ticks'/'result')
-  return ticks.length > 0 ? ticks[ticks.length - 1] : normalizeTickPayload(redacted);
+  // Sem ticks nos últimos 5min (fora do pregão, símbolo sem negociação nessa conta/corretora,
+  // ou watchlist ainda não populada) — nunca fabricar um tick com bid/ask/time zerados.
+  return ticks.length > 0 ? ticks[ticks.length - 1] : null;
 }
 
 /**
@@ -460,11 +450,28 @@ export interface Mt5HistoryParams {
   readonly symbol?: string;
 }
 
+/**
+ * `get_trading_history_positions` é da mesma família de `get_chart_history`/
+ * `get_chart_ticks_history` (verificado por sonda real — ver
+ * docs/CODEX_HANDOFF.md) — ambas exigem `datetime_from`/`datetime_to`
+ * explícitos, não aceitam um "sem filtro de período" implícito. Traduz
+ * `from`/`to` (nomes genéricos usados pelos chamadores deste módulo) para
+ * `datetime_from`/`datetime_to`; sem eles, usa uma janela padrão dos
+ * últimos 30 dias em vez de mandar a chamada sem período (o que falhava
+ * silenciosamente / devolvia vazio, mesma classe de bug já corrigida em
+ * `getRates`).
+ */
 export async function getHistoryDeals(params: Mt5HistoryParams = {}): Promise<unknown[]> {
   const toolName = await resolveMt5ToolName('history');
-  const args: Record<string, unknown> = {};
-  if (params.from) args.from = params.from;
-  if (params.to) args.to = params.to;
+  let datetimeFrom = params.from;
+  let datetimeTo = params.to;
+  if (!datetimeFrom || !datetimeTo) {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 24 * 60 * 60_000);
+    datetimeFrom = from.toISOString();
+    datetimeTo = to.toISOString();
+  }
+  const args: Record<string, unknown> = { datetime_from: datetimeFrom, datetime_to: datetimeTo };
   if (params.symbol) args.symbol = params.symbol;
   const result = await callMt5Tool(toolName, args);
   const redacted = redactSensitiveFields(extractToolValue(result));
