@@ -125,10 +125,15 @@ function main() {
   }
 
   // Sidecars do destino antigo não podem sobreviver ao rename: pertencem ao
-  // arquivo que está sendo substituído e confundiriam o SQLite.
+  // arquivo que está sendo substituído e confundiriam o SQLite. Os do
+  // temporário também não — abrir o candidato para rodar os gates cria
+  // `-shm`/`-wal` ao lado dele, e o rename move só o `.db`, deixando os dois
+  // órfãos em `data/cvm/` (aparecem como lixo não versionado).
   for (const suffix of ['-wal', '-shm', '-journal']) {
-    const f = `${DEST_FILE}${suffix}`;
-    if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+    for (const base of [DEST_FILE, tmp]) {
+      const f = `${base}${suffix}`;
+      if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+    }
   }
   fs.renameSync(tmp, DEST_FILE); // atômico: mesmo diretório, mesmo volume
 
