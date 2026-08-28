@@ -55,7 +55,8 @@
     "test:bcb-fundamentals": "node scripts/bcb-fundamentals/run-bcb-fundamentals-tests.cjs",
     "test:bcb-financial-health": "node scripts/bcb-financial-health/run-bcb-financial-health-tests.cjs",
     "test:directional-classifier": "node scripts/directional/run-directional-tests.cjs",
-    "test:directional:py": "python python/tests/test_directional_classifier.py && python python/tests/test_directional_api.py"
+    "test:directional:py": "python python/tests/test_directional_classifier.py && python python/tests/test_directional_api.py",
+    "test:cvm-publish-gates": "node scripts/cvm-sync/run-cvm-publish-gates-tests.cjs"
   },
   "build": {
     "appId": "com.wrtrade.pro",

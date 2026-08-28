@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import {
   evaluateQuarter,
@@ -159,6 +160,32 @@ function main(): void {
     assertLog(
       rk.rows.every((r) => r.recente.trimestres <= RECENT_QUARTERS),
       'janela recente nunca excede 8 trimestres',
+    );
+
+    // Trava contra a regressão de 2026-08-28: BBAS3, BBDC4 e ITUB4 estavam com
+    // `empresas.setor_cvm` NULL e entraram no ranking da INDÚSTRIA, julgados
+    // por uma régua que descreve doença num banco. A asserção acima ("nenhum
+    // bucket financeiro") não pegou isso — NULL não pertence a bucket nenhum.
+    // Por isso a referência aqui é o dado do BCB, não a classificação setorial:
+    // quem é avaliado no bloco de bancos não pode estar na régua industrial.
+    const bancos = new Set<string>(
+      new DatabaseSync(dbFile, { readOnly: true })
+        .prepare('SELECT DISTINCT ticker FROM bcb_prudencial_capital')
+        .all()
+        .map((r) => String((r as { ticker: unknown }).ticker)),
+    );
+    if (bancos.size > 0) {
+      const intrusos = rk.rows.map((r) => r.ticker).filter((t) => bancos.has(t));
+      assertLog(
+        intrusos.length === 0,
+        `nenhum banco do bloco BCB (${bancos.size} tickers) aparece no ranking da indústria${intrusos.length ? ` — intrusos: ${intrusos.join(', ')}` : ''}`,
+      );
+    } else {
+      console.log('ok: cruzamento com bancos BCB pulado (sem tabelas bcb_* no ambiente)');
+    }
+    assertLog(
+      rk.universo.excluidas.every((e) => !bancos.has(e.ticker) || e.motivo === 'SETOR_FINANCEIRO'),
+      'todo banco do bloco BCB que sai do ranking sai por SETOR_FINANCEIRO, não por falta de história',
     );
     const passado = financialHealthRanking('2018-01-01');
     assertLog(passado.rows.length <= rk.rows.length, 'as-of de 2018 ranqueia no máximo o que hoje ranqueia');

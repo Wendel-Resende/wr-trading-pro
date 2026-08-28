@@ -182,3 +182,40 @@ para regerar a tabela já com o 2T26**, em vez de transplantar o backup.
 `cvm_fundamentos.db` deve checar presença e contagem de `fundamental_indicators`
 antes de substituir o arquivo vivo — o bug já reincidiu duas vezes exatamente
 por falta dessa checagem.
+
+### Causa raiz real e gate de publicação (2026-08-28, cont.)
+
+A seção acima supunha "substituído por uma cópia que regrediu". O publicador
+foi localizado e a causa é mais específica:
+`/root/.hermes/workspace/cvm_fundamentos/scripts/merge_2t26_preserve_history.py`
+(WSL, linha 10) faz `shutil.copy2(backup, target)` — **substitui o banco
+canônico inteiro por um backup** e depois reinsere só as linhas do trimestre
+novo das tabelas que têm `(cd_cvm, ano, trimestre)`. Toda tabela fora desse
+formato herda o estado do backup escolhido: `fundamental_indicators` é
+justamente uma delas, e o backup usado (15/08 10:56) era anterior à restauração
+da tabela (15/08 15:49). `sync-bcb-snapshot.cjs` está inocente — ele é
+tabela-a-tabela e só toca `bcb_*`.
+
+A regeneração é etapa separada (`build_fundamental_indicators.py`, com `--db`),
+e não roda sozinha depois do merge. Foi ela que restaurou a tabela em 28/08:
+7.085 linhas, 138 empresas, cobertura até **2026T2** (135 linhas).
+
+**Gate adicionado neste repo** — `scripts/cvm-sync/publish-cvm-snapshot.cjs`,
+com os gates puros em `cvm-publish-gates.cjs`. Roda os seis gates no candidato
+ANTES de qualquer escrita e publica por `fs.renameSync` (troca atômica, mesmo
+volume), com backup datado:
+
+| Gate | Reprova quando |
+|---|---|
+| `INTEGRIDADE` | `integrity_check` ≠ ok ou `foreign_key_check` não vazio |
+| `FUNDAMENTAL_INDICATORS` | tabela ausente, vazia ou sem as 28 colunas |
+| `COBERTURA_TRIMESTRE` | o trimestre mais recente da `dre` não está nos indicadores (≥90% das empresas) |
+| `SEM_DUPLICIDADES` | `(cd_cvm, ano, trimestre)` repetida ou ticker duplicado |
+| `SETORES_VALIDOS` | qualquer empresa com ticker e `setor_cvm` vazio |
+| `SEM_REGRESSAO` | qualquer tabela CVM/BCB encolhe ou desaparece vs destino |
+
+Testes: `npm run test:cvm-publish-gates` (cada defeito injetado reprova o gate
+específico + prova de fumaça no banco vivo). `npm run test:financial-health`
+ganhou trava cruzando com `bcb_prudencial_capital`: nenhum banco do bloco BCB
+pode aparecer no ranking da indústria — a asserção antiga ("nenhum bucket
+financeiro") não pegava `setor_cvm` NULL, que foi exatamente o furo de 28/08.
