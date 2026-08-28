@@ -98,3 +98,87 @@ perímetros (prudencial e financeiro).
   `CvmFiling`/`CvmFact`/`ShareCapitalFact`/`fundamental_indicators`/
   `StockMonitoring`/`Prediction` (Prisma); atribuição automática de saúde de
   banco operacional a holding listada.
+
+## BUG CORRIGIDO (2026-08-15) — ficha fundamentalista 500 em toda empresa
+
+**Sintoma:** aba Fundamentos CVM mostra "Não foi possível carregar a ficha
+fundamentalista." para QUALQUER empresa consultada;
+`GET /api/cvm/companies/{cdCvm}/fundamentals` devolve **500**.
+
+**Causa raiz:** o `cvm_fundamentos.db` atualmente ativo **não tem a tabela
+`fundamental_indicators`** — só tem a tabela mais antiga `indicadores`.
+`src/lib/server/cvm-fundamentals-sheet.ts:164` (`getFundamentalIndicators`)
+consulta `SELECT ... FROM fundamental_indicators WHERE cd_cvm = ?`, que
+falha com `no such table: fundamental_indicators` antes de qualquer lógica
+específica da empresa — por isso o erro é uniforme, não pontual.
+
+O banco vivo está numa linhagem anterior (2026-07-14/17) à que ganhou essa
+tabela (merge de 2026-07-18). A tabela existe, íntegra, em
+`cvm_fundamentos.db.backup-20260718-con-merge` (6.924 linhas, colunas
+`roic/margem_ebit/giro_ativos/divida_liquida_ebitda/divida_bruta_pl/
+pl_ativos/icj/payout_ratio/p_ebitda/ev_ebitda/ev_ebit/crescimento_receita_yoy/
+crescimento_lucro_yoy/cagr5y_receita/cagr5y_lucro/preco_ref/roe/roa/
+margem_bruta/margem_liquida/margem_ebitda`). A sincronização BCB de
+2026-08-13 (`scripts/bcb-sync/sync-bcb-snapshot.cjs`) **não causou isso** —
+por design ela só copia as 27 tabelas `bcb_*`; o banco já estava sem
+`fundamental_indicators` antes dela rodar. Em algum momento o arquivo
+`cvm_fundamentos.db` foi substituído por uma cópia que regrediu essa tabela,
+sem que nenhuma validação pegasse (o script de sync só checa regressão de
+contagem nas tabelas CVM que ele mesmo toca, não em `fundamental_indicators`).
+
+**Consultado em:** `src/lib/server/cvm-fundamentals-sheet.ts` (linha 164,
+também linhas 457/492), `src/lib/server/cvm-sector-ranking.ts` (linhas
+95/116/146) e `src/lib/server/cvm-financial-health.ts` (linha 94) — todos
+dependem de `fundamental_indicators` e devem falhar do mesmo jeito.
+
+**Correção aplicada (2026-08-15, via Guardião_Hermes/Claude Code no WSL):**
+a tabela `fundamental_indicators` foi restaurada no `cvm_fundamentos.db`
+ativo — confirmado 6.924 linhas, incluindo registros para o cd_cvm 020958
+(caso que disparou o 500 original). `GET /api/cvm/companies/{cdCvm}/fundamentals`
+volta a funcionar.
+
+## REGRESSÃO DO MESMO BUG (2026-08-28) — Saúde Financeira, Ranking Setorial e Ficha caem em 500
+
+**Sintoma:** aba **Saúde Financeira** não carrega o ranking da indústria.
+`GET /api/cvm/financial-health` devolve **500** para qualquer requisição:
+
+```
+Error: no such table: fundamental_indicators   (SQL logic error)
+  em src/lib/server/cvm-financial-health.ts:94
+```
+
+**Causa raiz:** o `cvm_fundamentos.db` ativo perdeu de novo a tabela
+`fundamental_indicators` — exatamente a regressão corrigida em 2026-08-15,
+descrita na seção acima. O banco vivo tem 38 tabelas (27 `bcb_*` + 10 CVM);
+sobrou só a `indicadores`, que não tem `divida_bruta_pl` nem `icj`, dois dos
+cinco pilares.
+
+**Quando quebrou:** entre 15/08 e 21/08. O backup pré-sync
+`backups/cvm_fundamentos_pre_2t26_sync_20260821_063604.db` **ainda tem** a
+tabela (6.924 linhas); o arquivo vivo, gravado por aquele sync do 2T26, saiu
+sem ela. Ou seja, o pipeline que atualiza o banco (do Guardião_Hermes, fora
+deste repo — nada aqui gera essa tabela) substitui o arquivo por uma linhagem
+que não a inclui, e nenhuma validação pega: o sync só confere regressão de
+contagem nas tabelas que ele mesmo escreve.
+
+**Escopo — não é só a Saúde Financeira.** Quebram do mesmo jeito:
+`cvm-fundamentals-sheet.ts:164/457/492` (Ficha Fundamentalista),
+`cvm-sector-ranking.ts:95/146` (Ranking Setorial) e
+`python/ml/directional_features.py:83` (features direcionais do ML).
+
+**O bloco de bancos (BCB) está intacto** — `npm run test:bcb-financial-health`
+passa inteiro (10 bancos, 45 trimestres cada), porque lê só tabelas `bcb_*`.
+Na tela, o painel de bancos funciona e o ranking da indústria é que morre.
+
+**Correção verificada, NÃO aplicada:** transplantando `fundamental_indicators`
+do backup de 21/08 para uma cópia do banco vivo, a query da saúde financeira
+volta a rodar (6.895 linhas, 137 tickers). Esse backup vai até **1T26**,
+enquanto `dre_trimestral`/`indicadores` do banco vivo já têm **2T26** — o
+transplante destravaria as abas com os indicadores um trimestre atrasados.
+Por isso a decisão do usuário (2026-08-28) foi **acionar o Guardião_Hermes
+para regerar a tabela já com o 2T26**, em vez de transplantar o backup.
+
+**Prevenção sugerida (não implementada):** o pipeline que publica
+`cvm_fundamentos.db` deve checar presença e contagem de `fundamental_indicators`
+antes de substituir o arquivo vivo — o bug já reincidiu duas vezes exatamente
+por falta dessa checagem.
