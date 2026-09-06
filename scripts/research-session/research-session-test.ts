@@ -6,6 +6,8 @@ import {
   ruleSignificanceTest,
 } from '../../src/domain/v1/models/rule-significance';
 import type { BacktestBar, BacktestSignalInput } from '../../src/domain/v1/models/backtest-run';
+import { monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades';
+import type { BacktestTrade } from '../../src/domain/v1/models/backtest-run';
 
 function rngIsDeterministic(): void {
   const a = createRng(42);
@@ -177,6 +179,80 @@ function significanceIsDeterministic(): void {
   console.log('Significância: determinística por seed — OK');
 }
 
+/** Trades sintéticos com resultados distintos, para a ordem importar. */
+function syntheticTrades(pnls: readonly number[]): BacktestTrade[] {
+  return pnls.map((netPnl, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return {
+      signalBarTime: time,
+      entryTime: time,
+      entryPrice: 100,
+      exitTime: time,
+      exitPrice: 100 + netPnl,
+      direction: 'BUY' as const,
+      grossPnl: netPnl,
+      costs: 0,
+      netPnl,
+      netReturn: netPnl / 100,
+      exitReason: 'WINDOW_END' as const,
+    };
+  });
+}
+
+function monteCarloInvariantsDoNotVary(): void {
+  const trades = syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]);
+  const result = monteCarloTrades({ trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 });
+  assert.equal(result.invariants.orderInvariant, true, 'invariants deve declarar orderInvariant');
+  assert.ok(
+    Math.abs(result.invariants.totalNetPnl - 45) < 1e-9,
+    `totalNetPnl deveria ser 45, veio ${result.invariants.totalNetPnl}`,
+  );
+  console.log('Monte Carlo: retorno total e Sharpe são invariantes à ordem — OK');
+}
+
+function monteCarloPathDependentDoesVary(): void {
+  // Sem este teste, uma implementação que NÃO embaralhasse passaria no
+  // teste dos invariantes.
+  const trades = syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]);
+  const result = monteCarloTrades({ trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 });
+  const dd = result.pathDependent.maxDrawdown;
+  assert.ok(dd.p5 <= dd.p50 && dd.p50 <= dd.p95, `percentis fora de ordem: ${JSON.stringify(dd)}`);
+  assert.ok(dd.p5 < dd.p95, 'maxDrawdown deveria variar entre cenários — o embaralhamento não está agindo');
+  console.log(`Monte Carlo: drawdown varia (p5=${dd.p5.toFixed(2)}, p95=${dd.p95.toFixed(2)}) — OK`);
+}
+
+function monteCarloWithSingleTradeIsDegenerate(): void {
+  const result = monteCarloTrades({
+    trades: syntheticTrades([42]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 50,
+  });
+  const dd = result.pathDependent.maxDrawdown;
+  assert.equal(dd.p5, dd.p95, 'com 1 trade não há ordem a embaralhar: todos os cenários são iguais');
+  console.log('Monte Carlo: 1 trade → cenários idênticos — OK');
+}
+
+function monteCarloIsDeterministic(): void {
+  const trades = syntheticTrades([
+    50, -30, 80, -60, 20, -10, 45, -70, 15, 5, -25, 60, -45, 33, -18, 22, -52, 12, -8, 41,
+  ]);
+  const base = { trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 };
+  const a = monteCarloTrades({ ...base, seed: 42 });
+  const b = monteCarloTrades({ ...base, seed: 42 });
+  const c = monteCarloTrades({ ...base, seed: 43 });
+  assert.deepEqual(a.pathDependent, b.pathDependent, 'mesma seed → mesmos percentis');
+  assert.notDeepEqual(a.pathDependent, c.pathDependent, 'seed diferente → percentis diferentes');
+  console.log('Monte Carlo: determinístico por seed — OK');
+}
+
+function monteCarloWithNoTradesDoesNotFabricate(): void {
+  const result = monteCarloTrades({ trades: [], periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 });
+  assert.equal(result.nScenarios, 0, 'sem trades não há cenário a simular');
+  assert.equal(result.pathDependent.maxDrawdown.p50, 0, 'sem trades o drawdown é 0, não um número inventado');
+  console.log('Monte Carlo: conjunto vazio não fabrica cenário — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
@@ -189,6 +265,11 @@ async function main(): Promise<void> {
   significanceRespectsDirection();
   significanceIgnoresHoldAndMissingNextBar();
   significanceIsDeterministic();
+  monteCarloInvariantsDoNotVary();
+  monteCarloPathDependentDoesVary();
+  monteCarloWithSingleTradeIsDegenerate();
+  monteCarloIsDeterministic();
+  monteCarloWithNoTradesDoesNotFabricate();
   console.log('\nTodos os testes de research-session passaram.');
 }
 
