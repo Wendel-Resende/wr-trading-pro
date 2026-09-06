@@ -124,18 +124,39 @@ monteCarloTrades(input: MonteCarloInput): MonteCarloResult
 Embaralha a ordem dos `BacktestTrade[]` que `runDeterministicBacktest` já produz,
 reconstrói a curva de capital de cada cenário a partir de `startingBalance`, e agrega.
 
-Retorno: percentis 5/50/95 de retorno total, drawdown máximo, Sharpe e Calmar, mais os
-intervalos de confiança de 90% e 95% — os mesmos cortes de
-`research/monte_carlo/common.py`. Inclui o resultado original (não embaralhado) ao lado,
-para comparação.
+**Correção sobre o que de fato varia.** O motor da WR é **aditivo**: `netPnl` é valor
+absoluto por trade, com `lotSize` fixo, e `computeMetrics` soma. Logo `totalNetPnl`,
+`totalNetReturn`, `meanReturn`, `stdDevReturn`, `winRate` e `sharpe` são **invariantes à
+ordem** — embaralhar não muda nenhum deles. O que varia é o **caminho**: `maxDrawdown` e,
+por consequência, o Calmar.
+
+Isso é menos do que o Monte Carlo do Jesse entrega, e a diferença tem causa: o Jesse
+reconstrói a curva de capital com composição (o tamanho da posição sai do saldo corrente),
+então lá a ordem muda o retorno também. Replicar isso na WR exigiria mudar o motor para
+sizing proporcional ao saldo — fora deste escopo, e uma decisão de modelagem, não um
+detalhe.
+
+Então o retorno é honesto sobre isso, em vez de exibir um percentil degenerado:
+
+- `invariants: { totalNetPnl, totalNetReturn, meanReturn, sharpe, winRate }` — valores
+  únicos, com o campo `orderInvariant: true` explicando que percentil não se aplica.
+- `pathDependent: { maxDrawdown, calmar }` — percentis 5/50/95 e ICs de 90% e 95%, os
+  mesmos cortes de `research/monte_carlo/common.py`.
+- `original` — o resultado não embaralhado, ao lado, para comparação.
+
+Um percentil 5/50/95 idêntico em três casas para retorno total não seria informação: seria
+a plataforma parecendo dizer mais do que sabe.
 
 Reaproveita as funções de métrica que já existem em `backtest-run/index.ts`. Se estiverem
 privadas ao módulo, são extraídas para um módulo comum na mesma pasta — mudança
 mecânica, sem alteração de comportamento do motor.
 
-O que este teste responde, e é o motivo de existir: **quanto do resultado é sorte de
-sequência.** Uma estratégia que rendeu 18% com IC 95% de −4% a 31% não é a mesma coisa
-que uma que rendeu 18% com IC de 14% a 22%, e hoje a WR não distingue as duas.
+O que este teste responde, e é o motivo de existir: **quanto do drawdown observado é sorte
+de sequência.** Duas estratégias com o mesmo lucro total e o mesmo Sharpe podem ter
+drawdowns máximos muito diferentes dependendo apenas de em que ordem os perdedores
+apareceram. Um drawdown observado de 8% cujo percentil 95 entre cenários é 22% descreve
+uma conta que sobreviveu por ordem favorável, não por robustez — e é isso que estoura
+conta pequena. Hoje a WR reporta o 8% e cala sobre o 22%.
 
 ### 2. Persistência
 
@@ -263,14 +284,17 @@ Casos que travam as propriedades que importam:
    autocorrelacionada produz variância das médias simuladas maior que um bootstrap
    i.i.d. sobre a mesma série. É o que justifica a escolha do método.
 6. **Monte Carlo com 1 trade** → todos os cenários idênticos (não há ordem a embaralhar).
-7. **Percentis ordenados** — p5 ≤ p50 ≤ p95 para toda métrica agregada.
-8. **Monte Carlo preserva o retorno total** — embaralhar a ordem não muda a soma dos
-   resultados dos trades; muda o caminho e portanto o drawdown. Se o retorno total variar
-   entre cenários, a reconstrução da curva está errada.
-9. **CAS** — dois `run()` concorrentes sobre o mesmo rascunho: exatamente um transiciona.
-10. **Config inválida por `kind`** — config de Monte Carlo num rascunho de significância
+7. **Percentis ordenados** — p5 ≤ p50 ≤ p95 para as métricas dependentes de caminho.
+8. **Invariantes são de fato invariantes** — sobre um conjunto de trades com resultados
+   distintos, `totalNetPnl` e `sharpe` são idênticos em todos os cenários. Se variarem, a
+   reconstrução da curva está errada.
+9. **Dependentes de caminho de fato variam** — sobre o mesmo conjunto, `maxDrawdown`
+   assume mais de um valor entre os cenários. Sem esse teste, uma implementação que
+   ignorasse o embaralhamento passaria no teste 8.
+10. **CAS** — dois `run()` concorrentes sobre o mesmo rascunho: exatamente um transiciona.
+11. **Config inválida por `kind`** — config de Monte Carlo num rascunho de significância
     é rejeitada na fronteira.
-11. **Registro das 12 tools** — todas registram, e entrada inválida devolve erro de tool
+12. **Registro das 12 tools** — todas registram, e entrada inválida devolve erro de tool
     em vez de lançar.
 
 ## Fora de escopo (explícito)
