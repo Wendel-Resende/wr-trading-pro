@@ -863,8 +863,16 @@ function monteCarloWithSingleTradeIsDegenerate(): void {
 }
 
 function monteCarloIsDeterministic(): void {
-  const trades = syntheticTrades([50, -30, 80, -60, 20]);
-  const base = { trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 };
+  // Conjunto GRANDE de propósito. Com poucos trades o drawdown máximo
+  // assume pouquíssimos valores distintos entre as permutações, e as
+  // bandas de percentil colapsam no mesmo trio para qualquer seed — o que
+  // faria a asserção "seeds diferentes → percentis diferentes" reprovar
+  // uma implementação correta. Medido: 5 trades dão bandas idênticas entre
+  // as seeds 42 e 43; 20 trades separam p5 e p50 com folga.
+  const trades = syntheticTrades([
+    50, -30, 80, -60, 20, -10, 45, -70, 15, 5, -25, 60, -45, 33, -18, 22, -52, 12, -8, 41,
+  ]);
+  const base = { trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 };
   const a = monteCarloTrades({ ...base, seed: 42 });
   const b = monteCarloTrades({ ...base, seed: 42 });
   const c = monteCarloTrades({ ...base, seed: 43 });
