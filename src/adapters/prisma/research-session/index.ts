@@ -1,4 +1,3 @@
-export * from './errors';
 export { PrismaResearchSessionRepository } from './repository';
 export {
   ResearchSessionDraftPatchSchema,

@@ -41,8 +41,15 @@ export interface RuleSignificanceInput {
 export interface RuleSignificanceResult {
   /** Média do log-retorno da barra seguinte, com o sinal da direção aplicado. */
   readonly observedMean: number;
-  /** `observedMean` anualizado pelo tempo de calendário efetivamente decorrido. */
-  readonly annualizedReturn: number;
+  /**
+   * `observedMean` anualizado pelo tempo de calendário efetivamente decorrido.
+   * `null` quando `insufficientData`: anualizar até 29 observações multiplica
+   * a média por um fator de calendário que pode chegar a milhares, e o número
+   * resultante persuade justamente onde não há amostra que o sustente. O
+   * `observedMean` continua sendo publicado — ele é a média crua do que existe,
+   * não uma extrapolação.
+   */
+  readonly annualizedReturn: number | null;
   /** `null` quando `insufficientData` — nunca um número calculado sobre amostra pequena demais. */
   readonly pValue: number | null;
   readonly nObservations: number;
@@ -65,7 +72,24 @@ export interface NextBarReturns {
  *  - `HOLD` não é aposta;
  *  - sinal cuja barra não existe no conjunto;
  *  - sinal na última barra (não há sucessora);
- *  - preços não positivos (log indefinido).
+ *  - preços não positivos (log indefinido);
+ *  - sinal com `knowledgeTime` POSTERIOR à própria barra (look-ahead).
+ *
+ * Sobre o último caso: este caminho NÃO passa pelo motor determinístico,
+ * então a garantia point-in-time do `runDeterministicBacktest` não é
+ * herdada — `bars` e `signals` chegam crus da configuração que o agente
+ * monta. Sem esta checagem, um conjunto com look-ahead produziria um
+ * p-valor baixo que a plataforma apresentaria como evidência.
+ *
+ * O motor lança `PointInTimeViolationError` no mesmo caso; aqui é
+ * DESCARTE, deliberadamente: o motor executa uma estratégia inteira, onde
+ * um sinal envenenado contamina a curva de capital e falhar alto é a única
+ * resposta honesta. Esta função é uma coletora de amostra que já descarta
+ * tudo que não é mensurável (HOLD, barra sem sucessora, preço não
+ * positivo) — abortar o teste inteiro por um sinal ruim seria incoerente
+ * com o resto dela. O sinal descartado some de `nObservations`, e o piso
+ * de `MIN_OBSERVATIONS` continua valendo sobre o que sobrou: uma amostra
+ * majoritariamente envenenada cai abaixo do piso e devolve `pValue: null`.
  */
 export function nextBarLogReturns(
   bars: readonly BacktestBar[],
@@ -86,15 +110,22 @@ export function nextBarLogReturns(
     const current = sorted[index];
     const next = sorted[index + 1];
     if (next === undefined) continue;
+
+    // Look-ahead: o sinal só existiu depois da barra a que se refere.
+    const barMs = Date.parse(current.time);
+    const knowledgeMs = Date.parse(signal.knowledgeTime);
+    if (!Number.isFinite(barMs) || !Number.isFinite(knowledgeMs)) continue;
+    if (knowledgeMs > barMs) continue;
+
+
     if (current.close <= 0 || next.close <= 0) continue;
 
     const logReturn = Math.log(next.close / current.close);
     if (!Number.isFinite(logReturn)) continue;
 
     returns.push(signal.direction === 'BUY' ? logReturn : -logReturn);
-    const currentMs = Date.parse(current.time);
     const nextMs = Date.parse(next.time);
-    if (currentMs < firstTimeMs) firstTimeMs = currentMs;
+    if (barMs < firstTimeMs) firstTimeMs = barMs;
     if (nextMs > lastTimeMs) lastTimeMs = nextMs;
   }
 
@@ -128,12 +159,11 @@ export function ruleSignificanceTest(input: RuleSignificanceInput): RuleSignific
   const { returns, firstTimeMs, lastTimeMs } = nextBarLogReturns(input.bars, input.signals);
   const nObservations = returns.length;
   const observedMean = nObservations > 0 ? returns.reduce((sum, r) => sum + r, 0) / nObservations : 0;
-  const annualizedReturn = observedMean * elapsedAnnualizationFactor(nObservations, firstTimeMs, lastTimeMs);
-
   if (nObservations < MIN_OBSERVATIONS) {
     return Object.freeze({
       observedMean,
-      annualizedReturn,
+      // Abaixo do piso não anualizamos — ver docblock do campo.
+      annualizedReturn: null,
       pValue: null,
       nObservations,
       nSimulations: 0,
@@ -150,7 +180,7 @@ export function ruleSignificanceTest(input: RuleSignificanceInput): RuleSignific
 
   return Object.freeze({
     observedMean,
-    annualizedReturn,
+    annualizedReturn: observedMean * elapsedAnnualizationFactor(nObservations, firstTimeMs, lastTimeMs),
     pValue: atLeastAsExtreme / simulated.length,
     nObservations,
     nSimulations: simulated.length,

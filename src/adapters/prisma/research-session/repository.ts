@@ -8,19 +8,27 @@ import type {
   ResearchSessionSubmission,
 } from '../../../domain/v1/ports/research-session-repository';
 import { toResearchSession } from './mapping';
+import { ResearchSessionDraftPatchSchema, ResearchSessionSubmissionSchema } from './schemas';
 
+/**
+ * Os schemas de fronteira são aplicados AQUI, no padrão de
+ * `PrismaAgentRunRepository` — declarar um teto sem nunca chamar `.parse`
+ * era um limite que não valia em lugar nenhum. É o que trava o
+ * `configJson <= 2_000_000` antes de a linha chegar ao banco.
+ */
 export class PrismaResearchSessionRepository implements ResearchSessionRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async create(submission: ResearchSessionSubmission): Promise<ResearchSessionPersistedShape> {
+    const normalized = ResearchSessionSubmissionSchema.parse(submission);
     const row = await this.prisma.researchSession.create({
       data: {
-        kind: submission.kind,
+        kind: normalized.kind,
         status: 'DRAFT',
-        label: submission.label,
-        notes: submission.notes,
-        configJson: submission.configJson,
-        createdBy: submission.createdBy,
+        label: normalized.label,
+        notes: normalized.notes,
+        configJson: normalized.configJson,
+        createdBy: normalized.createdBy,
       },
     });
     return toResearchSession(row);
@@ -48,14 +56,15 @@ export class PrismaResearchSessionRepository implements ResearchSessionRepositor
     sessionId: string,
     patch: ResearchSessionDraftPatch,
   ): Promise<ResearchSessionPersistedShape | null> {
+    const normalized = ResearchSessionDraftPatchSchema.parse(patch);
     // Condicional em `status: 'DRAFT'` — editar a config de uma sessão já em
     // execução tornaria o resultado impossível de atribuir a uma configuração.
     const affected = await this.prisma.researchSession.updateMany({
       where: { sessionId, status: 'DRAFT' },
       data: {
-        ...(patch.label === undefined ? {} : { label: patch.label }),
-        ...(patch.notes === undefined ? {} : { notes: patch.notes }),
-        ...(patch.configJson === undefined ? {} : { configJson: patch.configJson }),
+        ...(normalized.label === undefined ? {} : { label: normalized.label }),
+        ...(normalized.notes === undefined ? {} : { notes: normalized.notes }),
+        ...(normalized.configJson === undefined ? {} : { configJson: normalized.configJson }),
       },
     });
     if (affected.count === 0) return null;

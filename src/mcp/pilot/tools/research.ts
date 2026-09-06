@@ -48,7 +48,7 @@ const KIND_DESCRIPTION: Readonly<Record<ResearchSessionKind, string>> = {
   SIGNIFICANCE:
     'teste de significância — mede se o retorno médio da barra seguinte aos sinais poderia vir do acaso, por bootstrap estacionário. Abaixo de 30 observações devolve pValue null em vez de um número. Um p-valor alto não prova que a regra é inútil: prova que esta amostra não sustenta a afirmação de que ela funciona',
   MONTE_CARLO:
-    'Monte Carlo de ordem dos trades — mede quanto do drawdown observado é sorte de sequência. No motor da WR retorno total, Sharpe e win rate são invariantes à ordem e vêm em `invariants` sem percentil; só drawdown e Calmar variam, em `pathDependent`',
+    'Monte Carlo de ordem dos trades — mede quanto do drawdown observado é sorte de sequência. No motor da WR retorno total, Sharpe e win rate são invariantes à ordem e vêm em `invariants` sem percentil; só drawdown e Calmar variam, em `pathDependent`. Abaixo de 10 trades devolve insufficientData e as bandas de `pathDependent` como null em vez de percentis degenerados; os `invariants` saem mesmo assim, porque são exatos com qualquer número de trades',
 };
 
 function toolsForKind(

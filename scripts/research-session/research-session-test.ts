@@ -12,11 +12,15 @@ import {
   ruleSignificanceTest,
 } from '../../src/domain/v1/models/rule-significance';
 import type { BacktestBar, BacktestSignalInput } from '../../src/domain/v1/models/backtest-run';
-import { monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades';
+import { MIN_TRADES, monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades';
 import type { BacktestTrade } from '../../src/domain/v1/models/backtest-run';
 import { createResearchSessionService } from '../../src/application/research-session';
 import { ReadModelError } from '../../src/application/read-models-v1';
 import { buildResearchTools } from '../../src/mcp/pilot/tools/research';
+import {
+  MonteCarloConfigSchema,
+  SignificanceConfigSchema,
+} from '../../src/application/research-session';
 
 function rngIsDeterministic(): void {
   const a = createRng(42);
@@ -179,6 +183,60 @@ function significanceIgnoresHoldAndMissingNextBar(): void {
   console.log('Significância: HOLD e barra sem sucessora são descartados — OK');
 }
 
+/**
+ * N1: este caminho NAO passa pelo motor deterministico, entao o
+ * `knowledgeTime` so vale se for verificado aqui. Um sinal que so existiu
+ * DEPOIS da barra a que se refere e look-ahead e nao pode entrar na amostra.
+ */
+function significanceDiscardsLookAheadSignals(): void {
+  const bars = barsFromCloses(Array.from({ length: 100 }, (_, i) => 100 + i));
+  const honest = buyEveryBar(bars).slice(0, 40);
+  const poisoned: BacktestSignalInput[] = bars.slice(40, 90).map((bar) => ({
+    barTime: bar.time,
+    direction: 'BUY' as const,
+    // Conhecido um dia DEPOIS da barra: look-ahead.
+    knowledgeTime: new Date(Date.parse(bar.time) + 86_400_000).toISOString(),
+  }));
+
+  const clean = ruleSignificanceTest({ bars, signals: honest, nSimulations: 200 });
+  const mixed = ruleSignificanceTest({ bars, signals: [...honest, ...poisoned], nSimulations: 200 });
+  assert.equal(
+    mixed.nObservations,
+    clean.nObservations,
+    `sinais com look-ahead deveriam ser descartados, vieram ${mixed.nObservations} contra ${clean.nObservations}`,
+  );
+  assert.equal(mixed.pValue, clean.pValue, 'descartar look-ahead nao pode mudar o resultado do restante');
+
+  // Amostra INTEIRA envenenada cai abaixo do piso e recusa responder.
+  const allPoisoned = ruleSignificanceTest({ bars, signals: poisoned, nSimulations: 200 });
+  assert.equal(allPoisoned.nObservations, 0, 'amostra so de look-ahead nao tem observacao valida');
+  assert.equal(allPoisoned.pValue, null, 'sem observacao nao ha p-valor');
+  console.log('Significância: sinal com knowledgeTime posterior à barra é descartado — OK');
+}
+
+/**
+ * N5: abaixo do piso o `annualizedReturn` seria a media de ate 29
+ * observacoes multiplicada por um fator de calendario - o numero mais
+ * persuasivo do payload, e o menos sustentado. O `observedMean` continua
+ * saindo: ele e a media crua do que existe, nao uma extrapolacao.
+ */
+function significanceBelowFloorDoesNotAnnualize(): void {
+  const short = barsFromCloses(Array.from({ length: MIN_OBSERVATIONS - 5 }, (_, i) => 100 * 1.01 ** i));
+  const result = ruleSignificanceTest({ bars: short, signals: buyEveryBar(short), nSimulations: 200 });
+  assert.equal(result.insufficientData, true);
+  assert.equal(result.annualizedReturn, null, 'abaixo do piso nao se anualiza');
+  assert.ok(result.observedMean > 0, 'observedMean continua sendo publicado abaixo do piso');
+
+  const long = barsFromCloses(Array.from({ length: 200 }, (_, i) => 100 * 1.01 ** i));
+  const enough = ruleSignificanceTest({ bars: long, signals: buyEveryBar(long), nSimulations: 200 });
+  assert.equal(enough.insufficientData, false);
+  assert.ok(
+    typeof enough.annualizedReturn === 'number',
+    'acima do piso o retorno anualizado volta a ser publicado',
+  );
+  console.log('Significância: abaixo do piso annualizedReturn é null — OK');
+}
+
 function significanceIsDeterministic(): void {
   const bars = barsFromCloses(Array.from({ length: 200 }, (_, i) => 100 * 1.001 ** i));
   const signals = buyEveryBar(bars);
@@ -225,11 +283,18 @@ function monteCarloPathDependentDoesVary(): void {
   const trades = syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]);
   const result = monteCarloTrades({ trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 });
   const dd = result.pathDependent.maxDrawdown;
+  assert.ok(dd !== null, 'com 10 trades a banda deveria existir');
   assert.ok(dd.p5 <= dd.p50 && dd.p50 <= dd.p95, `percentis fora de ordem: ${JSON.stringify(dd)}`);
   assert.ok(dd.p5 < dd.p95, 'maxDrawdown deveria variar entre cenários — o embaralhamento não está agindo');
   console.log(`Monte Carlo: drawdown varia (p5=${dd.p5.toFixed(2)}, p95=${dd.p95.toFixed(2)}) — OK`);
 }
 
+/**
+ * N3: com 1 trade nao existe ordem alternativa. Antes esta funcao provava a
+ * DEGENERACAO da banda (`p5 === p95`); agora prova o que a plataforma faz
+ * com ela - recusar publica-la. E a mesma prova, com a conclusao levada ate
+ * o fim: uma banda degenerada nao e uma banda.
+ */
 function monteCarloWithSingleTradeIsDegenerate(): void {
   const result = monteCarloTrades({
     trades: syntheticTrades([42]),
@@ -237,9 +302,65 @@ function monteCarloWithSingleTradeIsDegenerate(): void {
     startingBalance: 1000,
     nScenarios: 50,
   });
-  const dd = result.pathDependent.maxDrawdown;
-  assert.equal(dd.p5, dd.p95, 'com 1 trade não há ordem a embaralhar: todos os cenários são iguais');
-  console.log('Monte Carlo: 1 trade → cenários idênticos — OK');
+  assert.equal(result.insufficientData, true, 'com 1 trade nao ha banda a publicar');
+  assert.equal(result.pathDependent.maxDrawdown, null, 'banda degenerada nao e publicada como banda');
+  assert.equal(result.pathDependent.calmar, null);
+  assert.equal(result.nScenarios, 0, 'nenhum cenario e simulado abaixo do piso');
+  // Os invariantes sao exatos com um trade so, e continuam saindo.
+  assert.ok(Math.abs(result.invariants.totalNetPnl - 42) < 1e-9, 'invariants saem mesmo abaixo do piso');
+  console.log('Monte Carlo: 1 trade → insufficientData, bandas null, invariantes publicados — OK');
+}
+
+/** N3: a fronteira exata do piso - MIN_TRADES-1 recusa, MIN_TRADES publica. */
+function monteCarloFloorIsExact(): void {
+  const pnls = [50, -30, 80, -60, 20, -10, 45, -70, 15, 5];
+  assert.equal(pnls.length, MIN_TRADES, 'a fixture precisa ter exatamente MIN_TRADES trades');
+  const base = { periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 };
+
+  const below = monteCarloTrades({ ...base, trades: syntheticTrades(pnls.slice(0, MIN_TRADES - 1)) });
+  assert.equal(below.insufficientData, true, 'um trade abaixo do piso nao publica banda');
+  assert.equal(below.pathDependent.maxDrawdownPct, null);
+
+  const at = monteCarloTrades({ ...base, trades: syntheticTrades(pnls) });
+  assert.equal(at.insufficientData, false, 'exatamente no piso a banda sai');
+  assert.ok(at.pathDependent.maxDrawdown !== null, 'no piso a banda existe');
+  console.log(`Monte Carlo: piso exato em ${MIN_TRADES} trades — OK`);
+}
+
+/**
+ * N4: cenario sem drawdown algum e o MELHOR caso possivel. Publica-lo como
+ * Calmar 0 o faria ordenar junto do pior dentro dos percentis.
+ */
+function monteCarloCalmarDistinguishesNoDrawdownFromZero(): void {
+  // So vencedores: nenhuma ordem produz drawdown, logo TODO cenario tem
+  // Calmar indefinido — a banda inteira é null, não uma banda de zeros.
+  const allWinners = monteCarloTrades({
+    trades: syntheticTrades([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 100,
+  });
+  assert.equal(allWinners.insufficientData, false);
+  assert.equal(allWinners.original.calmar, null, 'sem drawdown o Calmar e indefinido, nao zero');
+  assert.equal(allWinners.pathDependent.calmar, null, 'todos os cenarios indefinidos -> banda null');
+  assert.ok(allWinners.pathDependent.maxDrawdown !== null, 'o drawdown em si continua sendo publicado');
+
+  // Conjunto misto: ha drawdown em toda ordem, entao nada e excluido.
+  const mixed = monteCarloTrades({
+    trades: syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 200,
+  });
+  const calmar = mixed.pathDependent.calmar;
+  assert.ok(calmar !== null, 'com drawdown em todos os cenarios a banda do Calmar existe');
+  assert.equal(calmar.excludedCount, 0, 'nada a excluir quando todo cenario tem drawdown');
+  assert.equal(
+    mixed.pathDependent.maxDrawdown?.excludedCount,
+    0,
+    'a banda de drawdown nunca exclui cenario',
+  );
+  console.log('Monte Carlo: Calmar null distingue "sem drawdown" de "Calmar zero" — OK');
 }
 
 function monteCarloIsDeterministic(): void {
@@ -255,11 +376,123 @@ function monteCarloIsDeterministic(): void {
   console.log('Monte Carlo: determinístico por seed — OK');
 }
 
+/**
+ * N3: antes, com 0 trades, a sessao terminava DONE publicando
+ * `p5 = p50 = p95 = 0` e `ci90 = [0, 0]` - numeros fabricados na FORMA de um
+ * intervalo de confianca. Agora nao ha banda nenhuma.
+ */
 function monteCarloWithNoTradesDoesNotFabricate(): void {
   const result = monteCarloTrades({ trades: [], periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 });
-  assert.equal(result.nScenarios, 0, 'sem trades não há cenário a simular');
-  assert.equal(result.pathDependent.maxDrawdown.p50, 0, 'sem trades o drawdown é 0, não um número inventado');
-  console.log('Monte Carlo: conjunto vazio não fabrica cenário — OK');
+  assert.equal(result.nScenarios, 0, 'sem trades nao ha cenario a simular');
+  assert.equal(result.insufficientData, true, 'sem trades e dado insuficiente, nao resultado');
+  assert.equal(result.pathDependent.maxDrawdown, null, 'sem trades nao ha banda, nem uma banda de zeros');
+  assert.equal(result.pathDependent.maxDrawdownPct, null);
+  assert.equal(result.pathDependent.calmar, null);
+  console.log('Monte Carlo: conjunto vazio não fabrica banda — OK');
+}
+
+/** N2(a): teto de PRODUTO, nao por dimensao, recusado na fronteira Zod. */
+function configSchemasRefuseExcessiveWork(): void {
+  const bar = {
+    time: '2026-01-01T00:00:00.000Z',
+    open: 100,
+    high: 100,
+    low: 100,
+    close: 100,
+    knowledgeTime: '2026-01-01T00:00:00.000Z',
+  };
+  const signal = { barTime: bar.time, direction: 'BUY' as const, knowledgeTime: bar.knowledgeTime };
+
+  // 40.000 sinais x 20.000 simulacoes = 8e8, muito acima de 5e7.
+  const heavy = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 40_000 }, () => signal),
+    nSimulations: 20_000,
+  });
+  assert.equal(heavy.success, false, 'produto excessivo deveria ser recusado');
+  const message = heavy.success ? '' : heavy.error.issues.map((issue) => issue.message).join(' ');
+  assert.ok(message.includes('40000'), `a mensagem deve dizer o valor recebido: ${message}`);
+  assert.ok(
+    message.includes('50000000') || message.includes('5e+7'),
+    `a mensagem deve dizer o teto: ${message}`,
+  );
+
+  // Mesmo conjunto, poucas simulacoes: passa.
+  const light = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 1000 }, () => signal),
+    nSimulations: 1000,
+  });
+  assert.equal(light.success, true, 'dentro do teto deveria passar');
+
+  // O teto vale mesmo com o campo OMITIDO (default de 2000 simulacoes).
+  const defaulted = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 40_000 }, () => signal),
+  });
+  assert.equal(defaulted.success, false, 'o default de simulacoes tambem conta para o teto');
+
+  const trade = {
+    signalBarTime: bar.time,
+    entryTime: bar.time,
+    entryPrice: 100,
+    exitTime: bar.time,
+    exitPrice: 101,
+    direction: 'BUY' as const,
+    grossPnl: 1,
+    costs: 0,
+    netPnl: 1,
+    netReturn: 0.01,
+    exitReason: 'WINDOW_END' as const,
+  };
+  // 50.000 trades x default de 1000 cenarios = 5e7, acima de 5e6.
+  const heavyMc = MonteCarloConfigSchema.safeParse({
+    trades: Array.from({ length: 50_000 }, () => trade),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+  });
+  assert.equal(heavyMc.success, false, 'Monte Carlo com produto excessivo deveria ser recusado');
+  const lightMc = MonteCarloConfigSchema.safeParse({
+    trades: Array.from({ length: 100 }, () => trade),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 1000,
+  });
+  assert.equal(lightMc.success, true, 'dentro do teto deveria passar');
+  console.log('Config: teto de PRODUTO recusado na fronteira Zod — OK');
+}
+
+/**
+ * N2(b): `ResearchSessionSubmissionSchema` e `ResearchSessionDraftPatchSchema`
+ * existiam exportados e nunca chamados - o teto de 2 MB de `configJson` nao
+ * valia em lugar nenhum. Este teste prova que agora vale.
+ */
+async function repositoryEnforcesSubmissionSchema(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const huge = JSON.stringify({ x: 'a'.repeat(2_000_001) });
+
+  await assert.rejects(
+    () =>
+      repo.create({
+        kind: 'SIGNIFICANCE',
+        label: 'config gigante',
+        notes: null,
+        configJson: huge,
+        createdBy: 'test',
+      }),
+    'configJson acima de 2 MB deveria ser recusado antes de tocar o banco',
+  );
+
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', status: 'DRAFT' });
+  await assert.rejects(
+    () => repo.updateDraft(session.sessionId, { configJson: huge }),
+    'o mesmo teto vale no patch do rascunho',
+  );
+  await assert.rejects(
+    () => repo.updateDraft(session.sessionId, { label: '' }),
+    'rotulo vazio e recusado pelo schema do patch',
+  );
+  console.log('ResearchSession: schemas de fronteira aplicados no repositório — OK');
 }
 
 function stateMachineRejectsImpossibleTransitions(): void {
@@ -490,12 +723,17 @@ async function main(): Promise<void> {
   significanceBelowFloorRefusesToAnswer();
   significanceRespectsDirection();
   significanceIgnoresHoldAndMissingNextBar();
+  significanceDiscardsLookAheadSignals();
+  significanceBelowFloorDoesNotAnnualize();
   significanceIsDeterministic();
   monteCarloInvariantsDoNotVary();
   monteCarloPathDependentDoesVary();
   monteCarloWithSingleTradeIsDegenerate();
+  monteCarloFloorIsExact();
+  monteCarloCalmarDistinguishesNoDrawdownFromZero();
   monteCarloIsDeterministic();
   monteCarloWithNoTradesDoesNotFabricate();
+  configSchemasRefuseExcessiveWork();
   stateMachineRejectsImpossibleTransitions();
 
   const prisma = new PrismaClient();
@@ -503,6 +741,7 @@ async function main(): Promise<void> {
     await claimForRunIsAtomic(prisma);
     await claimForRunRefusesNonDraft(prisma);
     await updateDraftRefusesRunningSession(prisma);
+    await repositoryEnforcesSubmissionSchema(prisma);
     await serviceRunsSignificanceEndToEnd(prisma);
     await serviceRejectsWrongConfigForKind(prisma);
     await serviceRunRefusesSecondRun(prisma);

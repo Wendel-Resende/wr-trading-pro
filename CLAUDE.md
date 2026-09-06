@@ -249,8 +249,16 @@ src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
 - **A Fase 1 do Jesse não foi portada, de propósito.** Lá o teste de significância
   roda um backtest só-de-sinal chamando `should_long()` porque o sinal só existe
   dentro do ciclo de vida da estratégia. Na WR o sinal já é dado de primeira classe
-  (`Signal`, `BacktestSignalInput`), então a saída dessa fase já existe — e com o
-  `knowledgeTime` herdando a garantia point-in-time do motor (R-BT-7).
+  (`Signal`, `BacktestSignalInput`), então a saída dessa fase já existe.
+- **O `knowledgeTime` NÃO é herdado do motor neste caminho — é verificado aqui
+  (2026-09-06).** O texto anterior desta seção dizia que o teste herdava a garantia
+  point-in-time de `runDeterministicBacktest` (R-BT-7); não herdava: `bars` e
+  `signals` chegam crus do `configJson` que o agente monta e nunca passam pelo motor.
+  A garantia agora existe de fato, em `nextBarLogReturns`, que DESCARTA o sinal com
+  `knowledgeTime > barTime` — descarte, não exceção, para ser coerente com o resto
+  da função (que já descarta HOLD, barra sem sucessora e preço não positivo); o
+  descartado some de `nObservations` e o piso de 30 continua valendo sobre o que
+  sobrou.
 - **Piso de 30 observações** (`MIN_OBSERVATIONS`, mesmo valor do Jesse): abaixo dele
   o retorno é `pValue: null` com `insufficientData: true`, nunca um p-valor sobre
   amostra pequena demais. Mesma regra do "pilar sem dado não reprova" da Saúde
@@ -259,7 +267,15 @@ src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
   aditivo (`netPnl` absoluto, `lotSize` fixo), então retorno total, Sharpe, win rate
   e desvio-padrão são invariantes à ordem dos trades — só `maxDrawdown` e o Calmar
   variam. O resultado separa `invariants` (valor único, com `orderInvariant: true`)
-  de `pathDependent` (percentis 5/50/95 e ICs de 90%/95%). Publicar percentis
+  de `pathDependent` (percentis 5/50/95 e ICs de 90%/95%). **Piso de 10 trades
+  (`MIN_TRADES`):** abaixo dele as bandas de `pathDependent` vêm `null` com
+  `insufficientData: true` — com 1 trade não há ordem a embaralhar e com 2 ou 3 a
+  banda é degenerada mas indistinguível de uma real no JSON. Os `invariants` saem
+  mesmo assim, porque são exatos com qualquer número de trades. **Calmar é
+  `number | null`:** cenário SEM drawdown algum tem Calmar indefinido, não zero — os
+  `null` saem dos percentis e são contados em `excludedCount`, e se todos forem
+  `null` a banda inteira é `null`. Antes o melhor caso possível recebia `0` e
+  ordenava junto do pior. Publicar percentis
   idênticos em três casas para o retorno pareceria informação sem ser. O Jesse varia
   o retorno porque compõe (sizing sai do saldo corrente); replicar isso exigiria
   mudar o motor para sizing proporcional — decisão de modelagem, não feita.
@@ -267,6 +283,15 @@ src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
   Mesma seed → mesmo p-valor, sempre. Um p-valor irreprodutível não é evidência.
 - **Sem UI, de propósito** — a validação estatística nasce como capacidade do agente,
   que é quem propõe trades. As 10 abas continuam sendo o critério de "terminar".
+- **Teto de CUSTO na fronteira Zod (2026-09-06):** os limites por dimensão sozinhos
+  permitiam ~1e9 iterações. `SignificanceConfigSchema` recusa
+  `signals × nSimulations > 5e7` e `MonteCarloConfigSchema` recusa
+  `trades × nScenarios > 5e6`, com a mensagem dizendo o teto e o valor recebido. O
+  cálculo roda síncrono no MCP Pilot (processo filho do Electron): sem isso, uma
+  config mal dimensionada do agente congelaria o app. `ResearchSessionSubmissionSchema`
+  e `ResearchSessionDraftPatchSchema` agora são de fato aplicados no
+  `PrismaResearchSessionRepository` (antes eram exportados e nunca chamados, então o
+  teto de `configJson ≤ 2 MB` não valia em lugar nenhum).
 - **Nada torna o gate obrigatório ainda:** as tools existem, mas `trade.propose` não
   exige p-valor mínimo. É decisão de governança em aberto, não esquecimento.
 - Testes: `npm run test:research-session`
