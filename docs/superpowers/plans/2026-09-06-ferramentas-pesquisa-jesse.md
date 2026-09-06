@@ -193,13 +193,17 @@ function bootstrapPreservesSerialDependence(): void {
   // simuladas com dispersão MAIOR que um bootstrap i.i.d. (bloco 1), que
   // destrói a dependência local. Se as duas derem a mesma dispersão, a
   // implementação de blocos não está fazendo nada.
+  // Série suave de baixa frequência: fortemente PERSISTENTE (valores
+  // vizinhos têm o mesmo sinal por dezenas de barras). Um bloco de 20
+  // cai quase todo dentro de uma mesma fase, então as médias simuladas
+  // se espalham muito mais que sob i.i.d.
+  //
+  // A escolha da série importa: uma série oscilante de período curto
+  // (ex.: choque a cada 7 barras) dá o resultado INVERSO — blocos longos
+  // atravessam vários períodos e MÉDIAM a oscilação, com razão ~0,36.
+  // Verificado numericamente antes de escrever este teste.
   const n = 400;
-  const returns: number[] = [];
-  let level = 0;
-  for (let i = 0; i < n; i += 1) {
-    level = level * 0.97 + (i % 7 === 0 ? 0.01 : -0.0015);
-    returns.push(level);
-  }
+  const returns: number[] = Array.from({ length: n }, (_, i) => Math.sin(i / 40) * 0.01);
   const mean = returns.reduce((s, r) => s + r, 0) / n;
 
   const stdOf = (arr: Float64Array): number => {
@@ -210,7 +214,10 @@ function bootstrapPreservesSerialDependence(): void {
 
   const blocked = stdOf(stationaryBootstrap(returns, mean, 2000, 42, 20));
   const iid = stdOf(stationaryBootstrap(returns, mean, 2000, 42, 1));
-  assert.ok(blocked > iid * 1.2, `bootstrap em blocos (${blocked}) deveria dispersar mais que i.i.d. (${iid})`);
+  // Margem real medida nesta série: ~5,6x. O limiar de 2x é folgado o
+  // bastante para não ser frágil e apertado o bastante para reprovar uma
+  // implementação que ignorasse os blocos (razão 1,0).
+  assert.ok(blocked > iid * 2, `bootstrap em blocos (${blocked}) deveria dispersar mais que i.i.d. (${iid})`);
   console.log('Bootstrap: blocos preservam dependência serial — OK');
 }
 
