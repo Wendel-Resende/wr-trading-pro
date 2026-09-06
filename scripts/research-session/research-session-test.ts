@@ -394,6 +394,23 @@ async function serviceCancelIsIdempotent(prisma: PrismaClient): Promise<void> {
   console.log('Serviço: cancel é idempotente — OK');
 }
 
+async function serviceRunTransitionsToFailedOnInvalidConfig(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  // Config inválida gravada direto no banco (bypassa a validação de
+  // createDraft) para forçar a falha DENTRO de run(), depois do claim —
+  // exatamente o caminho em que a sessão fica RUNNING antes do erro.
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', configJson: '{}' });
+
+  const failed = await service.run(session.sessionId);
+
+  assert.equal(failed.status, 'FAILED', 'a sessão não pode ficar presa em RUNNING');
+  assert.ok(failed.errorSummary !== null && failed.errorSummary.length > 0, 'errorSummary deve existir');
+  assert.ok(!failed.errorSummary!.includes('C:\\'), 'errorSummary não pode vazar path do driver');
+  assert.ok(!failed.errorSummary!.includes('.stack'), 'errorSummary não pode vazar stack trace');
+  assert.equal(failed.result, null, 'sessão FAILED não tem resultado');
+  console.log('Serviço: run com config inválida transiciona para FAILED com erro sanitizado — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
@@ -422,6 +439,7 @@ async function main(): Promise<void> {
     await serviceRejectsWrongConfigForKind(prisma);
     await serviceRunRefusesSecondRun(prisma);
     await serviceCancelIsIdempotent(prisma);
+    await serviceRunTransitionsToFailedOnInvalidConfig(prisma);
   } finally {
     await prisma.$disconnect();
   }

@@ -146,11 +146,21 @@ export class ResearchSessionService {
       if (finished === null) throw new ReadModelError('RESEARCH_SESSION_NOT_EDITABLE', 'sessão deixou o estado RUNNING durante a execução');
       return toReadModel(finished);
     } catch (error) {
-      const failed = await this.repository.finish(sessionId, {
-        status: 'FAILED',
-        errorSummary: sanitizeError(error),
-      });
-      if (failed !== null) return toReadModel(failed);
+      // Segunda rede: se o PRÓPRIO `finish` falhar (ex.: I/O do banco durante
+      // a transição RUNNING->FAILED), a sessão ficaria presa em RUNNING para
+      // sempre — `updateDraft` e `claimForRun` só operam sobre DRAFT, então
+      // não haveria caminho de recuperação pela API. Relançamos o erro
+      // ORIGINAL do cálculo, não o do `finish`: é ele a causa raiz que o
+      // chamador precisa conhecer, o erro do banco é secundário.
+      try {
+        const failed = await this.repository.finish(sessionId, {
+          status: 'FAILED',
+          errorSummary: sanitizeError(error),
+        });
+        if (failed !== null) return toReadModel(failed);
+      } catch {
+        // Ignorado de propósito: cai no `throw error` abaixo com a causa raiz.
+      }
       throw error;
     }
   }
