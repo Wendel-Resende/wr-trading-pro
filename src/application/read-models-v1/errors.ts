@@ -56,7 +56,10 @@ export type ReadModelErrorCode =
   | 'UPSTREAM_MALFORMED_RESPONSE'
   // Bloqueador 12 (revisão Guardião): principal não resolvido (sessão
   // ausente/inválida) tentando criar/listar/cancelar um MlTrainingRun.
-  | 'UNAUTHENTICATED';
+  | 'UNAUTHENTICATED'
+  | 'RESEARCH_SESSION_NOT_FOUND'
+  | 'RESEARCH_SESSION_ALREADY_RUNNING'
+  | 'RESEARCH_SESSION_NOT_EDITABLE';
 
 const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   INVALID_QUERY: 400,
@@ -111,6 +114,9 @@ const STATUS_BY_CODE: Record<ReadModelErrorCode, number> = {
   INVALID_TRAINING_RUN_TRANSITION: 409,
   UPSTREAM_MALFORMED_RESPONSE: 502,
   UNAUTHENTICATED: 401,
+  RESEARCH_SESSION_NOT_FOUND: 404,
+  RESEARCH_SESSION_ALREADY_RUNNING: 409,
+  RESEARCH_SESSION_NOT_EDITABLE: 409,
 };
 
 /**

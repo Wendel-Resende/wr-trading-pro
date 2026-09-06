@@ -14,6 +14,8 @@ import {
 import type { BacktestBar, BacktestSignalInput } from '../../src/domain/v1/models/backtest-run';
 import { monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades';
 import type { BacktestTrade } from '../../src/domain/v1/models/backtest-run';
+import { createResearchSessionService } from '../../src/application/research-session';
+import { ReadModelError } from '../../src/application/read-models-v1';
 
 function rngIsDeterministic(): void {
   const a = createRng(42);
@@ -304,6 +306,94 @@ async function updateDraftRefusesRunningSession(prisma: PrismaClient): Promise<v
   console.log('ResearchSession: updateDraft recusa sessão em execução — OK');
 }
 
+/** Config de significância sobre uma série com deriva positiva clara. */
+function significanceConfigFor(nBars: number): Record<string, unknown> {
+  const closes = Array.from({ length: nBars }, (_, i) => 100 * 1.004 ** i);
+  const bars = closes.map((close, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return { time, open: close, high: close, low: close, close, knowledgeTime: time };
+  });
+  return {
+    bars,
+    signals: bars
+      .slice(0, -1)
+      .map((bar) => ({ barTime: bar.time, direction: 'BUY', knowledgeTime: bar.knowledgeTime })),
+    nSimulations: 200,
+    seed: 42,
+  };
+}
+
+async function serviceRunsSignificanceEndToEnd(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'SIGNIFICANCE',
+    label: 'regra de teste',
+    notes: null,
+    config: significanceConfigFor(120),
+    createdBy: 'test',
+  });
+  assert.equal(draft.status, 'DRAFT');
+
+  const done = await service.run(draft.sessionId);
+  assert.equal(done.status, 'DONE', 'a sessão deveria concluir');
+  const result = done.result as { pValue: number | null; insufficientData: boolean };
+  assert.equal(result.insufficientData, false);
+  assert.ok(result.pValue !== null && result.pValue < 0.05, `esperava significativo, veio p=${result.pValue}`);
+  console.log('Serviço: significância roda fim-a-fim e persiste o resultado — OK');
+}
+
+async function serviceRejectsWrongConfigForKind(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  await assert.rejects(
+    () =>
+      service.createDraft({
+        kind: 'SIGNIFICANCE',
+        label: 'config trocada',
+        notes: null,
+        // Config de Monte Carlo num rascunho de significância.
+        config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+        createdBy: 'test',
+      }),
+    (error: unknown) => error instanceof ReadModelError,
+    'config de outro kind deve ser rejeitada na fronteira',
+  );
+  console.log('Serviço: config inválida para o kind é rejeitada — OK');
+}
+
+async function serviceRunRefusesSecondRun(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'SIGNIFICANCE',
+    label: 'roda uma vez só',
+    notes: null,
+    config: significanceConfigFor(120),
+    createdBy: 'test',
+  });
+  await service.run(draft.sessionId);
+  await assert.rejects(
+    () => service.run(draft.sessionId),
+    (error: unknown) => error instanceof ReadModelError && error.code === 'RESEARCH_SESSION_ALREADY_RUNNING',
+    'a segunda chamada de run deve ser recusada',
+  );
+  console.log('Serviço: run duplicado é recusado com RESEARCH_SESSION_ALREADY_RUNNING — OK');
+}
+
+async function serviceCancelIsIdempotent(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'MONTE_CARLO',
+    label: 'cancelar duas vezes',
+    notes: null,
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000, nScenarios: 10 },
+    createdBy: 'test',
+  });
+  const first = await service.cancel(draft.sessionId);
+  const second = await service.cancel(draft.sessionId);
+  assert.equal(first.status, 'CANCELLED');
+  assert.equal(second.status, 'CANCELLED', 'cancelar de novo não é erro');
+  console.log('Serviço: cancel é idempotente — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
@@ -328,6 +418,10 @@ async function main(): Promise<void> {
     await claimForRunIsAtomic(prisma);
     await claimForRunRefusesNonDraft(prisma);
     await updateDraftRefusesRunningSession(prisma);
+    await serviceRunsSignificanceEndToEnd(prisma);
+    await serviceRejectsWrongConfigForKind(prisma);
+    await serviceRunRefusesSecondRun(prisma);
+    await serviceCancelIsIdempotent(prisma);
   } finally {
     await prisma.$disconnect();
   }
