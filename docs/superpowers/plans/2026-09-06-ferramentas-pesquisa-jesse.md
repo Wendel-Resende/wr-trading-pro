@@ -2333,7 +2333,7 @@ async function researchToolRejectsInvalidArgsWithoutThrowing(prisma: PrismaClien
   console.log('Tools: entrada inválida devolve isError em vez de lançar — OK');
 }
 
-async function researchToolRefusesCreatedByFromArgs(prisma: PrismaClient): Promise<void> {
+async function researchToolNeutralizesCreatedByFromArgs(prisma: PrismaClient): Promise<void> {
   const tools = buildResearchTools(createResearchSessionService(prisma));
   const create = tools.find((tool) => tool.name === 'research.monte_carlo.create_draft');
   assert.ok(create !== undefined, 'tool create_draft deveria existir');
@@ -2342,11 +2342,18 @@ async function researchToolRefusesCreatedByFromArgs(prisma: PrismaClient): Promi
     config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
     createdBy: 'alguem-mais',
   });
-  // `createdBy` não está no inputSchema: o objeto Zod montado por
-  // parseToolArgs rejeita o campo extra, então a autoria nunca vem do
-  // argumento.
-  assert.equal(result.isError, true, 'createdBy vindo do argumento deve ser rejeitado');
-  console.log('Tools: createdBy não pode vir do argumento — OK');
+
+  // `createdBy` não está no inputSchema. O `parseToolArgs` compartilhado usa
+  // `z.object(shape)` sem `.strict()`, e o modo padrão do Zod DESCARTA campo
+  // desconhecido em vez de recusá-lo — então a chamada NÃO vira erro. A
+  // garantia de segurança não vem da recusa: vem de o handler passar
+  // `createdBy: MCP_CREATED_BY` explicitamente, ignorando o que veio nos
+  // argumentos. É essa propriedade que o teste precisa provar.
+  assert.notEqual(result.isError, true, 'campo extra é descartado pelo Zod, não vira erro');
+  const payload = JSON.parse(result.content[0].text) as { createdBy: string };
+  assert.equal(payload.createdBy, 'mcp:hermes', 'a tentativa de forjar autoria tem que ser neutralizada');
+  assert.notEqual(payload.createdBy, 'alguem-mais', 'autoria jamais pode vir do argumento');
+  console.log('Tools: createdBy vindo do argumento é neutralizado — OK');
 }
 
 async function researchToolCreatesWithServerFixedAuthor(prisma: PrismaClient): Promise<void> {
@@ -2370,7 +2377,7 @@ E registrar em `main()`, dentro do `try` do Prisma:
 ```ts
     await researchToolsAreRegisteredAndFree(prisma);
     await researchToolRejectsInvalidArgsWithoutThrowing(prisma);
-    await researchToolRefusesCreatedByFromArgs(prisma);
+    await researchToolNeutralizesCreatedByFromArgs(prisma);
     await researchToolCreatesWithServerFixedAuthor(prisma);
 ```
 
