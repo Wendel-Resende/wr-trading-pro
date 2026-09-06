@@ -16,6 +16,7 @@ import { monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades'
 import type { BacktestTrade } from '../../src/domain/v1/models/backtest-run';
 import { createResearchSessionService } from '../../src/application/research-session';
 import { ReadModelError } from '../../src/application/read-models-v1';
+import { buildResearchTools } from '../../src/mcp/pilot/tools/research';
 
 function rngIsDeterministic(): void {
   const a = createRng(42);
@@ -411,6 +412,73 @@ async function serviceRunTransitionsToFailedOnInvalidConfig(prisma: PrismaClient
   console.log('Serviço: run com config inválida transiciona para FAILED com erro sanitizado — OK');
 }
 
+async function researchToolsAreRegisteredAndFree(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const names = tools.map((tool) => tool.name);
+  assert.equal(names.length, 12, `esperava 12 tools, veio ${names.length}`);
+  for (const prefix of ['significance', 'monte_carlo']) {
+    for (const action of ['create_draft', 'update_draft', 'get', 'list', 'run', 'cancel']) {
+      assert.ok(names.includes(`research.${prefix}.${action}`), `tool research.${prefix}.${action} faltando`);
+    }
+  }
+  assert.ok(
+    tools.every((tool) => tool.privilege === 'free'),
+    'nenhuma tool de pesquisa pode ser gated: nenhuma envia ordem',
+  );
+  assert.ok(
+    tools.every((tool) => tool.description.length > 20),
+    'toda tool precisa de descrição — é o que o agente lê para decidir usá-la',
+  );
+  console.log('Tools: 12 registradas, todas free e descritas — OK');
+}
+
+async function researchToolRejectsInvalidArgsWithoutThrowing(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const get = tools.find((tool) => tool.name === 'research.significance.get');
+  assert.ok(get !== undefined, 'tool get deveria existir');
+  const result = await get.handler({ sessionId: 42 });
+  assert.equal(result.isError, true, 'argumento inválido deve virar isError, não exceção');
+  console.log('Tools: entrada inválida devolve isError em vez de lançar — OK');
+}
+
+async function researchToolNeutralizesCreatedByFromArgs(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const create = tools.find((tool) => tool.name === 'research.monte_carlo.create_draft');
+  assert.ok(create !== undefined, 'tool create_draft deveria existir');
+  const result = await create.handler({
+    label: 'tentativa de forjar autoria',
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+    createdBy: 'alguem-mais',
+  });
+
+  // `createdBy` não está no inputSchema. O `parseToolArgs` compartilhado usa
+  // `z.object(shape)` sem `.strict()`, e o modo padrão do Zod DESCARTA campo
+  // desconhecido em vez de recusá-lo — então a chamada NÃO vira erro. A
+  // garantia de segurança não vem da recusa: vem de o handler passar
+  // `createdBy: MCP_CREATED_BY` explicitamente, ignorando o que veio nos
+  // argumentos. É essa propriedade que o teste precisa provar.
+  assert.notEqual(result.isError, true, 'campo extra é descartado pelo Zod, não vira erro');
+  const payload = JSON.parse(result.content[0].text) as { createdBy: string };
+  assert.equal(payload.createdBy, 'mcp:hermes', 'a tentativa de forjar autoria tem que ser neutralizada');
+  assert.notEqual(payload.createdBy, 'alguem-mais', 'autoria jamais pode vir do argumento');
+  console.log('Tools: createdBy vindo do argumento é neutralizado — OK');
+}
+
+async function researchToolCreatesWithServerFixedAuthor(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const create = tools.find((tool) => tool.name === 'research.monte_carlo.create_draft');
+  assert.ok(create !== undefined, 'tool create_draft deveria existir');
+  const result = await create.handler({
+    label: 'rascunho válido',
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+  });
+  assert.notEqual(result.isError, true, 'rascunho válido não deveria ser erro');
+  const payload = JSON.parse(result.content[0].text) as { createdBy: string; status: string };
+  assert.equal(payload.createdBy, 'mcp:hermes', 'autoria é fixada no servidor');
+  assert.equal(payload.status, 'DRAFT', 'create_draft não roda nada');
+  console.log('Tools: create_draft fixa createdBy no servidor — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
@@ -440,6 +508,10 @@ async function main(): Promise<void> {
     await serviceRunRefusesSecondRun(prisma);
     await serviceCancelIsIdempotent(prisma);
     await serviceRunTransitionsToFailedOnInvalidConfig(prisma);
+    await researchToolsAreRegisteredAndFree(prisma);
+    await researchToolRejectsInvalidArgsWithoutThrowing(prisma);
+    await researchToolNeutralizesCreatedByFromArgs(prisma);
+    await researchToolCreatesWithServerFixedAuthor(prisma);
   } finally {
     await prisma.$disconnect();
   }

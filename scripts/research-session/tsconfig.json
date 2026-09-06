@@ -14,6 +14,7 @@
     "research-session-test.ts",
     "../../src/adapters/prisma/**/*.ts",
     "../../src/domain/v1/**/*.ts",
-    "../../src/application/**/*.ts"
+    "../../src/application/**/*.ts",
+    "../../src/mcp/**/*.ts"
   ]
 }
