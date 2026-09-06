@@ -231,6 +231,48 @@ src/components/saude/bancos-types.ts           contratos da UI (nada importado d
 - Testes: `npm run test:bcb-financial-health` (fronteira exata dos limiares, ausência não
   reprovando, piso, janela recente, perímetros distintos + prova de fumaça sobre o banco real).
 
+### Ferramentas de pesquisa estatística — portadas do Jesse (2026-09-06)
+
+Duas capacidades que o motor de backtest da WR não tinha, portadas do framework
+Jesse (MIT, `jesse 3.1.1`) e adaptadas ao que o motor da WR permite afirmar:
+
+```
+src/domain/v1/models/research-rng/            PRNG semeado (xoshiro128**) — nunca Math.random
+src/domain/v1/models/rule-significance/       bootstrap estacionário + p-valor, PURO
+src/domain/v1/models/monte-carlo-trades/      embaralhamento de ordem de trades, PURO
+src/domain/v1/models/backtest-run/metrics.ts  computeMetrics extraída para reuso
+src/application/research-session/             valida config por kind, CAS no run
+src/app/api/v1/research-sessions/**           rotas
+src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
+```
+
+- **A Fase 1 do Jesse não foi portada, de propósito.** Lá o teste de significância
+  roda um backtest só-de-sinal chamando `should_long()` porque o sinal só existe
+  dentro do ciclo de vida da estratégia. Na WR o sinal já é dado de primeira classe
+  (`Signal`, `BacktestSignalInput`), então a saída dessa fase já existe — e com o
+  `knowledgeTime` herdando a garantia point-in-time do motor (R-BT-7).
+- **Piso de 30 observações** (`MIN_OBSERVATIONS`, mesmo valor do Jesse): abaixo dele
+  o retorno é `pValue: null` com `insufficientData: true`, nunca um p-valor sobre
+  amostra pequena demais. Mesma regra do "pilar sem dado não reprova" da Saúde
+  Financeira.
+- **O Monte Carlo NÃO produz intervalo de confiança para retorno.** O motor da WR é
+  aditivo (`netPnl` absoluto, `lotSize` fixo), então retorno total, Sharpe, win rate
+  e desvio-padrão são invariantes à ordem dos trades — só `maxDrawdown` e o Calmar
+  variam. O resultado separa `invariants` (valor único, com `orderInvariant: true`)
+  de `pathDependent` (percentis 5/50/95 e ICs de 90%/95%). Publicar percentis
+  idênticos em três casas para o retorno pareceria informação sem ser. O Jesse varia
+  o retorno porque compõe (sizing sai do saldo corrente); replicar isso exigiria
+  mudar o motor para sizing proporcional — decisão de modelagem, não feita.
+- **Determinismo é requisito, não conveniência:** nenhum `Math.random()` no domínio.
+  Mesma seed → mesmo p-valor, sempre. Um p-valor irreprodutível não é evidência.
+- **Sem UI, de propósito** — a validação estatística nasce como capacidade do agente,
+  que é quem propõe trades. As 10 abas continuam sendo o critério de "terminar".
+- **Nada torna o gate obrigatório ainda:** as tools existem, mas `trade.propose` não
+  exige p-valor mínimo. É decisão de governança em aberto, não esquecimento.
+- Testes: `npm run test:research-session`
+- Spec: `docs/superpowers/specs/2026-09-06-ferramentas-pesquisa-jesse-design.md`
+- Plano: `docs/superpowers/plans/2026-09-06-ferramentas-pesquisa-jesse.md`
+
 ### Dados locais do projeto
 
 O banco de opções oficial é `data/options/options_data.db` (gerado em runtime; ignorado pelo Git).

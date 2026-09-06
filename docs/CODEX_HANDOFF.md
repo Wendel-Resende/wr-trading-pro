@@ -1,6 +1,54 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-12 (retreino do modelo de fator — universo corrigido)
+Última atualização: 2026-09-06 (ferramentas de pesquisa estatística portadas do Jesse)
+
+## Sessão 2026-09-06 — Ferramentas de pesquisa estatística portadas do Jesse
+
+### O que foi portado
+
+Duas capacidades do framework Jesse (MIT, `jesse 3.1.1`), adaptadas ao que o motor de
+backtest da WR permite afirmar:
+
+- **Teste de significância de regra** (`src/domain/v1/models/rule-significance/`):
+  bootstrap estacionário sobre os retornos do sinal, devolve p-valor contra H0 (retorno
+  médio zero). Piso de 30 observações (`MIN_OBSERVATIONS`) — abaixo disso, `pValue: null`
+  com `insufficientData: true`, nunca um p-valor sobre amostra pequena demais.
+- **Monte Carlo de trades** (`src/domain/v1/models/monte-carlo-trades/`): embaralha a
+  ordem dos trades de um backtest e recalcula métricas por cenário. Como o motor da WR é
+  aditivo (`netPnl` absoluto, `lotSize` fixo), retorno total/Sharpe/win rate/desvio-padrão
+  são invariantes à ordem — só `maxDrawdown` e o Calmar variam. O resultado separa
+  `invariants` de `pathDependent` (percentis 5/50/95, ICs 90%/95%) em vez de fabricar
+  variação onde não existe.
+- PRNG determinístico (`src/domain/v1/models/research-rng/`, xoshiro128**) — nenhum
+  `Math.random()` no domínio; mesma seed → mesmo p-valor sempre.
+- `computeMetrics` extraída de `backtest-run` para `metrics.ts`, reusada pelo Monte Carlo.
+- Modelo Prisma `ResearchSession` + `src/application/research-session/` (valida config por
+  `kind`, CAS no `run`) + 4 rotas HTTP (`/api/v1/research-sessions/**`) + 12 tools MCP
+  (`src/mcp/pilot/tools/research.ts`, todas `free`).
+- 29 testes em `npm run test:research-session`, todos verdes; suítes `test:mcp`,
+  `test:read-models-v1` e `test:signal` seguem verdes (não regrediram).
+- `npm run build` conclui sem erro; as 4 rotas novas aparecem na listagem de rotas do Next
+  (`research-sessions`, `research-sessions/[id]`, `research-sessions/[id]/cancel`,
+  `research-sessions/[id]/run`).
+
+### O que ficou de fora, de propósito
+
+- **Monte Carlo por reamostragem de candles** (bootstrap de barras de preço, não só de
+  trades) — o Jesse não faz isso de fábrica; não foi pedido nem desenhado nesta rodada.
+- **Unificação de `ml_features()`** — o Jesse tem um único ponto de extração de features
+  reusado por indicadores e ML; a WR mantém extrações separadas por trilho. Consolidar é
+  refactor de escopo maior, fora desta pesquisa.
+- **Consolidação dos guard-rails de risco em filtros nomeados** — `maxNotional`,
+  `maxPositionConcentrationPct`, rate limit, kill switch etc. continuam checados em pontos
+  distintos do pipeline de `trade.propose`/`approve`, não como uma lista nomeada e
+  componível de filtros (padrão que o Jesse usa para os próprios filtros de estratégia).
+
+### Decisão em aberto
+
+`trade.propose` **não exige p-valor mínimo** hoje — as tools `research.*` existem e podem
+ser chamadas pelo agente, mas nada no gate de proposta de trade consulta o resultado. Ficou
+como decisão de governança: se/quando exigir, e qual o limiar (ex. p < 0,05), e como (bloqueio
+duro vs. aviso) são perguntas para o usuário decidir, não algo assumido aqui.
 
 ## Sessão 2026-08-12 (parte 3) — Retreino: universo de 138 -> 129 CORRIGIDO
 
