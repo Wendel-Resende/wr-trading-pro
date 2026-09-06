@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { createRng } from '../../src/domain/v1/models/research-rng';
 import { stationaryBootstrap } from '../../src/domain/v1/models/rule-significance/bootstrap';
+import {
+  MIN_OBSERVATIONS,
+  ruleSignificanceTest,
+} from '../../src/domain/v1/models/rule-significance';
+import type { BacktestBar, BacktestSignalInput } from '../../src/domain/v1/models/backtest-run';
 
 function rngIsDeterministic(): void {
   const a = createRng(42);
@@ -82,12 +87,108 @@ function bootstrapPreservesSerialDependence(): void {
   console.log('Bootstrap: blocos preservam dependência serial — OK');
 }
 
+/** Constrói barras diárias a partir de uma série de fechamentos. */
+function barsFromCloses(closes: readonly number[]): BacktestBar[] {
+  return closes.map((close, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return { time, open: close, high: close, low: close, close, knowledgeTime: time };
+  });
+}
+
+/** Um sinal BUY em cada barra, exceto a última (que não tem barra seguinte). */
+function buyEveryBar(bars: readonly BacktestBar[]): BacktestSignalInput[] {
+  return bars.slice(0, -1).map((bar) => ({
+    barTime: bar.time,
+    direction: 'BUY' as const,
+    knowledgeTime: bar.knowledgeTime,
+  }));
+}
+
+function significanceOnPureNoiseIsNotSignificant(): void {
+  // Série sem deriva: sobe e desce alternadamente pelo mesmo fator.
+  const closes: number[] = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(i % 2 === 0 ? 100 : 101);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.equal(result.insufficientData, false, 'deveria haver observações suficientes');
+  assert.ok(result.pValue !== null, 'p-valor não deveria ser null');
+  assert.ok((result.pValue as number) > 0.10, `ruído puro não deveria ser significativo, veio p=${result.pValue}`);
+  console.log(`Significância: ruído puro → p=${result.pValue?.toFixed(3)} (não significativo) — OK`);
+}
+
+function significanceOnStrongDriftIsSignificant(): void {
+  // Deriva positiva consistente: +0,5% por barra.
+  const closes = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(closes[i - 1] * 1.005);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.ok(result.pValue !== null, 'p-valor não deveria ser null');
+  assert.ok((result.pValue as number) < 0.05, `deriva forte deveria ser significativa, veio p=${result.pValue}`);
+  assert.ok(result.observedMean > 0, 'média observada deveria ser positiva');
+  console.log(`Significância: deriva forte → p=${result.pValue?.toFixed(4)} (significativo) — OK`);
+}
+
+function significanceBelowFloorRefusesToAnswer(): void {
+  const closes = Array.from({ length: MIN_OBSERVATIONS - 5 }, (_, i) => 100 + i);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.equal(result.insufficientData, true, 'abaixo do piso deveria marcar insufficientData');
+  assert.equal(result.pValue, null, 'abaixo do piso o p-valor deve ser null, nunca um número');
+  assert.ok(result.nObservations < MIN_OBSERVATIONS, 'nObservations deveria estar abaixo do piso');
+  console.log('Significância: abaixo do piso devolve pValue null — OK');
+}
+
+function significanceRespectsDirection(): void {
+  // Mesma série em alta, mas sinalizando SELL: a regra é ruim, não boa.
+  const closes = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(closes[i - 1] * 1.005);
+  const bars = barsFromCloses(closes);
+  const sellSignals: BacktestSignalInput[] = bars.slice(0, -1).map((bar) => ({
+    barTime: bar.time,
+    direction: 'SELL' as const,
+    knowledgeTime: bar.knowledgeTime,
+  }));
+  const result = ruleSignificanceTest({ bars, signals: sellSignals, nSimulations: 1000 });
+  assert.ok(result.observedMean < 0, 'SELL numa série em alta deveria ter média negativa');
+  assert.ok((result.pValue as number) > 0.5, 'regra ruim não pode sair significativa');
+  console.log('Significância: direção SELL inverte o sinal do retorno — OK');
+}
+
+function significanceIgnoresHoldAndMissingNextBar(): void {
+  const bars = barsFromCloses(Array.from({ length: 100 }, (_, i) => 100 + i));
+  const signals: BacktestSignalInput[] = [
+    ...buyEveryBar(bars).slice(0, 50),
+    // HOLD não é uma aposta: não entra na amostra.
+    { barTime: bars[60].time, direction: 'HOLD', knowledgeTime: bars[60].knowledgeTime },
+    // Última barra não tem barra seguinte: não há retorno a medir.
+    { barTime: bars[bars.length - 1].time, direction: 'BUY', knowledgeTime: bars[bars.length - 1].knowledgeTime },
+  ];
+  const result = ruleSignificanceTest({ bars, signals, nSimulations: 200 });
+  assert.equal(result.nObservations, 50, `esperava 50 observações, veio ${result.nObservations}`);
+  console.log('Significância: HOLD e barra sem sucessora são descartados — OK');
+}
+
+function significanceIsDeterministic(): void {
+  const bars = barsFromCloses(Array.from({ length: 200 }, (_, i) => 100 * 1.001 ** i));
+  const signals = buyEveryBar(bars);
+  const a = ruleSignificanceTest({ bars, signals, nSimulations: 500, seed: 42 });
+  const b = ruleSignificanceTest({ bars, signals, nSimulations: 500, seed: 42 });
+  assert.equal(a.pValue, b.pValue, 'mesma seed deve produzir o mesmo p-valor');
+  console.log('Significância: determinística por seed — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
   bootstrapIsDeterministic();
   bootstrapCentersTheSeries();
   bootstrapPreservesSerialDependence();
+  significanceOnPureNoiseIsNotSignificant();
+  significanceOnStrongDriftIsSignificant();
+  significanceBelowFloorRefusesToAnswer();
+  significanceRespectsDirection();
+  significanceIgnoresHoldAndMissingNextBar();
+  significanceIsDeterministic();
   console.log('\nTodos os testes de research-session passaram.');
 }
 
