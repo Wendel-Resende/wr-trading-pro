@@ -1,4 +1,10 @@
 import assert from 'node:assert/strict';
+import { PrismaClient } from '@prisma/client';
+import {
+  PrismaResearchSessionRepository,
+  insertResearchSessionForTest,
+} from '../../src/adapters/prisma/research-session';
+import { canTransition } from '../../src/domain/v1/models/research-session';
 import { createRng } from '../../src/domain/v1/models/research-rng';
 import { stationaryBootstrap } from '../../src/domain/v1/models/rule-significance/bootstrap';
 import {
@@ -253,6 +259,51 @@ function monteCarloWithNoTradesDoesNotFabricate(): void {
   console.log('Monte Carlo: conjunto vazio não fabrica cenário — OK');
 }
 
+function stateMachineRejectsImpossibleTransitions(): void {
+  assert.equal(canTransition('DRAFT', 'RUNNING'), true);
+  assert.equal(canTransition('RUNNING', 'DONE'), true);
+  assert.equal(canTransition('RUNNING', 'FAILED'), true);
+  assert.equal(canTransition('DRAFT', 'CANCELLED'), true);
+  assert.equal(canTransition('DONE', 'RUNNING'), false, 'sessão concluída não volta a rodar');
+  assert.equal(canTransition('DRAFT', 'DONE'), false, 'não se conclui sem rodar');
+  assert.equal(canTransition('CANCELLED', 'RUNNING'), false, 'cancelada não recomeça');
+  console.log('ResearchSession: máquina de estados rejeita transição impossível — OK');
+}
+
+async function claimForRunIsAtomic(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE' });
+
+  // Duas tentativas concorrentes de reivindicar o MESMO rascunho.
+  const [first, second] = await Promise.all([
+    repo.claimForRun(session.sessionId),
+    repo.claimForRun(session.sessionId),
+  ]);
+
+  const winners = [first, second].filter((claimed) => claimed === true);
+  assert.equal(winners.length, 1, `exatamente um claim deveria vencer, venceram ${winners.length}`);
+
+  const after = await repo.findById(session.sessionId);
+  assert.equal(after?.status, 'RUNNING', 'a sessão deveria estar RUNNING após o claim vencedor');
+  console.log('ResearchSession: claimForRun é atômico (CAS) — OK');
+}
+
+async function claimForRunRefusesNonDraft(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'MONTE_CARLO', status: 'DONE' });
+  const claimed = await repo.claimForRun(session.sessionId);
+  assert.equal(claimed, false, 'sessão DONE não pode ser reivindicada para rodar');
+  console.log('ResearchSession: claimForRun recusa sessão não-DRAFT — OK');
+}
+
+async function updateDraftRefusesRunningSession(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', status: 'RUNNING' });
+  const updated = await repo.updateDraft(session.sessionId, { label: 'novo rótulo' });
+  assert.equal(updated, null, 'rascunho em execução não aceita edição de config');
+  console.log('ResearchSession: updateDraft recusa sessão em execução — OK');
+}
+
 async function main(): Promise<void> {
   rngIsDeterministic();
   rngFloatsAreInRange();
@@ -270,6 +321,17 @@ async function main(): Promise<void> {
   monteCarloWithSingleTradeIsDegenerate();
   monteCarloIsDeterministic();
   monteCarloWithNoTradesDoesNotFabricate();
+  stateMachineRejectsImpossibleTransitions();
+
+  const prisma = new PrismaClient();
+  try {
+    await claimForRunIsAtomic(prisma);
+    await claimForRunRefusesNonDraft(prisma);
+    await updateDraftRefusesRunningSession(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+
   console.log('\nTodos os testes de research-session passaram.');
 }
 
