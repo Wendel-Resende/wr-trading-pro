@@ -231,6 +231,168 @@ src/components/saude/bancos-types.ts           contratos da UI (nada importado d
 - Testes: `npm run test:bcb-financial-health` (fronteira exata dos limiares, ausência não
   reprovando, piso, janela recente, perímetros distintos + prova de fumaça sobre o banco real).
 
+### Ferramentas de pesquisa estatística — portadas do Jesse (2026-09-06)
+
+Duas capacidades que o motor de backtest da WR não tinha, portadas do framework
+Jesse (MIT, `jesse 3.1.1`) e adaptadas ao que o motor da WR permite afirmar:
+
+```
+src/domain/v1/models/research-rng/            PRNG semeado (xoshiro128**) — nunca Math.random
+src/domain/v1/models/rule-significance/       bootstrap estacionário + p-valor, PURO
+src/domain/v1/models/monte-carlo-trades/      embaralhamento de ordem de trades, PURO
+src/domain/v1/models/backtest-run/metrics.ts  computeMetrics extraída para reuso
+src/application/research-session/             valida config por kind, CAS no run
+src/app/api/v1/research-sessions/**           rotas
+src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
+```
+
+- **A Fase 1 do Jesse não foi portada, de propósito.** Lá o teste de significância
+  roda um backtest só-de-sinal chamando `should_long()` porque o sinal só existe
+  dentro do ciclo de vida da estratégia. Na WR o sinal já é dado de primeira classe
+  (`Signal`, `BacktestSignalInput`), então a saída dessa fase já existe.
+- **O `knowledgeTime` NÃO é herdado do motor neste caminho — é verificado aqui
+  (2026-09-06).** O texto anterior desta seção dizia que o teste herdava a garantia
+  point-in-time de `runDeterministicBacktest` (R-BT-7); não herdava: `bars` e
+  `signals` chegam crus do `configJson` que o agente monta e nunca passam pelo motor.
+  A garantia agora existe de fato, em `nextBarLogReturns`, que DESCARTA o sinal com
+  `knowledgeTime > barTime` — descarte, não exceção, para ser coerente com o resto
+  da função (que já descarta HOLD, barra sem sucessora e preço não positivo); o
+  descartado some de `nObservations` e o piso de 30 continua valendo sobre o que
+  sobrou.
+- **Piso de 30 observações** (`MIN_OBSERVATIONS`, mesmo valor do Jesse): abaixo dele
+  o retorno é `pValue: null` com `insufficientData: true`, nunca um p-valor sobre
+  amostra pequena demais. Mesma regra do "pilar sem dado não reprova" da Saúde
+  Financeira.
+- **O Monte Carlo NÃO produz intervalo de confiança para retorno.** O motor da WR é
+  aditivo (`netPnl` absoluto, `lotSize` fixo), então retorno total, Sharpe, win rate
+  e desvio-padrão são invariantes à ordem dos trades — só `maxDrawdown` e o Calmar
+  variam. O resultado separa `invariants` (valor único, com `orderInvariant: true`)
+  de `pathDependent` (percentis 5/50/95 e ICs de 90%/95%). **Piso de 10 trades
+  (`MIN_TRADES`):** abaixo dele as bandas de `pathDependent` vêm `null` com
+  `insufficientData: true` — com 1 trade não há ordem a embaralhar e com 2 ou 3 a
+  banda é degenerada mas indistinguível de uma real no JSON. Os `invariants` saem
+  mesmo assim, porque são exatos com qualquer número de trades. **Calmar é
+  `number | null`:** cenário SEM drawdown algum tem Calmar indefinido, não zero — os
+  `null` saem dos percentis e são contados em `excludedCount`, e se todos forem
+  `null` a banda inteira é `null`. Antes o melhor caso possível recebia `0` e
+  ordenava junto do pior. Publicar percentis
+  idênticos em três casas para o retorno pareceria informação sem ser. O Jesse varia
+  o retorno porque compõe (sizing sai do saldo corrente); replicar isso exigiria
+  mudar o motor para sizing proporcional — decisão de modelagem, não feita.
+- **Determinismo é requisito, não conveniência:** nenhum `Math.random()` no domínio.
+  Mesma seed → mesmo p-valor, sempre. Um p-valor irreprodutível não é evidência.
+- **Sem UI, de propósito** — a validação estatística nasce como capacidade do agente,
+  que é quem propõe trades. As 10 abas continuam sendo o critério de "terminar".
+- **Teto de CUSTO na fronteira Zod (2026-09-06):** os limites por dimensão sozinhos
+  permitiam ~1e9 iterações. `SignificanceConfigSchema` recusa
+  `signals × nSimulations > 5e7` e `MonteCarloConfigSchema` recusa
+  `trades × nScenarios > 5e6`, com a mensagem dizendo o teto e o valor recebido. O
+  cálculo roda síncrono no MCP Pilot (processo filho do Electron): sem isso, uma
+  config mal dimensionada do agente congelaria o app. `ResearchSessionSubmissionSchema`
+  e `ResearchSessionDraftPatchSchema` agora são de fato aplicados no
+  `PrismaResearchSessionRepository` (antes eram exportados e nunca chamados, então o
+  teto de `configJson ≤ 2 MB` não valia em lugar nenhum).
+- **O gate PASSOU a valer (2026-09-06):** `trade.propose` aceita `evidenceSessionId`
+  opcional e a política de risco pura ganhou a regra de evidência, com quatro códigos
+  próprios (`EVIDENCE_MISSING`, `EVIDENCE_INCONCLUSIVE`, `EVIDENCE_PVALUE_ABOVE_MAX`,
+  `EVIDENCE_STALE`) — quatro e não um porque "recusado por evidência" tem quatro causas
+  e juntá-las esconderia qual o agente precisa corrigir.
+  - A decisão é PURA: o serviço busca a `ResearchSession` e a achata num fato
+    (`RiskEvidence`); quem decide é `evaluatePolicy`, junto de notional e concentração.
+    Sessão inexistente, de `kind` errado ou não concluída são tratadas como AUSENTE —
+    não são medição fraca, não são medição. `resultJson` corrompido vira
+    `EVIDENCE_INCONCLUSIVE`, nunca licença para operar.
+  - Roda ANTES das regras de tamanho: sem evidência de poder preditivo, o tamanho da
+    posição é irrelevante, e `EVIDENCE_MISSING` é a mensagem acionável.
+  - `WR_MCP_TRADE_MAX_PVALUE=0.05` liga o gate; vazia = DESLIGADO, e é isso que mantém
+    chamadas existentes do Hermes funcionando em quem atualizar sem configurar.
+    `WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS=30` dá validade à evidência — sem prazo, uma
+    sessão de meses atrás autorizaria o trade de hoje.
+  - **Achado operacional:** o `.env` do projeto CHEGA aos processos de teste (verificado).
+    Por isso `buildMcpTradeService` em `scripts/mcp-pilot/mcp-pilot-test.ts` neutraliza
+    as duas env vars, no mesmo padrão que `WR_TRADING_ENABLED` já usava — sem isso as
+    suítes mediriam o mundo que o `.env` descreve, não o que cada teste declara.
+  - Testes: `npm run test:risk-policy` (10 casos puros, fronteiras exatas) e
+    `npm run test:mcp-pilot` (9 casos de integração provando a fiação até o banco).
+- Testes: `npm run test:research-session`
+- Spec: `docs/superpowers/specs/2026-09-06-ferramentas-pesquisa-jesse-design.md`
+- Plano: `docs/superpowers/plans/2026-09-06-ferramentas-pesquisa-jesse.md`
+
+### Ingestão point-in-time da CVM (2026-09-06)
+
+Os modelos canônicos `CvmFiling`/`Issuer` existiam no schema desde a Fase 2, com
+unit-of-work e testes, e estavam VAZIOS — o `data/cvm/README.md` já registrava
+"sem protocolo de documento, sem data de publicação, sem versionamento de
+retificação". Agora estão preenchidos.
+
+```
+src/lib/server/cvm-header-parser.ts   PURO: CSV de cabeçalho -> issuers + filings
+scripts/cvm-ingest/                   script (npm run cvm:ingest) + testes
+```
+
+- **Só o cabeçalho, não os valores.** Cada pacote anual traz `itr_cia_aberta_YYYY.csv`
+  (~500 KB) com `CD_CVM`, `ID_DOC`, `DT_REFER`, `DT_RECEB`, `VERSAO` e `LINK_DOC`.
+  Os arquivos de valores (DRE/BPA/BPP/DFC, centenas de MB) NÃO são baixados —
+  `CvmFact` segue vazio de propósito.
+- **A defasagem legal presumida VAZA, e não é pouco.** `directional_features.py`
+  carimba `knowledge_date = data_ref + 45d (ITR) / 90d (DFP)`. Medido sobre os 48.593
+  filings de 2011 a 2026: a mediana confirma o proxy (ITR 44d, DFP 83d), mas o p90 já
+  o estoura (ITR 65d, DFP 132d) e **21,3% dos ITR e 19,4% das DFP são entregues DEPOIS
+  do prazo presumido**. Para uma em cada cinco linhas, o painel trata o fundamento como
+  conhecido antes de existir. É look-ahead real, não hipótese.
+- **A retificação é o segundo vazamento, e é irrecuperável para trás.** Os pacotes da
+  CVM publicam APENAS a versão corrente nos arquivos de valores — verificado: zero
+  documentos com duas versões presentes. O cabeçalho guarda o histórico (uma linha por
+  versão, com `DT_RECEB` própria), então sabemos QUEM foi retificado e QUANDO, nunca o
+  que mudou. 10,9% dos filings são retificação.
+- **`VERSAO` não é ordinal confiável** — dado real: a DIBENS LEASING tem dois
+  documentos do mesmo ITR ambos marcados `VERSAO=1`, e há emissor com v1, v2 e um
+  SEGUNDO v1 entregue meses depois da v2. A cadeia é ordenada por `DT_RECEB`, com
+  versão e protocolo só como desempate.
+- **Exercício social não-calendário existe e quebra a derivação por mês:** CAMIL fecha
+  em fevereiro (ITR em mai/ago/nov); JALLES MACHADO, BRASILAGRO e CTC fecham em março
+  (ITR em jun/set/dez). O trimestre sai do ORDINAL do ITR no pacote, não do mês — isso
+  devolve 03→1, 06→2, 09→3 no caso calendário e acerta os demais.
+- **`publishedAt` leva desempate de milissegundos.** 24% dos documentos multiversão têm
+  duas versões no MESMO DIA (ENERGISA, ITR do 1T2023, v1 e v2 em 2023-05-11) e o domínio
+  exige retificação estritamente posterior. A data continua exata nos 10 primeiros
+  caracteres; o milissegundo codifica uma ordem que já é dado da CVM.
+- **Estado atual:** 1.225 emissores e 48.593 filings (2011-03-31 a 2026-06-30), 7.102
+  retificações com cadeia 100% ligada, zero protocolos duplicados.
+- **Idempotente:** reexecutar não duplica (verificado — contagem idêntica antes e depois).
+- **Três anomalias de identidade que o dado real impõe** (todas tratadas e reportadas na
+  saída, nunca em silêncio): ITR de 4º trimestre que o schema não representa (23 casos,
+  descartados e nomeados); empresas que mudaram de nome em 15 anos — o lote repete a
+  identidade JÁ GRAVADA em vez de sobrescrever, porque SCD-1 destrutivo é proibido; e 5
+  emissores cujo CNPJ é compartilhado entre códigos CVM distintos, gravados com CNPJ
+  nulo, porque escolher um dono seria inventar.
+- Testes: `npm run test:cvm-ingest` (16 casos, parser puro, sem rede nem banco).
+
+**A troca foi feita (2026-09-06).** `directional_features.py` deixou de carimbar sempre
+pelo prazo legal:
+
+- `load_filing_dates()` lê `CvmFiling` do banco do app (`prisma/dev.db`, parâmetro
+  `filings_db_path`) e devolve a data da **última versão** de cada documento. É essa
+  escolha que corrige o vazamento por retificação: o valor guardado em
+  `fundamental_indicators` já É o retificado, então carimbá-lo com a data da v1
+  afirmaria conhecer em maio um número publicado em novembro.
+- Não gravo nada dentro de `cvm_fundamentos.db`: ele é snapshot recopiado do WSL, e a
+  coluna se perderia na próxima cópia.
+- Duas colunas novas no painel, para o fallback nunca ser silencioso:
+  `knowledge_source` (`DT_RECEB` | `PRAZO_LEGAL`) e `is_restatement`. O prazo legal
+  segue valendo onde não há filing casado, e a linha diz que foi o caso.
+- **Resultado medido sobre as 7.085 linhas reais:** 7.080 casam (99,9%), 5 caem no
+  fallback. 12,9% tiveram o carimbo empurrado PARA FRENTE — é o look-ahead removido —
+  e **80,1% tiveram o carimbo RECUADO**, porque a empresa publicou antes do prazo legal
+  e o painel estava conservador à toa. A troca não é só custo: devolve sinal.
+- 18,9% das linhas ficam marcadas como retificação, o que permite treinar com e sem
+  elas e medir o efeito.
+- Testes: `npm run test:directional:py` (8 casos novos em
+  `python/tests/test_directional_knowledge_date.py`).
+
+**Pendente:** retreinar e comparar o IC com e sem as linhas retificadas. O dado e a
+marcação existem; a medição do efeito ainda não foi feita.
+
 ### Dados locais do projeto
 
 O banco de opções oficial é `data/options/options_data.db` (gerado em runtime; ignorado pelo Git).

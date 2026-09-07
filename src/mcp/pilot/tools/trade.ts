@@ -28,6 +28,12 @@ const PROPOSE_SHAPE = {
   stopLoss: z.number().positive().optional(),
   takeProfit: z.number().positive().optional(),
   rationale: z.string().min(10).max(2000),
+  /**
+   * Sessão de `research.significance.*` que sustenta esta proposta.
+   * Opcional no schema para não quebrar chamadas existentes — quem decide
+   * se a ausência bloqueia é `WR_MCP_TRADE_MAX_PVALUE`.
+   */
+  evidenceSessionId: z.string().min(1).max(64).optional(),
 };
 
 const APPROVE_SHAPE = {
@@ -43,7 +49,9 @@ export function buildTradeTools(service: McpTradeService): readonly McpToolDefin
   return [
     {
       name: 'trade.propose',
-      description: 'Propõe uma ordem de compra/venda B3 para o trilho governado de trade — passa por avaliação de risco e exige aprovação humana com código de confirmação antes de qualquer envio ao broker.',
+      description:
+        'Propõe uma ordem de compra/venda para o trilho governado de trade — passa por avaliação de risco e exige aprovação humana com código de confirmação antes de qualquer envio ao broker. '
+        + 'Quando o gate de significância está ligado no servidor, a proposta precisa citar em `evidenceSessionId` uma sessão de research.significance que tenha concluído com p-valor dentro do limite e dentro do prazo de validade; sem isso a proposta é rejeitada com EVIDENCE_MISSING, EVIDENCE_INCONCLUSIVE, EVIDENCE_PVALUE_ABOVE_MAX ou EVIDENCE_STALE.',
       privilege: 'gated',
       inputSchema: PROPOSE_SHAPE,
       handler: async (args) => {
@@ -58,6 +66,7 @@ export function buildTradeTools(service: McpTradeService): readonly McpToolDefin
             stopLoss: parsed.stopLoss,
             takeProfit: parsed.takeProfit,
             rationale: parsed.rationale,
+            ...(parsed.evidenceSessionId === undefined ? {} : { evidenceSessionId: parsed.evidenceSessionId }),
           });
           return { content: [{ type: 'text', text: JSON.stringify(result) }] };
         } catch (error) { return toToolError(error); }

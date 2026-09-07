@@ -15,9 +15,11 @@ import { buildPortfolioTools } from './tools/portfolio';
 import { buildMarketLiveTools } from './tools/market-live';
 import { buildTradeTools } from './tools/trade';
 import { buildMlDirectionalTools } from './tools/ml-directional';
+import { buildResearchTools } from './tools/research';
 import { Mt5DemoBroker } from './execution/mt5-demo-broker';
 import { createBridgeSnapshot } from './execution/bridge-snapshot';
 import { createMcpTradeService } from '../../application/mcp-trade/compose';
+import { createResearchSessionService } from '../../application/research-session';
 
 async function main(): Promise<void> {
   const config = resolvePilotConfig();
@@ -39,6 +41,7 @@ async function main(): Promise<void> {
     ...buildMarketLiveTools(spread, volatility),
     ...buildMlDirectionalTools(prisma),
     ...buildTradeTools(tradeService),
+    ...buildResearchTools(createResearchSessionService(prisma)),
   ];
   const handle = await startPilotServer(prisma, config, extraTools);
   console.log(`[mcp-pilot] servindo em ${handle.url}/mcp (host=${config.host})`);

@@ -1,0 +1,764 @@
+import assert from 'node:assert/strict';
+import { PrismaClient } from '@prisma/client';
+import {
+  PrismaResearchSessionRepository,
+  insertResearchSessionForTest,
+} from '../../src/adapters/prisma/research-session';
+import { canTransition } from '../../src/domain/v1/models/research-session';
+import { createRng } from '../../src/domain/v1/models/research-rng';
+import { stationaryBootstrap } from '../../src/domain/v1/models/rule-significance/bootstrap';
+import {
+  MIN_OBSERVATIONS,
+  ruleSignificanceTest,
+} from '../../src/domain/v1/models/rule-significance';
+import type { BacktestBar, BacktestSignalInput } from '../../src/domain/v1/models/backtest-run';
+import { MIN_TRADES, monteCarloTrades } from '../../src/domain/v1/models/monte-carlo-trades';
+import type { BacktestTrade } from '../../src/domain/v1/models/backtest-run';
+import { createResearchSessionService } from '../../src/application/research-session';
+import { ReadModelError } from '../../src/application/read-models-v1';
+import { buildResearchTools } from '../../src/mcp/pilot/tools/research';
+import {
+  MonteCarloConfigSchema,
+  SignificanceConfigSchema,
+} from '../../src/application/research-session';
+
+function rngIsDeterministic(): void {
+  const a = createRng(42);
+  const b = createRng(42);
+  const c = createRng(43);
+  const seqA = Array.from({ length: 8 }, () => a.nextUint32());
+  const seqB = Array.from({ length: 8 }, () => b.nextUint32());
+  const seqC = Array.from({ length: 8 }, () => c.nextUint32());
+  assert.deepEqual(seqA, seqB, 'mesma seed deve produzir a mesma sequência');
+  assert.notDeepEqual(seqA, seqC, 'seeds diferentes devem produzir sequências diferentes');
+  console.log('RNG: determinístico por seed — OK');
+}
+
+function rngFloatsAreInRange(): void {
+  const rng = createRng(7);
+  for (let i = 0; i < 1000; i += 1) {
+    const value = rng.nextFloat();
+    assert.ok(value >= 0 && value < 1, `nextFloat fora de [0,1): ${value}`);
+    const index = rng.nextInt(5);
+    assert.ok(Number.isInteger(index) && index >= 0 && index < 5, `nextInt(5) fora de faixa: ${index}`);
+  }
+  console.log('RNG: nextFloat em [0,1) e nextInt em [0,n) — OK');
+}
+
+function bootstrapIsDeterministic(): void {
+  const returns = Array.from({ length: 200 }, (_, i) => Math.sin(i) * 0.01);
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const a = stationaryBootstrap(returns, mean, 500, 42, 10);
+  const b = stationaryBootstrap(returns, mean, 500, 42, 10);
+  const c = stationaryBootstrap(returns, mean, 500, 43, 10);
+  assert.deepEqual(Array.from(a), Array.from(b), 'mesma seed → mesmas médias simuladas');
+  assert.notDeepEqual(Array.from(a), Array.from(c), 'seed diferente → médias diferentes');
+  assert.equal(a.length, 500, 'deve devolver exatamente nSimulations médias');
+  console.log('Bootstrap: determinístico e com tamanho correto — OK');
+}
+
+function bootstrapCentersTheSeries(): void {
+  // H0 é materializada centrando a série: a média das médias simuladas
+  // deve ficar próxima de zero, não da média observada.
+  const returns = Array.from({ length: 300 }, () => 0.05);
+  const mean = 0.05;
+  const sims = stationaryBootstrap(returns, mean, 400, 42, 10);
+  const meanOfSims = Array.from(sims).reduce((s, v) => s + v, 0) / sims.length;
+  assert.ok(Math.abs(meanOfSims) < 1e-9, `médias simuladas deveriam centrar em 0, veio ${meanOfSims}`);
+  console.log('Bootstrap: série centrada em zero (H0) — OK');
+}
+
+function bootstrapPreservesSerialDependence(): void {
+  // Justifica a escolha do método: sobre uma série fortemente
+  // autocorrelacionada, o bootstrap ESTACIONÁRIO (blocos) produz médias
+  // simuladas com dispersão MAIOR que um bootstrap i.i.d. (bloco 1), que
+  // destrói a dependência local. Se as duas derem a mesma dispersão, a
+  // implementação de blocos não está fazendo nada.
+  // Série suave de baixa frequência: fortemente PERSISTENTE (valores
+  // vizinhos têm o mesmo sinal por dezenas de barras). Um bloco de 20
+  // cai quase todo dentro de uma mesma fase, então as médias simuladas
+  // se espalham muito mais que sob i.i.d.
+  //
+  // A escolha da série importa: uma série oscilante de período curto
+  // (ex.: choque a cada 7 barras) dá o resultado INVERSO — blocos longos
+  // atravessam vários períodos e MÉDIAM a oscilação, com razão ~0,36.
+  // Verificado numericamente antes de escrever este teste.
+  const n = 400;
+  const returns: number[] = Array.from({ length: n }, (_, i) => Math.sin(i / 40) * 0.01);
+  const mean = returns.reduce((s, r) => s + r, 0) / n;
+
+  const stdOf = (arr: Float64Array): number => {
+    const m = Array.from(arr).reduce((s, v) => s + v, 0) / arr.length;
+    const variance = Array.from(arr).reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1);
+    return Math.sqrt(variance);
+  };
+
+  const blocked = stdOf(stationaryBootstrap(returns, mean, 2000, 42, 20));
+  const iid = stdOf(stationaryBootstrap(returns, mean, 2000, 42, 1));
+  // Margem real medida nesta série: ~5,6x. O limiar de 2x é folgado o
+  // bastante para não ser frágil e apertado o bastante para reprovar uma
+  // implementação que ignorasse os blocos (razão 1,0).
+  assert.ok(blocked > iid * 2, `bootstrap em blocos (${blocked}) deveria dispersar mais que i.i.d. (${iid})`);
+  console.log('Bootstrap: blocos preservam dependência serial — OK');
+}
+
+/** Constrói barras diárias a partir de uma série de fechamentos. */
+function barsFromCloses(closes: readonly number[]): BacktestBar[] {
+  return closes.map((close, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return { time, open: close, high: close, low: close, close, knowledgeTime: time };
+  });
+}
+
+/** Um sinal BUY em cada barra, exceto a última (que não tem barra seguinte). */
+function buyEveryBar(bars: readonly BacktestBar[]): BacktestSignalInput[] {
+  return bars.slice(0, -1).map((bar) => ({
+    barTime: bar.time,
+    direction: 'BUY' as const,
+    knowledgeTime: bar.knowledgeTime,
+  }));
+}
+
+function significanceOnPureNoiseIsNotSignificant(): void {
+  // Série sem deriva: sobe e desce alternadamente pelo mesmo fator.
+  const closes: number[] = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(i % 2 === 0 ? 100 : 101);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.equal(result.insufficientData, false, 'deveria haver observações suficientes');
+  assert.ok(result.pValue !== null, 'p-valor não deveria ser null');
+  assert.ok((result.pValue as number) > 0.10, `ruído puro não deveria ser significativo, veio p=${result.pValue}`);
+  console.log(`Significância: ruído puro → p=${result.pValue?.toFixed(3)} (não significativo) — OK`);
+}
+
+function significanceOnStrongDriftIsSignificant(): void {
+  // Deriva positiva consistente: +0,5% por barra.
+  const closes = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(closes[i - 1] * 1.005);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.ok(result.pValue !== null, 'p-valor não deveria ser null');
+  assert.ok((result.pValue as number) < 0.05, `deriva forte deveria ser significativa, veio p=${result.pValue}`);
+  assert.ok(result.observedMean > 0, 'média observada deveria ser positiva');
+  console.log(`Significância: deriva forte → p=${result.pValue?.toFixed(4)} (significativo) — OK`);
+}
+
+function significanceBelowFloorRefusesToAnswer(): void {
+  const closes = Array.from({ length: MIN_OBSERVATIONS - 5 }, (_, i) => 100 + i);
+  const bars = barsFromCloses(closes);
+  const result = ruleSignificanceTest({ bars, signals: buyEveryBar(bars), nSimulations: 1000 });
+  assert.equal(result.insufficientData, true, 'abaixo do piso deveria marcar insufficientData');
+  assert.equal(result.pValue, null, 'abaixo do piso o p-valor deve ser null, nunca um número');
+  assert.ok(result.nObservations < MIN_OBSERVATIONS, 'nObservations deveria estar abaixo do piso');
+  console.log('Significância: abaixo do piso devolve pValue null — OK');
+}
+
+function significanceRespectsDirection(): void {
+  // Mesma série em alta, mas sinalizando SELL: a regra é ruim, não boa.
+  const closes = [100];
+  for (let i = 1; i < 400; i += 1) closes.push(closes[i - 1] * 1.005);
+  const bars = barsFromCloses(closes);
+  const sellSignals: BacktestSignalInput[] = bars.slice(0, -1).map((bar) => ({
+    barTime: bar.time,
+    direction: 'SELL' as const,
+    knowledgeTime: bar.knowledgeTime,
+  }));
+  const result = ruleSignificanceTest({ bars, signals: sellSignals, nSimulations: 1000 });
+  assert.ok(result.observedMean < 0, 'SELL numa série em alta deveria ter média negativa');
+  assert.ok((result.pValue as number) > 0.5, 'regra ruim não pode sair significativa');
+  console.log('Significância: direção SELL inverte o sinal do retorno — OK');
+}
+
+function significanceIgnoresHoldAndMissingNextBar(): void {
+  const bars = barsFromCloses(Array.from({ length: 100 }, (_, i) => 100 + i));
+  const signals: BacktestSignalInput[] = [
+    ...buyEveryBar(bars).slice(0, 50),
+    // HOLD não é uma aposta: não entra na amostra.
+    { barTime: bars[60].time, direction: 'HOLD', knowledgeTime: bars[60].knowledgeTime },
+    // Última barra não tem barra seguinte: não há retorno a medir.
+    { barTime: bars[bars.length - 1].time, direction: 'BUY', knowledgeTime: bars[bars.length - 1].knowledgeTime },
+  ];
+  const result = ruleSignificanceTest({ bars, signals, nSimulations: 200 });
+  assert.equal(result.nObservations, 50, `esperava 50 observações, veio ${result.nObservations}`);
+  console.log('Significância: HOLD e barra sem sucessora são descartados — OK');
+}
+
+/**
+ * N1: este caminho NAO passa pelo motor deterministico, entao o
+ * `knowledgeTime` so vale se for verificado aqui. Um sinal que so existiu
+ * DEPOIS da barra a que se refere e look-ahead e nao pode entrar na amostra.
+ */
+function significanceDiscardsLookAheadSignals(): void {
+  const bars = barsFromCloses(Array.from({ length: 100 }, (_, i) => 100 + i));
+  const honest = buyEveryBar(bars).slice(0, 40);
+  const poisoned: BacktestSignalInput[] = bars.slice(40, 90).map((bar) => ({
+    barTime: bar.time,
+    direction: 'BUY' as const,
+    // Conhecido um dia DEPOIS da barra: look-ahead.
+    knowledgeTime: new Date(Date.parse(bar.time) + 86_400_000).toISOString(),
+  }));
+
+  const clean = ruleSignificanceTest({ bars, signals: honest, nSimulations: 200 });
+  const mixed = ruleSignificanceTest({ bars, signals: [...honest, ...poisoned], nSimulations: 200 });
+  assert.equal(
+    mixed.nObservations,
+    clean.nObservations,
+    `sinais com look-ahead deveriam ser descartados, vieram ${mixed.nObservations} contra ${clean.nObservations}`,
+  );
+  assert.equal(mixed.pValue, clean.pValue, 'descartar look-ahead nao pode mudar o resultado do restante');
+
+  // Amostra INTEIRA envenenada cai abaixo do piso e recusa responder.
+  const allPoisoned = ruleSignificanceTest({ bars, signals: poisoned, nSimulations: 200 });
+  assert.equal(allPoisoned.nObservations, 0, 'amostra so de look-ahead nao tem observacao valida');
+  assert.equal(allPoisoned.pValue, null, 'sem observacao nao ha p-valor');
+  console.log('Significância: sinal com knowledgeTime posterior à barra é descartado — OK');
+}
+
+/**
+ * N5: abaixo do piso o `annualizedReturn` seria a media de ate 29
+ * observacoes multiplicada por um fator de calendario - o numero mais
+ * persuasivo do payload, e o menos sustentado. O `observedMean` continua
+ * saindo: ele e a media crua do que existe, nao uma extrapolacao.
+ */
+function significanceBelowFloorDoesNotAnnualize(): void {
+  const short = barsFromCloses(Array.from({ length: MIN_OBSERVATIONS - 5 }, (_, i) => 100 * 1.01 ** i));
+  const result = ruleSignificanceTest({ bars: short, signals: buyEveryBar(short), nSimulations: 200 });
+  assert.equal(result.insufficientData, true);
+  assert.equal(result.annualizedReturn, null, 'abaixo do piso nao se anualiza');
+  assert.ok(result.observedMean > 0, 'observedMean continua sendo publicado abaixo do piso');
+
+  const long = barsFromCloses(Array.from({ length: 200 }, (_, i) => 100 * 1.01 ** i));
+  const enough = ruleSignificanceTest({ bars: long, signals: buyEveryBar(long), nSimulations: 200 });
+  assert.equal(enough.insufficientData, false);
+  assert.ok(
+    typeof enough.annualizedReturn === 'number',
+    'acima do piso o retorno anualizado volta a ser publicado',
+  );
+  console.log('Significância: abaixo do piso annualizedReturn é null — OK');
+}
+
+function significanceIsDeterministic(): void {
+  const bars = barsFromCloses(Array.from({ length: 200 }, (_, i) => 100 * 1.001 ** i));
+  const signals = buyEveryBar(bars);
+  const a = ruleSignificanceTest({ bars, signals, nSimulations: 500, seed: 42 });
+  const b = ruleSignificanceTest({ bars, signals, nSimulations: 500, seed: 42 });
+  assert.equal(a.pValue, b.pValue, 'mesma seed deve produzir o mesmo p-valor');
+  console.log('Significância: determinística por seed — OK');
+}
+
+/** Trades sintéticos com resultados distintos, para a ordem importar. */
+function syntheticTrades(pnls: readonly number[]): BacktestTrade[] {
+  return pnls.map((netPnl, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return {
+      signalBarTime: time,
+      entryTime: time,
+      entryPrice: 100,
+      exitTime: time,
+      exitPrice: 100 + netPnl,
+      direction: 'BUY' as const,
+      grossPnl: netPnl,
+      costs: 0,
+      netPnl,
+      netReturn: netPnl / 100,
+      exitReason: 'WINDOW_END' as const,
+    };
+  });
+}
+
+function monteCarloInvariantsDoNotVary(): void {
+  const trades = syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]);
+  const result = monteCarloTrades({ trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 });
+  assert.equal(result.invariants.orderInvariant, true, 'invariants deve declarar orderInvariant');
+  assert.ok(
+    Math.abs(result.invariants.totalNetPnl - 45) < 1e-9,
+    `totalNetPnl deveria ser 45, veio ${result.invariants.totalNetPnl}`,
+  );
+  console.log('Monte Carlo: retorno total e Sharpe são invariantes à ordem — OK');
+}
+
+function monteCarloPathDependentDoesVary(): void {
+  // Sem este teste, uma implementação que NÃO embaralhasse passaria no
+  // teste dos invariantes.
+  const trades = syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]);
+  const result = monteCarloTrades({ trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 });
+  const dd = result.pathDependent.maxDrawdown;
+  assert.ok(dd !== null, 'com 10 trades a banda deveria existir');
+  assert.ok(dd.p5 <= dd.p50 && dd.p50 <= dd.p95, `percentis fora de ordem: ${JSON.stringify(dd)}`);
+  assert.ok(dd.p5 < dd.p95, 'maxDrawdown deveria variar entre cenários — o embaralhamento não está agindo');
+  console.log(`Monte Carlo: drawdown varia (p5=${dd.p5.toFixed(2)}, p95=${dd.p95.toFixed(2)}) — OK`);
+}
+
+/**
+ * N3: com 1 trade nao existe ordem alternativa. Antes esta funcao provava a
+ * DEGENERACAO da banda (`p5 === p95`); agora prova o que a plataforma faz
+ * com ela - recusar publica-la. E a mesma prova, com a conclusao levada ate
+ * o fim: uma banda degenerada nao e uma banda.
+ */
+function monteCarloWithSingleTradeIsDegenerate(): void {
+  const result = monteCarloTrades({
+    trades: syntheticTrades([42]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 50,
+  });
+  assert.equal(result.insufficientData, true, 'com 1 trade nao ha banda a publicar');
+  assert.equal(result.pathDependent.maxDrawdown, null, 'banda degenerada nao e publicada como banda');
+  assert.equal(result.pathDependent.calmar, null);
+  assert.equal(result.nScenarios, 0, 'nenhum cenario e simulado abaixo do piso');
+  // Os invariantes sao exatos com um trade so, e continuam saindo.
+  assert.ok(Math.abs(result.invariants.totalNetPnl - 42) < 1e-9, 'invariants saem mesmo abaixo do piso');
+  console.log('Monte Carlo: 1 trade → insufficientData, bandas null, invariantes publicados — OK');
+}
+
+/** N3: a fronteira exata do piso - MIN_TRADES-1 recusa, MIN_TRADES publica. */
+function monteCarloFloorIsExact(): void {
+  const pnls = [50, -30, 80, -60, 20, -10, 45, -70, 15, 5];
+  assert.equal(pnls.length, MIN_TRADES, 'a fixture precisa ter exatamente MIN_TRADES trades');
+  const base = { periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 };
+
+  const below = monteCarloTrades({ ...base, trades: syntheticTrades(pnls.slice(0, MIN_TRADES - 1)) });
+  assert.equal(below.insufficientData, true, 'um trade abaixo do piso nao publica banda');
+  assert.equal(below.pathDependent.maxDrawdownPct, null);
+
+  const at = monteCarloTrades({ ...base, trades: syntheticTrades(pnls) });
+  assert.equal(at.insufficientData, false, 'exatamente no piso a banda sai');
+  assert.ok(at.pathDependent.maxDrawdown !== null, 'no piso a banda existe');
+  console.log(`Monte Carlo: piso exato em ${MIN_TRADES} trades — OK`);
+}
+
+/**
+ * N4: cenario sem drawdown algum e o MELHOR caso possivel. Publica-lo como
+ * Calmar 0 o faria ordenar junto do pior dentro dos percentis.
+ */
+function monteCarloCalmarDistinguishesNoDrawdownFromZero(): void {
+  // So vencedores: nenhuma ordem produz drawdown, logo TODO cenario tem
+  // Calmar indefinido — a banda inteira é null, não uma banda de zeros.
+  const allWinners = monteCarloTrades({
+    trades: syntheticTrades([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 100,
+  });
+  assert.equal(allWinners.insufficientData, false);
+  assert.equal(allWinners.original.calmar, null, 'sem drawdown o Calmar e indefinido, nao zero');
+  assert.equal(allWinners.pathDependent.calmar, null, 'todos os cenarios indefinidos -> banda null');
+  assert.ok(allWinners.pathDependent.maxDrawdown !== null, 'o drawdown em si continua sendo publicado');
+
+  // Conjunto misto: ha drawdown em toda ordem, entao nada e excluido.
+  const mixed = monteCarloTrades({
+    trades: syntheticTrades([50, -30, 80, -60, 20, -10, 45, -70, 15, 5]),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 200,
+  });
+  const calmar = mixed.pathDependent.calmar;
+  assert.ok(calmar !== null, 'com drawdown em todos os cenarios a banda do Calmar existe');
+  assert.equal(calmar.excludedCount, 0, 'nada a excluir quando todo cenario tem drawdown');
+  assert.equal(
+    mixed.pathDependent.maxDrawdown?.excludedCount,
+    0,
+    'a banda de drawdown nunca exclui cenario',
+  );
+  console.log('Monte Carlo: Calmar null distingue "sem drawdown" de "Calmar zero" — OK');
+}
+
+function monteCarloIsDeterministic(): void {
+  const trades = syntheticTrades([
+    50, -30, 80, -60, 20, -10, 45, -70, 15, 5, -25, 60, -45, 33, -18, 22, -52, 12, -8, 41,
+  ]);
+  const base = { trades, periodsPerYear: 252, startingBalance: 1000, nScenarios: 300 };
+  const a = monteCarloTrades({ ...base, seed: 42 });
+  const b = monteCarloTrades({ ...base, seed: 42 });
+  const c = monteCarloTrades({ ...base, seed: 43 });
+  assert.deepEqual(a.pathDependent, b.pathDependent, 'mesma seed → mesmos percentis');
+  assert.notDeepEqual(a.pathDependent, c.pathDependent, 'seed diferente → percentis diferentes');
+  console.log('Monte Carlo: determinístico por seed — OK');
+}
+
+/**
+ * N3: antes, com 0 trades, a sessao terminava DONE publicando
+ * `p5 = p50 = p95 = 0` e `ci90 = [0, 0]` - numeros fabricados na FORMA de um
+ * intervalo de confianca. Agora nao ha banda nenhuma.
+ */
+function monteCarloWithNoTradesDoesNotFabricate(): void {
+  const result = monteCarloTrades({ trades: [], periodsPerYear: 252, startingBalance: 1000, nScenarios: 100 });
+  assert.equal(result.nScenarios, 0, 'sem trades nao ha cenario a simular');
+  assert.equal(result.insufficientData, true, 'sem trades e dado insuficiente, nao resultado');
+  assert.equal(result.pathDependent.maxDrawdown, null, 'sem trades nao ha banda, nem uma banda de zeros');
+  assert.equal(result.pathDependent.maxDrawdownPct, null);
+  assert.equal(result.pathDependent.calmar, null);
+  console.log('Monte Carlo: conjunto vazio não fabrica banda — OK');
+}
+
+/** N2(a): teto de PRODUTO, nao por dimensao, recusado na fronteira Zod. */
+function configSchemasRefuseExcessiveWork(): void {
+  const bar = {
+    time: '2026-01-01T00:00:00.000Z',
+    open: 100,
+    high: 100,
+    low: 100,
+    close: 100,
+    knowledgeTime: '2026-01-01T00:00:00.000Z',
+  };
+  const signal = { barTime: bar.time, direction: 'BUY' as const, knowledgeTime: bar.knowledgeTime };
+
+  // 40.000 sinais x 20.000 simulacoes = 8e8, muito acima de 5e7.
+  const heavy = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 40_000 }, () => signal),
+    nSimulations: 20_000,
+  });
+  assert.equal(heavy.success, false, 'produto excessivo deveria ser recusado');
+  const message = heavy.success ? '' : heavy.error.issues.map((issue) => issue.message).join(' ');
+  assert.ok(message.includes('40000'), `a mensagem deve dizer o valor recebido: ${message}`);
+  assert.ok(
+    message.includes('50000000') || message.includes('5e+7'),
+    `a mensagem deve dizer o teto: ${message}`,
+  );
+
+  // Mesmo conjunto, poucas simulacoes: passa.
+  const light = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 1000 }, () => signal),
+    nSimulations: 1000,
+  });
+  assert.equal(light.success, true, 'dentro do teto deveria passar');
+
+  // O teto vale mesmo com o campo OMITIDO (default de 2000 simulacoes).
+  const defaulted = SignificanceConfigSchema.safeParse({
+    bars: [bar],
+    signals: Array.from({ length: 40_000 }, () => signal),
+  });
+  assert.equal(defaulted.success, false, 'o default de simulacoes tambem conta para o teto');
+
+  const trade = {
+    signalBarTime: bar.time,
+    entryTime: bar.time,
+    entryPrice: 100,
+    exitTime: bar.time,
+    exitPrice: 101,
+    direction: 'BUY' as const,
+    grossPnl: 1,
+    costs: 0,
+    netPnl: 1,
+    netReturn: 0.01,
+    exitReason: 'WINDOW_END' as const,
+  };
+  // 50.000 trades x default de 1000 cenarios = 5e7, acima de 5e6.
+  const heavyMc = MonteCarloConfigSchema.safeParse({
+    trades: Array.from({ length: 50_000 }, () => trade),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+  });
+  assert.equal(heavyMc.success, false, 'Monte Carlo com produto excessivo deveria ser recusado');
+  const lightMc = MonteCarloConfigSchema.safeParse({
+    trades: Array.from({ length: 100 }, () => trade),
+    periodsPerYear: 252,
+    startingBalance: 1000,
+    nScenarios: 1000,
+  });
+  assert.equal(lightMc.success, true, 'dentro do teto deveria passar');
+  console.log('Config: teto de PRODUTO recusado na fronteira Zod — OK');
+}
+
+/**
+ * N2(b): `ResearchSessionSubmissionSchema` e `ResearchSessionDraftPatchSchema`
+ * existiam exportados e nunca chamados - o teto de 2 MB de `configJson` nao
+ * valia em lugar nenhum. Este teste prova que agora vale.
+ */
+async function repositoryEnforcesSubmissionSchema(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const huge = JSON.stringify({ x: 'a'.repeat(2_000_001) });
+
+  await assert.rejects(
+    () =>
+      repo.create({
+        kind: 'SIGNIFICANCE',
+        label: 'config gigante',
+        notes: null,
+        configJson: huge,
+        createdBy: 'test',
+      }),
+    'configJson acima de 2 MB deveria ser recusado antes de tocar o banco',
+  );
+
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', status: 'DRAFT' });
+  await assert.rejects(
+    () => repo.updateDraft(session.sessionId, { configJson: huge }),
+    'o mesmo teto vale no patch do rascunho',
+  );
+  await assert.rejects(
+    () => repo.updateDraft(session.sessionId, { label: '' }),
+    'rotulo vazio e recusado pelo schema do patch',
+  );
+  console.log('ResearchSession: schemas de fronteira aplicados no repositório — OK');
+}
+
+function stateMachineRejectsImpossibleTransitions(): void {
+  assert.equal(canTransition('DRAFT', 'RUNNING'), true);
+  assert.equal(canTransition('RUNNING', 'DONE'), true);
+  assert.equal(canTransition('RUNNING', 'FAILED'), true);
+  assert.equal(canTransition('DRAFT', 'CANCELLED'), true);
+  assert.equal(canTransition('DONE', 'RUNNING'), false, 'sessão concluída não volta a rodar');
+  assert.equal(canTransition('DRAFT', 'DONE'), false, 'não se conclui sem rodar');
+  assert.equal(canTransition('CANCELLED', 'RUNNING'), false, 'cancelada não recomeça');
+  console.log('ResearchSession: máquina de estados rejeita transição impossível — OK');
+}
+
+async function claimForRunIsAtomic(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE' });
+
+  // Duas tentativas concorrentes de reivindicar o MESMO rascunho.
+  const [first, second] = await Promise.all([
+    repo.claimForRun(session.sessionId),
+    repo.claimForRun(session.sessionId),
+  ]);
+
+  const winners = [first, second].filter((claimed) => claimed === true);
+  assert.equal(winners.length, 1, `exatamente um claim deveria vencer, venceram ${winners.length}`);
+
+  const after = await repo.findById(session.sessionId);
+  assert.equal(after?.status, 'RUNNING', 'a sessão deveria estar RUNNING após o claim vencedor');
+  console.log('ResearchSession: claimForRun é atômico (CAS) — OK');
+}
+
+async function claimForRunRefusesNonDraft(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'MONTE_CARLO', status: 'DONE' });
+  const claimed = await repo.claimForRun(session.sessionId);
+  assert.equal(claimed, false, 'sessão DONE não pode ser reivindicada para rodar');
+  console.log('ResearchSession: claimForRun recusa sessão não-DRAFT — OK');
+}
+
+async function updateDraftRefusesRunningSession(prisma: PrismaClient): Promise<void> {
+  const repo = new PrismaResearchSessionRepository(prisma);
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', status: 'RUNNING' });
+  const updated = await repo.updateDraft(session.sessionId, { label: 'novo rótulo' });
+  assert.equal(updated, null, 'rascunho em execução não aceita edição de config');
+  console.log('ResearchSession: updateDraft recusa sessão em execução — OK');
+}
+
+/** Config de significância sobre uma série com deriva positiva clara. */
+function significanceConfigFor(nBars: number): Record<string, unknown> {
+  const closes = Array.from({ length: nBars }, (_, i) => 100 * 1.004 ** i);
+  const bars = closes.map((close, i) => {
+    const time = new Date(Date.UTC(2026, 0, 1 + i)).toISOString();
+    return { time, open: close, high: close, low: close, close, knowledgeTime: time };
+  });
+  return {
+    bars,
+    signals: bars
+      .slice(0, -1)
+      .map((bar) => ({ barTime: bar.time, direction: 'BUY', knowledgeTime: bar.knowledgeTime })),
+    nSimulations: 200,
+    seed: 42,
+  };
+}
+
+async function serviceRunsSignificanceEndToEnd(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'SIGNIFICANCE',
+    label: 'regra de teste',
+    notes: null,
+    config: significanceConfigFor(120),
+    createdBy: 'test',
+  });
+  assert.equal(draft.status, 'DRAFT');
+
+  const done = await service.run(draft.sessionId);
+  assert.equal(done.status, 'DONE', 'a sessão deveria concluir');
+  const result = done.result as { pValue: number | null; insufficientData: boolean };
+  assert.equal(result.insufficientData, false);
+  assert.ok(result.pValue !== null && result.pValue < 0.05, `esperava significativo, veio p=${result.pValue}`);
+  console.log('Serviço: significância roda fim-a-fim e persiste o resultado — OK');
+}
+
+async function serviceRejectsWrongConfigForKind(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  await assert.rejects(
+    () =>
+      service.createDraft({
+        kind: 'SIGNIFICANCE',
+        label: 'config trocada',
+        notes: null,
+        // Config de Monte Carlo num rascunho de significância.
+        config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+        createdBy: 'test',
+      }),
+    (error: unknown) => error instanceof ReadModelError,
+    'config de outro kind deve ser rejeitada na fronteira',
+  );
+  console.log('Serviço: config inválida para o kind é rejeitada — OK');
+}
+
+async function serviceRunRefusesSecondRun(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'SIGNIFICANCE',
+    label: 'roda uma vez só',
+    notes: null,
+    config: significanceConfigFor(120),
+    createdBy: 'test',
+  });
+  await service.run(draft.sessionId);
+  await assert.rejects(
+    () => service.run(draft.sessionId),
+    (error: unknown) => error instanceof ReadModelError && error.code === 'RESEARCH_SESSION_ALREADY_RUNNING',
+    'a segunda chamada de run deve ser recusada',
+  );
+  console.log('Serviço: run duplicado é recusado com RESEARCH_SESSION_ALREADY_RUNNING — OK');
+}
+
+async function serviceCancelIsIdempotent(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  const draft = await service.createDraft({
+    kind: 'MONTE_CARLO',
+    label: 'cancelar duas vezes',
+    notes: null,
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000, nScenarios: 10 },
+    createdBy: 'test',
+  });
+  const first = await service.cancel(draft.sessionId);
+  const second = await service.cancel(draft.sessionId);
+  assert.equal(first.status, 'CANCELLED');
+  assert.equal(second.status, 'CANCELLED', 'cancelar de novo não é erro');
+  console.log('Serviço: cancel é idempotente — OK');
+}
+
+async function serviceRunTransitionsToFailedOnInvalidConfig(prisma: PrismaClient): Promise<void> {
+  const service = createResearchSessionService(prisma);
+  // Config inválida gravada direto no banco (bypassa a validação de
+  // createDraft) para forçar a falha DENTRO de run(), depois do claim —
+  // exatamente o caminho em que a sessão fica RUNNING antes do erro.
+  const session = await insertResearchSessionForTest(prisma, { kind: 'SIGNIFICANCE', configJson: '{}' });
+
+  const failed = await service.run(session.sessionId);
+
+  assert.equal(failed.status, 'FAILED', 'a sessão não pode ficar presa em RUNNING');
+  assert.ok(failed.errorSummary !== null && failed.errorSummary.length > 0, 'errorSummary deve existir');
+  assert.ok(!failed.errorSummary!.includes('C:\\'), 'errorSummary não pode vazar path do driver');
+  assert.ok(!failed.errorSummary!.includes('.stack'), 'errorSummary não pode vazar stack trace');
+  assert.equal(failed.result, null, 'sessão FAILED não tem resultado');
+  console.log('Serviço: run com config inválida transiciona para FAILED com erro sanitizado — OK');
+}
+
+async function researchToolsAreRegisteredAndFree(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const names = tools.map((tool) => tool.name);
+  assert.equal(names.length, 12, `esperava 12 tools, veio ${names.length}`);
+  for (const prefix of ['significance', 'monte_carlo']) {
+    for (const action of ['create_draft', 'update_draft', 'get', 'list', 'run', 'cancel']) {
+      assert.ok(names.includes(`research.${prefix}.${action}`), `tool research.${prefix}.${action} faltando`);
+    }
+  }
+  assert.ok(
+    tools.every((tool) => tool.privilege === 'free'),
+    'nenhuma tool de pesquisa pode ser gated: nenhuma envia ordem',
+  );
+  assert.ok(
+    tools.every((tool) => tool.description.length > 20),
+    'toda tool precisa de descrição — é o que o agente lê para decidir usá-la',
+  );
+  console.log('Tools: 12 registradas, todas free e descritas — OK');
+}
+
+async function researchToolRejectsInvalidArgsWithoutThrowing(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const get = tools.find((tool) => tool.name === 'research.significance.get');
+  assert.ok(get !== undefined, 'tool get deveria existir');
+  const result = await get.handler({ sessionId: 42 });
+  assert.equal(result.isError, true, 'argumento inválido deve virar isError, não exceção');
+  console.log('Tools: entrada inválida devolve isError em vez de lançar — OK');
+}
+
+async function researchToolNeutralizesCreatedByFromArgs(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const create = tools.find((tool) => tool.name === 'research.monte_carlo.create_draft');
+  assert.ok(create !== undefined, 'tool create_draft deveria existir');
+  const result = await create.handler({
+    label: 'tentativa de forjar autoria',
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+    createdBy: 'alguem-mais',
+  });
+
+  // `createdBy` não está no inputSchema. O `parseToolArgs` compartilhado usa
+  // `z.object(shape)` sem `.strict()`, e o modo padrão do Zod DESCARTA campo
+  // desconhecido em vez de recusá-lo — então a chamada NÃO vira erro. A
+  // garantia de segurança não vem da recusa: vem de o handler passar
+  // `createdBy: MCP_CREATED_BY` explicitamente, ignorando o que veio nos
+  // argumentos. É essa propriedade que o teste precisa provar.
+  assert.notEqual(result.isError, true, 'campo extra é descartado pelo Zod, não vira erro');
+  const payload = JSON.parse(result.content[0].text) as { createdBy: string };
+  assert.equal(payload.createdBy, 'mcp:hermes', 'a tentativa de forjar autoria tem que ser neutralizada');
+  assert.notEqual(payload.createdBy, 'alguem-mais', 'autoria jamais pode vir do argumento');
+  console.log('Tools: createdBy vindo do argumento é neutralizado — OK');
+}
+
+async function researchToolCreatesWithServerFixedAuthor(prisma: PrismaClient): Promise<void> {
+  const tools = buildResearchTools(createResearchSessionService(prisma));
+  const create = tools.find((tool) => tool.name === 'research.monte_carlo.create_draft');
+  assert.ok(create !== undefined, 'tool create_draft deveria existir');
+  const result = await create.handler({
+    label: 'rascunho válido',
+    config: { trades: [], periodsPerYear: 252, startingBalance: 1000 },
+  });
+  assert.notEqual(result.isError, true, 'rascunho válido não deveria ser erro');
+  const payload = JSON.parse(result.content[0].text) as { createdBy: string; status: string };
+  assert.equal(payload.createdBy, 'mcp:hermes', 'autoria é fixada no servidor');
+  assert.equal(payload.status, 'DRAFT', 'create_draft não roda nada');
+  console.log('Tools: create_draft fixa createdBy no servidor — OK');
+}
+
+async function main(): Promise<void> {
+  rngIsDeterministic();
+  rngFloatsAreInRange();
+  bootstrapIsDeterministic();
+  bootstrapCentersTheSeries();
+  bootstrapPreservesSerialDependence();
+  significanceOnPureNoiseIsNotSignificant();
+  significanceOnStrongDriftIsSignificant();
+  significanceBelowFloorRefusesToAnswer();
+  significanceRespectsDirection();
+  significanceIgnoresHoldAndMissingNextBar();
+  significanceDiscardsLookAheadSignals();
+  significanceBelowFloorDoesNotAnnualize();
+  significanceIsDeterministic();
+  monteCarloInvariantsDoNotVary();
+  monteCarloPathDependentDoesVary();
+  monteCarloWithSingleTradeIsDegenerate();
+  monteCarloFloorIsExact();
+  monteCarloCalmarDistinguishesNoDrawdownFromZero();
+  monteCarloIsDeterministic();
+  monteCarloWithNoTradesDoesNotFabricate();
+  configSchemasRefuseExcessiveWork();
+  stateMachineRejectsImpossibleTransitions();
+
+  const prisma = new PrismaClient();
+  try {
+    await claimForRunIsAtomic(prisma);
+    await claimForRunRefusesNonDraft(prisma);
+    await updateDraftRefusesRunningSession(prisma);
+    await repositoryEnforcesSubmissionSchema(prisma);
+    await serviceRunsSignificanceEndToEnd(prisma);
+    await serviceRejectsWrongConfigForKind(prisma);
+    await serviceRunRefusesSecondRun(prisma);
+    await serviceCancelIsIdempotent(prisma);
+    await serviceRunTransitionsToFailedOnInvalidConfig(prisma);
+    await researchToolsAreRegisteredAndFree(prisma);
+    await researchToolRejectsInvalidArgsWithoutThrowing(prisma);
+    await researchToolNeutralizesCreatedByFromArgs(prisma);
+    await researchToolCreatesWithServerFixedAuthor(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+
+  console.log('\nTodos os testes de research-session passaram.');
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

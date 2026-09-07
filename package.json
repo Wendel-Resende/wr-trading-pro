@@ -28,6 +28,8 @@
     "test:mt5-adapters": "node scripts/mt5/run-mt5-tests.cjs",
     "test:mt5-mcp": "node scripts/mt5-mcp/run-mt5-mcp-tests.cjs",
     "test:reference-data": "node scripts/reference-data/run-reference-data-tests.cjs",
+    "cvm:ingest": "node scripts/cvm-ingest/run-ingest.cjs",
+    "test:cvm-ingest": "node scripts/cvm-ingest/run-cvm-ingest-tests.cjs",
     "test:cvm-facts": "node scripts/cvm-facts/run-cvm-facts-tests.cjs",
     "test:market-bar": "node scripts/market-bar/run-market-bar-tests.cjs",
     "test:read-models-v1": "node scripts/read-models-v1/run-read-models-v1-tests.cjs",
@@ -41,6 +43,7 @@
     "test:research-run": "node scripts/research-run/run-research-run-tests.cjs",
     "test:model-version": "node scripts/model-version/run-model-version-tests.cjs",
     "test:signal": "node scripts/signal/run-signal-tests.cjs",
+    "test:research-session": "node scripts/research-session/run-research-session-tests.cjs",
     "test:b3-session": "node scripts/b3-session/run-b3-session-tests.cjs",
     "test:backtest-run": "node scripts/backtest-run/run-backtest-run-tests.cjs",
     "test:option-position": "node scripts/option-position/run-option-position-tests.cjs",
@@ -55,7 +58,7 @@
     "test:bcb-fundamentals": "node scripts/bcb-fundamentals/run-bcb-fundamentals-tests.cjs",
     "test:bcb-financial-health": "node scripts/bcb-financial-health/run-bcb-financial-health-tests.cjs",
     "test:directional-classifier": "node scripts/directional/run-directional-tests.cjs",
-    "test:directional:py": "python python/tests/test_directional_classifier.py && python python/tests/test_directional_api.py",
+    "test:directional:py": "python python/tests/test_directional_classifier.py && python python/tests/test_directional_api.py && python python/tests/test_directional_knowledge_date.py",
     "test:cvm-publish-gates": "node scripts/cvm-sync/run-cvm-publish-gates-tests.cjs"
   },
   "build": {

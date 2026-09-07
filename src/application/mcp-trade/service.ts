@@ -6,6 +6,8 @@ import type { PilotExecutionPort } from '../../domain/v1/ports/pilot-execution';
 import type { RiskDecision } from '../../domain/v1/models/risk-policy';
 import { RISK_POLICY_VERSION } from '../../domain/v1/models/risk-policy';
 import type { OrderIntent } from '../../domain/v1/models/order-intent';
+import { PrismaResearchSessionRepository } from '../../adapters/prisma/research-session';
+import type { RiskEvidence } from '../../domain/v1/models/risk-policy';
 import { ReadModelError } from '../read-models-v1/errors';
 import { PrismaMcpTradeRepository, type McpTradeProposalRecord } from '../../adapters/prisma/mcp-trade/repository';
 
@@ -41,6 +43,13 @@ export interface ProposeTradeInputV1 {
   readonly stopLoss?: number;
   readonly takeProfit?: number;
   readonly rationale: string;
+  /**
+   * Sessão de teste de significância que sustenta esta proposta. OPCIONAL
+   * no contrato para não quebrar chamadas existentes; quem decide se a
+   * ausência bloqueia é `WR_MCP_TRADE_MAX_PVALUE`. Com o gate ligado, a
+   * ausência vira `EVIDENCE_MISSING`.
+   */
+  readonly evidenceSessionId?: string;
 }
 
 export interface ProposeTradeResultV1 {
@@ -101,6 +110,19 @@ function parseNumberEnv(env: NodeJS.ProcessEnv, key: string, fallback: number): 
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * Como `parseNumberEnv`, mas sem fallback: ausente, vazia ou não-numérica
+ * devolve `null`. Serve às env vars cujo `null` é um ESTADO com
+ * significado ("gate desligado", "sem validade") e não um valor faltando
+ * que se possa substituir por um default silencioso.
+ */
+function parseOptionalNumberEnv(env: NodeJS.ProcessEnv, key: string): number | null {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === '') return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function stripHash(record: McpTradeProposalRecord): Omit<McpTradeProposalRecord, 'confirmationCodeHash'> {
   const { confirmationCodeHash: _confirmationCodeHash, ...rest } = record;
   return rest;
@@ -115,6 +137,45 @@ export class McpTradeService {
     this.repo = new PrismaMcpTradeRepository(deps.prisma);
     this.clock = deps.clock ?? (() => new Date());
     this.env = deps.env ?? process.env;
+  }
+
+  /**
+   * Lê a `ResearchSession` citada e a reduz ao fato que a política pura
+   * avalia. Nunca lança por sessão ausente ou malformada: devolve `null`,
+   * que o núcleo trata como `EVIDENCE_MISSING`. Citar um id inexistente e
+   * não citar nada são a mesma coisa do ponto de vista do gate — em ambos
+   * os casos não há medição, e uma exceção aqui daria ao agente uma
+   * mensagem de erro em vez de uma razão de rejeição registrada.
+   */
+  private async loadEvidence(sessionId: string, now: Date): Promise<RiskEvidence | null> {
+    const repo = new PrismaResearchSessionRepository(this.deps.prisma);
+    const row = await repo.findById(sessionId);
+    if (row === null) return null;
+
+    let pValue: number | null = null;
+    let insufficientData = true;
+    if (row.resultJson !== null) {
+      try {
+        const parsed = JSON.parse(row.resultJson) as { pValue?: unknown; insufficientData?: unknown };
+        pValue = typeof parsed.pValue === 'number' && Number.isFinite(parsed.pValue) ? parsed.pValue : null;
+        insufficientData = parsed.insufficientData === true || pValue === null;
+      } catch {
+        // Resultado ilegível é tratado como inconclusivo, nunca como
+        // aprovação: um JSON corrompido não pode virar licença para operar.
+        pValue = null;
+        insufficientData = true;
+      }
+    }
+
+    const ageMs = now.getTime() - Date.parse(row.updatedAt);
+    return {
+      sessionId: row.sessionId,
+      kind: row.kind,
+      status: row.status,
+      pValue,
+      insufficientData,
+      ageDays: Number.isFinite(ageMs) ? Math.max(ageMs, 0) / 86_400_000 : Number.POSITIVE_INFINITY,
+    };
   }
 
   async propose(input: ProposeTradeInputV1): Promise<ProposeTradeResultV1> {
@@ -152,7 +213,17 @@ export class McpTradeService {
       maxPositionConcentrationPct: parseNumberEnv(this.env, 'WR_MCP_TRADE_MAX_CONCENTRATION_PCT', 20),
       maxProposalsPerRun: 1,
       instrumentAllowlist: parseAllowlist(this.env),
+      maxPValue: parseOptionalNumberEnv(this.env, 'WR_MCP_TRADE_MAX_PVALUE'),
+      evidenceMaxAgeDays: parseOptionalNumberEnv(this.env, 'WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS'),
     };
+
+    // Busca a sessão citada e a achata em fato. Só vai ao banco quando o
+    // gate está ligado E o agente citou algo — nem gate desligado nem
+    // proposta sem citação custam uma consulta.
+    const evidence =
+      limits.maxPValue === null || input.evidenceSessionId === undefined
+        ? null
+        : await this.loadEvidence(input.evidenceSessionId, now);
 
     const context = {
       referencePrice: snapshot.referencePrice,
@@ -160,6 +231,7 @@ export class McpTradeService {
       currentPositionQty: snapshot.currentPositionQty,
       portfolioNav: snapshot.portfolioNav,
       limits,
+      evidence,
     };
 
     const riskResult = await this.deps.riskPolicy.evaluate(

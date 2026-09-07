@@ -1188,3 +1188,33 @@ model Mt5ConnectionProfile {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
+
+
+// ---------------------------------------------------------------------------
+// Ferramentas de pesquisa portadas do Jesse (spec 2026-09-06). Sessão
+// GENÉRICA por `kind` — é o que o Jesse faz (backtest, monte carlo,
+// significância e otimização compartilham a mesma forma de sessão), e evita
+// que a próxima ferramenta peça uma tabela nova.
+//
+// `errorSummary` guarda apenas texto já sanitizado, nunca stack trace nem
+// path bruto — mesmo cuidado já documentado em `BackfillRun`.
+//
+// A transição DRAFT -> RUNNING é feita por update CONDICIONAL no repositório
+// (claimForRun), nunca por read-then-write: duas chamadas concorrentes de
+// run() no mesmo rascunho não podem ambas disparar processamento.
+// ---------------------------------------------------------------------------
+model ResearchSession {
+  sessionId    String   @id @default(cuid())
+  kind         String // SIGNIFICANCE | MONTE_CARLO
+  status       String // DRAFT | RUNNING | DONE | FAILED | CANCELLED
+  label        String
+  notes        String?
+  configJson   String
+  resultJson   String?
+  errorSummary String?
+  createdBy    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([kind, status, createdAt])
+}

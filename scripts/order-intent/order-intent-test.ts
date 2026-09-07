@@ -52,11 +52,15 @@ const BASE_CONTEXT: RiskEvaluationContext = {
   proposedQuantity: 100,
   currentPositionQty: 0,
   portfolioNav: 1_000_000,
+  evidence: null,
   limits: {
     maxNotional: 100_000,
     maxPositionConcentrationPct: 50,
     maxProposalsPerRun: 10,
     instrumentAllowlist: ['PETR4', 'VALE3'],
+    // Gate de significância desligado: estas suítes não o exercitam.
+    maxPValue: null,
+    evidenceMaxAgeDays: null,
   },
 };
 

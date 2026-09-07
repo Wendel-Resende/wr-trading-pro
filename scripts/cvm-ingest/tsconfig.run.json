@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist-run",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "ingest-cvm-filings.ts",
+    "../../src/lib/server/cvm-header-parser.ts",
+    "../../src/adapters/prisma/**/*.ts",
+    "../../src/domain/v1/**/*.ts"
+  ]
+}

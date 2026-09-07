@@ -1,6 +1,54 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-08-12 (retreino do modelo de fator — universo corrigido)
+Última atualização: 2026-09-07 (gate de significância, point-in-time da CVM e troca do carimbo de conhecimento)
+
+## Sessão 2026-09-06 — Ferramentas de pesquisa estatística portadas do Jesse
+
+### O que foi portado
+
+Duas capacidades do framework Jesse (MIT, `jesse 3.1.1`), adaptadas ao que o motor de
+backtest da WR permite afirmar:
+
+- **Teste de significância de regra** (`src/domain/v1/models/rule-significance/`):
+  bootstrap estacionário sobre os retornos do sinal, devolve p-valor contra H0 (retorno
+  médio zero). Piso de 30 observações (`MIN_OBSERVATIONS`) — abaixo disso, `pValue: null`
+  com `insufficientData: true`, nunca um p-valor sobre amostra pequena demais.
+- **Monte Carlo de trades** (`src/domain/v1/models/monte-carlo-trades/`): embaralha a
+  ordem dos trades de um backtest e recalcula métricas por cenário. Como o motor da WR é
+  aditivo (`netPnl` absoluto, `lotSize` fixo), retorno total/Sharpe/win rate/desvio-padrão
+  são invariantes à ordem — só `maxDrawdown` e o Calmar variam. O resultado separa
+  `invariants` de `pathDependent` (percentis 5/50/95, ICs 90%/95%) em vez de fabricar
+  variação onde não existe.
+- PRNG determinístico (`src/domain/v1/models/research-rng/`, xoshiro128**) — nenhum
+  `Math.random()` no domínio; mesma seed → mesmo p-valor sempre.
+- `computeMetrics` extraída de `backtest-run` para `metrics.ts`, reusada pelo Monte Carlo.
+- Modelo Prisma `ResearchSession` + `src/application/research-session/` (valida config por
+  `kind`, CAS no `run`) + 4 rotas HTTP (`/api/v1/research-sessions/**`) + 12 tools MCP
+  (`src/mcp/pilot/tools/research.ts`, todas `free`).
+- 29 testes em `npm run test:research-session`, todos verdes; suítes `test:mcp`,
+  `test:read-models-v1` e `test:signal` seguem verdes (não regrediram).
+- `npm run build` conclui sem erro; as 4 rotas novas aparecem na listagem de rotas do Next
+  (`research-sessions`, `research-sessions/[id]`, `research-sessions/[id]/cancel`,
+  `research-sessions/[id]/run`).
+
+### O que ficou de fora, de propósito
+
+- **Monte Carlo por reamostragem de candles** (bootstrap de barras de preço, não só de
+  trades) — o Jesse não faz isso de fábrica; não foi pedido nem desenhado nesta rodada.
+- **Unificação de `ml_features()`** — o Jesse tem um único ponto de extração de features
+  reusado por indicadores e ML; a WR mantém extrações separadas por trilho. Consolidar é
+  refactor de escopo maior, fora desta pesquisa.
+- **Consolidação dos guard-rails de risco em filtros nomeados** — `maxNotional`,
+  `maxPositionConcentrationPct`, rate limit, kill switch etc. continuam checados em pontos
+  distintos do pipeline de `trade.propose`/`approve`, não como uma lista nomeada e
+  componível de filtros (padrão que o Jesse usa para os próprios filtros de estratégia).
+
+### Decisão em aberto
+
+`trade.propose` **não exige p-valor mínimo** hoje — as tools `research.*` existem e podem
+ser chamadas pelo agente, mas nada no gate de proposta de trade consulta o resultado. Ficou
+como decisão de governança: se/quando exigir, e qual o limiar (ex. p < 0,05), e como (bloqueio
+duro vs. aviso) são perguntas para o usuário decidir, não algo assumido aqui.
 
 ## Sessão 2026-08-12 (parte 3) — Retreino: universo de 138 -> 129 CORRIGIDO
 
@@ -2883,6 +2931,77 @@ Nesta retomada não houve alteração de código do app. Foram apenas lidos os a
 - Leitura de `AGENTS.md`, `CLAUDE.md`, `BUILD_STATUS.md` e `docs/CODEX_HANDOFF.md`.
 - `git status --short`: status listado acima.
 - Não foram rodados `npm run build` nem `npm run electron:compile`, porque não houve mudança em TypeScript/Next/Electron nesta etapa.
+
+
+## Sessão 2026-09-06/07 — Gate de significância e point-in-time da CVM
+
+Continuação direta da sessão anterior. Três blocos, todos na branch
+`feat/ferramentas-pesquisa-jesse` (PR #2, 19 commits).
+
+### 1. O gate de significância passou a valer
+
+`trade.propose` aceita `evidenceSessionId` opcional; a política de risco PURA ganhou a
+regra de evidência, com quatro códigos (`EVIDENCE_MISSING`, `EVIDENCE_INCONCLUSIVE`,
+`EVIDENCE_PVALUE_ABOVE_MAX`, `EVIDENCE_STALE`). Liga com
+`WR_MCP_TRADE_MAX_PVALUE=0.05`; vazia = desligado.
+
+**Já está ligado no `.env`.** Só entra em vigor no próximo restart COMPLETO do Electron —
+o `.env` é lido uma única vez, na subida do processo principal.
+
+### 2. Ingestão point-in-time da CVM
+
+`CvmFiling`/`Issuer` estavam vazios desde a Fase 2. Agora: 1.225 emissores, 48.593
+filings (2011–2026), cadeia de retificação 100% ligada. `npm run cvm:ingest`.
+
+Quatro anomalias do dado real que quebraram suposições e estão tratadas: exercício social
+não-calendário (CAMIL, JALLES, BRASILAGRO, CTC); `VERSAO` não é ordinal confiável (DIBENS
+tem dois documentos como v1); 24% dos multiversão têm duas versões no mesmo dia; ITR de 4º
+trimestre, empresas renomeadas e CNPJ compartilhado entre códigos CVM.
+
+**Limite intransponível:** a CVM publica só a versão corrente dos VALORES. Sabemos quem
+foi retificado e quando, nunca o que mudou. Para trás é irrecuperável; para frente cada
+execução acumula.
+
+### 3. Carimbo de conhecimento vem da data real
+
+`directional_features.py` deixou de usar sempre `data_ref + prazo legal`. Regra:
+`knowledge_date` = `publishedAt` da ÚLTIMA versão. Colunas novas: `knowledge_source`
+(`DT_RECEB` | `PRAZO_LEGAL`) e `is_restatement`.
+
+### Medições (rodadas, não publicadas)
+
+Duas passadas de walk-forward sobre as MESMAS barras congeladas, sem tocar em
+`models_dir`:
+
+| | prazo legal | `DT_RECEB` real |
+|---|---|---|
+| IC | 0,1020 | 0,0915 (**−10,3%**) |
+| IC t-stat | 4,58 | 5,11 (**+11,7%**) |
+| spread topo-base | 0,0261 | 0,0363 (**+39,2%**) |
+| anos positivos | 0,769 | 0,846 (**+10,0%**) |
+
+O IC cai porque parte dele vinha de olhar adiante. Tudo o mais melhora — fator mais
+consistente, com spread econômico maior.
+
+**Excluir as linhas retificadas NÃO compensa:** IC 0,0915 → 0,0905 (−1,1%), com perda de
+19% da amostra. `is_restatement` fica como diagnóstico, não como filtro.
+
+### Achados que valem para trabalho futuro
+
+- O SDK do MCP REMOVE campos desconhecidos antes do handler (provado no fio). Tornar
+  `parseToolArgs` estrito seria no-op para o tráfego real; quem valida é o `inputSchema`
+  de cada tool.
+- O `.env` do projeto CHEGA aos processos de teste. `buildMcpTradeService` do mcp-pilot
+  neutraliza as env vars do gate por isso; qualquer env var futura cai na mesma armadilha.
+- O sync que produz `cvm_fundamentos.db` NÃO está neste repositório — é o pipeline do
+  Guardião_Hermes no WSL. Este repo só recebe o snapshot.
+
+### Pendências (decisões do usuário, não trabalho técnico)
+
+1. Revisar e mesclar o PR #2.
+2. Reiniciar o Electron por completo para o gate entrar em vigor.
+3. Retreinar e publicar o ranking com o carimbo novo. As medições dizem que fica melhor,
+   mas isso troca o artefato publicado — não foi feito.
 
 ## Pontos técnicos identificados pelo Codex
 

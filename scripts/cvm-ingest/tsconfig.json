@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "../..",
+    "outDir": ".dist",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "cvm-ingest-test.ts",
+    "../../src/lib/server/cvm-header-parser.ts",
+    "../../src/domain/v1/**/*.ts"
+  ]
+}
