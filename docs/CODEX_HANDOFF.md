@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-09-06 (ferramentas de pesquisa estatística portadas do Jesse)
+Última atualização: 2026-09-07 (gate de significância, point-in-time da CVM e troca do carimbo de conhecimento)
 
 ## Sessão 2026-09-06 — Ferramentas de pesquisa estatística portadas do Jesse
 
@@ -2931,6 +2931,77 @@ Nesta retomada não houve alteração de código do app. Foram apenas lidos os a
 - Leitura de `AGENTS.md`, `CLAUDE.md`, `BUILD_STATUS.md` e `docs/CODEX_HANDOFF.md`.
 - `git status --short`: status listado acima.
 - Não foram rodados `npm run build` nem `npm run electron:compile`, porque não houve mudança em TypeScript/Next/Electron nesta etapa.
+
+
+## Sessão 2026-09-06/07 — Gate de significância e point-in-time da CVM
+
+Continuação direta da sessão anterior. Três blocos, todos na branch
+`feat/ferramentas-pesquisa-jesse` (PR #2, 19 commits).
+
+### 1. O gate de significância passou a valer
+
+`trade.propose` aceita `evidenceSessionId` opcional; a política de risco PURA ganhou a
+regra de evidência, com quatro códigos (`EVIDENCE_MISSING`, `EVIDENCE_INCONCLUSIVE`,
+`EVIDENCE_PVALUE_ABOVE_MAX`, `EVIDENCE_STALE`). Liga com
+`WR_MCP_TRADE_MAX_PVALUE=0.05`; vazia = desligado.
+
+**Já está ligado no `.env`.** Só entra em vigor no próximo restart COMPLETO do Electron —
+o `.env` é lido uma única vez, na subida do processo principal.
+
+### 2. Ingestão point-in-time da CVM
+
+`CvmFiling`/`Issuer` estavam vazios desde a Fase 2. Agora: 1.225 emissores, 48.593
+filings (2011–2026), cadeia de retificação 100% ligada. `npm run cvm:ingest`.
+
+Quatro anomalias do dado real que quebraram suposições e estão tratadas: exercício social
+não-calendário (CAMIL, JALLES, BRASILAGRO, CTC); `VERSAO` não é ordinal confiável (DIBENS
+tem dois documentos como v1); 24% dos multiversão têm duas versões no mesmo dia; ITR de 4º
+trimestre, empresas renomeadas e CNPJ compartilhado entre códigos CVM.
+
+**Limite intransponível:** a CVM publica só a versão corrente dos VALORES. Sabemos quem
+foi retificado e quando, nunca o que mudou. Para trás é irrecuperável; para frente cada
+execução acumula.
+
+### 3. Carimbo de conhecimento vem da data real
+
+`directional_features.py` deixou de usar sempre `data_ref + prazo legal`. Regra:
+`knowledge_date` = `publishedAt` da ÚLTIMA versão. Colunas novas: `knowledge_source`
+(`DT_RECEB` | `PRAZO_LEGAL`) e `is_restatement`.
+
+### Medições (rodadas, não publicadas)
+
+Duas passadas de walk-forward sobre as MESMAS barras congeladas, sem tocar em
+`models_dir`:
+
+| | prazo legal | `DT_RECEB` real |
+|---|---|---|
+| IC | 0,1020 | 0,0915 (**−10,3%**) |
+| IC t-stat | 4,58 | 5,11 (**+11,7%**) |
+| spread topo-base | 0,0261 | 0,0363 (**+39,2%**) |
+| anos positivos | 0,769 | 0,846 (**+10,0%**) |
+
+O IC cai porque parte dele vinha de olhar adiante. Tudo o mais melhora — fator mais
+consistente, com spread econômico maior.
+
+**Excluir as linhas retificadas NÃO compensa:** IC 0,0915 → 0,0905 (−1,1%), com perda de
+19% da amostra. `is_restatement` fica como diagnóstico, não como filtro.
+
+### Achados que valem para trabalho futuro
+
+- O SDK do MCP REMOVE campos desconhecidos antes do handler (provado no fio). Tornar
+  `parseToolArgs` estrito seria no-op para o tráfego real; quem valida é o `inputSchema`
+  de cada tool.
+- O `.env` do projeto CHEGA aos processos de teste. `buildMcpTradeService` do mcp-pilot
+  neutraliza as env vars do gate por isso; qualquer env var futura cai na mesma armadilha.
+- O sync que produz `cvm_fundamentos.db` NÃO está neste repositório — é o pipeline do
+  Guardião_Hermes no WSL. Este repo só recebe o snapshot.
+
+### Pendências (decisões do usuário, não trabalho técnico)
+
+1. Revisar e mesclar o PR #2.
+2. Reiniciar o Electron por completo para o gate entrar em vigor.
+3. Retreinar e publicar o ranking com o carimbo novo. As medições dizem que fica melhor,
+   mas isso troca o artefato publicado — não foi feito.
 
 ## Pontos técnicos identificados pelo Codex
 
