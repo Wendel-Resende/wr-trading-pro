@@ -1,6 +1,6 @@
 # CODEX_HANDOFF — WR Trading Pro
 
-Última atualização: 2026-09-07 (gate de significância, point-in-time da CVM e troca do carimbo de conhecimento)
+Última atualização: 2026-09-07 (ranking retreinado e publicado com o carimbo real)
 
 ## Sessão 2026-09-06 — Ferramentas de pesquisa estatística portadas do Jesse
 
@@ -2996,12 +2996,35 @@ consistente, com spread econômico maior.
 - O sync que produz `cvm_fundamentos.db` NÃO está neste repositório — é o pipeline do
   Guardião_Hermes no WSL. Este repo só recebe o snapshot.
 
-### Pendências (decisões do usuário, não trabalho técnico)
+### Fechamento (2026-09-07)
 
-1. Revisar e mesclar o PR #2.
-2. Reiniciar o Electron por completo para o gate entrar em vigor.
-3. Retreinar e publicar o ranking com o carimbo novo. As medições dizem que fica melhor,
-   mas isso troca o artefato publicado — não foi feito.
+PR #2 mesclado (`86fa329`). Ranking retreinado e PUBLICADO com o carimbo real:
+`2617adebf775` está ACTIVE, com IC 0,0915, t-stat 5,109, spread 0,0363 e 84,6% de anos
+positivos — contra IC 0,0932 / t 4,196 / spread 0,0269 / 76,9% do anterior. As métricas
+batem com a medição feita antes de qualquer publicação. `n` subiu de 5.256 para 5.302
+porque o carimbo recuou em 80% das linhas.
+
+**Três tentativas até publicar, três causas, todas do agente:**
+
+1. `DEFAULT_FILINGS_DB` era relativo e o worker (lançado pelo `ml_api` Flask, CWD próprio)
+   não o resolvia; o painel caía no prazo legal e o retreino reproduziu EXATAMENTE as
+   métricas antigas. Só uma medição anterior guardada pegou.
+2. O campo novo `knowledgeProvenance` não foi declarado no `DirectionalTrainResultSchema`,
+   que é `.strict()` — resultado inteiro recusado, treino virou FAILED com o modelo já no
+   disco. **Havia comentário no próprio arquivo avisando desse modo de falha**, do
+   incidente do campo `orphan` em 2026-07-25.
+3. A correção do schema é TypeScript e o app servia o build anterior. Python entra vivo;
+   TS exige `npm run build` + `electron:compile` + reabrir o app.
+
+**Lição que virou código:** `knowledgeProvenance` (`rows`, `fromFiling`,
+`fromLegalDeadline`, `filingCoverage`, `restatements`) agora viaja no resultado do treino.
+`filingCoverage` perto de 0 significa modelo treinado com o carimbo antigo — antes disso,
+a degradação silenciosa parecia sucesso.
+
+### Pendências
+
+Nenhuma técnica. Há um artefato órfão em `data/ml/directional_models/2617adeb.../` de uma
+das tentativas falhas — inofensivo (o mesmo hash acabou publicado).
 
 ## Pontos técnicos identificados pelo Codex
 
