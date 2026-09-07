@@ -16,15 +16,36 @@ horizonte de 10 pregões do motor híbrido; aqui a unidade de observação é o
 próprio trimestre (uma linha por empresa/trimestre), alinhada ao horizonte de
 60 pregões (decisão de arquitetura 2 da spec).
 """
+import os
 import sqlite3
 
 import pandas as pd
 
-# Prazo legal de publicação — mesmos valores de `ml/fundamentals.py`
-# (fonte única conceitual; replicado aqui porque aquele módulo trabalha em
-# grade diária e será removido junto com o motor híbrido).
+# Prazo legal de publicação — FALLBACK, não mais a regra principal.
+#
+# Até 2026-09-06 o carimbo de conhecimento era sempre `data_ref + prazo
+# legal`. Medido sobre os 48.593 filings reais ingeridos de `CvmFiling`:
+# a mediana confirma o proxy (ITR 44d, DFP 83d), mas 21,3% dos ITR e 19,4%
+# das DFP são entregues DEPOIS do prazo — nessas, o painel tratava o
+# fundamento como conhecido antes de existir. No universo desta base, são
+# 13,3% dos ITR e 11,6% das DFP.
+#
+# Agora o carimbo vem de `DT_RECEB` real. Estes valores sobram para as
+# linhas que não casam com nenhum filing (5 de 7.085 hoje) e para quando o
+# banco de filings não está disponível — sempre com `knowledge_source`
+# dizendo qual dos dois foi usado.
 LAG_ITR_DAYS = 45
 LAG_DFP_DAYS = 90
+
+#: Caminho default do banco que guarda `CvmFiling` (o banco do app, não o
+#: snapshot da CVM). Escrever a data dentro de `cvm_fundamentos.db` seria
+#: inútil: ele é recopiado do WSL e a coluna se perderia.
+DEFAULT_FILINGS_DB = os.path.join('prisma', 'dev.db')
+
+#: Origem do carimbo de conhecimento, exposta no painel para que o fallback
+#: nunca passe despercebido.
+SOURCE_FILING = 'DT_RECEB'
+SOURCE_LEGAL_DEADLINE = 'PRAZO_LEGAL'
 
 # --- Blocos de features declarados na spec (§4.1) ------------------------------
 RENTABILIDADE = ['roe', 'roa', 'margem_bruta', 'margem_ebit', 'margem_liquida']
@@ -65,7 +86,79 @@ def knowledge_date(data_ref: pd.Series, trimestre: pd.Series) -> pd.Series:
     return pd.to_datetime(data_ref) + pd.to_timedelta(lag, unit='D')
 
 
-def load_quarterly_panel(cvm_db_path: str, tickers: list[str] | None = None) -> pd.DataFrame:
+def load_filing_dates(filings_db_path: str) -> pd.DataFrame:
+    """Data de publicação REAL por (cd_cvm, ano, trimestre), da tabela `CvmFiling`.
+
+    Devolve a ÚLTIMA versão de cada documento, não a primeira — e essa é a
+    escolha que corrige o vazamento por retificação. O valor guardado em
+    `fundamental_indicators` já é o retificado; carimbá-lo com a data da v1
+    afirmaria que se conhecia em maio um número publicado em novembro. 19%
+    das linhas desta base são retificação.
+
+    Mapeamento de trimestre: a WR usa 1..4, onde 4 é o exercício anual. A
+    CVM publica os trimestres 1..3 como ITR e o quarto período como DFP.
+
+    Devolve DataFrame vazio (sem lançar) se o banco não existir ou não tiver
+    a tabela — o painel então cai no prazo legal, sinalizado.
+    """
+    if not os.path.exists(filings_db_path):
+        return pd.DataFrame(columns=['cd_cvm_norm', 'ano', 'trimestre', 'publicado_em', 'is_restatement'])
+
+    sql = """
+        SELECT i.cvmCode                                   AS cd_cvm_norm,
+               f.fiscalYear                                AS ano,
+               CASE WHEN f.documentType = 'ITR' THEN f.fiscalQuarter ELSE 4 END AS trimestre,
+               MAX(f.publishedAt)                          AS publicado_em,
+               MAX(f.isRestatement)                        AS is_restatement
+          FROM CvmFiling f
+          JOIN Issuer i ON i.id = f.issuerId
+         WHERE f.documentType IN ('ITR', 'DFP')
+      GROUP BY 1, 2, 3
+    """
+    con = _connect_ro(filings_db_path)
+    try:
+        df = pd.read_sql_query(sql, con)
+    except (sqlite3.DatabaseError, pd.errors.DatabaseError):
+        return pd.DataFrame(columns=['cd_cvm_norm', 'ano', 'trimestre', 'publicado_em', 'is_restatement'])
+    finally:
+        con.close()
+
+    if df.empty:
+        return df
+    # Prisma grava DateTime como epoch em milissegundos.
+    df['publicado_em'] = pd.to_datetime(df['publicado_em'], unit='ms').dt.normalize()
+    df['is_restatement'] = df['is_restatement'].astype(bool)
+    return df
+
+
+def apply_real_knowledge_dates(df: pd.DataFrame, filings: pd.DataFrame) -> pd.DataFrame:
+    """Substitui o carimbo por `DT_RECEB` real onde houver filing casado.
+
+    Onde não houver, mantém o prazo legal — e `knowledge_source` diz qual
+    dos dois valeu para cada linha. Uma linha que cai no fallback não é
+    erro; é o que a fonte permite, e precisa ser visível para quem lê.
+    """
+    df = df.copy()
+    df['knowledge_source'] = SOURCE_LEGAL_DEADLINE
+    df['is_restatement'] = False
+
+    if filings.empty:
+        return df
+
+    df['cd_cvm_norm'] = df['cd_cvm'].astype(str).str.lstrip('0')
+    merged = df.merge(filings, on=['cd_cvm_norm', 'ano', 'trimestre'], how='left', suffixes=('', '_filing'))
+
+    casadas = merged['publicado_em'].notna()
+    merged.loc[casadas, 'knowledge_date'] = merged.loc[casadas, 'publicado_em']
+    merged.loc[casadas, 'knowledge_source'] = SOURCE_FILING
+    marcadas = merged.loc[casadas, 'is_restatement_filing'].astype('boolean').fillna(False).astype(bool)
+    merged.loc[casadas, 'is_restatement'] = marcadas
+
+    return merged.drop(columns=['cd_cvm_norm', 'publicado_em', 'is_restatement_filing'], errors='ignore')
+
+
+def load_quarterly_panel(cvm_db_path: str, tickers: list[str] | None = None,
+                         filings_db_path: str | None = None) -> pd.DataFrame:
     """Lê o painel cru (uma linha por empresa/trimestre) do snapshot CVM.
 
     Colunas de saída: ticker, cd_cvm, setor, ano, trimestre, data_ref,
@@ -105,7 +198,9 @@ def load_quarterly_panel(cvm_db_path: str, tickers: list[str] | None = None) -> 
         return df
 
     df['data_ref'] = pd.to_datetime(df['data_ref'])
+    # Prazo legal primeiro, como base; a data real sobrescreve onde existir.
     df['knowledge_date'] = knowledge_date(df['data_ref'], df['trimestre'])
+    df = apply_real_knowledge_dates(df, load_filing_dates(filings_db_path or DEFAULT_FILINGS_DB))
     return df.sort_values(['ticker', 'data_ref']).reset_index(drop=True)
 
 

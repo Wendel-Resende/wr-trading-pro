@@ -368,8 +368,30 @@ scripts/cvm-ingest/                   script (npm run cvm:ingest) + testes
   nulo, porque escolher um dono seria inventar.
 - Testes: `npm run test:cvm-ingest` (16 casos, parser puro, sem rede nem banco).
 
-**Pendente:** trocar o prazo legal pela `DT_RECEB` real em `directional_features.py` e
-marcar as linhas retificadas. Este trabalho só coletou o dado; o ML ainda não o usa.
+**A troca foi feita (2026-09-06).** `directional_features.py` deixou de carimbar sempre
+pelo prazo legal:
+
+- `load_filing_dates()` lê `CvmFiling` do banco do app (`prisma/dev.db`, parâmetro
+  `filings_db_path`) e devolve a data da **última versão** de cada documento. É essa
+  escolha que corrige o vazamento por retificação: o valor guardado em
+  `fundamental_indicators` já É o retificado, então carimbá-lo com a data da v1
+  afirmaria conhecer em maio um número publicado em novembro.
+- Não gravo nada dentro de `cvm_fundamentos.db`: ele é snapshot recopiado do WSL, e a
+  coluna se perderia na próxima cópia.
+- Duas colunas novas no painel, para o fallback nunca ser silencioso:
+  `knowledge_source` (`DT_RECEB` | `PRAZO_LEGAL`) e `is_restatement`. O prazo legal
+  segue valendo onde não há filing casado, e a linha diz que foi o caso.
+- **Resultado medido sobre as 7.085 linhas reais:** 7.080 casam (99,9%), 5 caem no
+  fallback. 12,9% tiveram o carimbo empurrado PARA FRENTE — é o look-ahead removido —
+  e **80,1% tiveram o carimbo RECUADO**, porque a empresa publicou antes do prazo legal
+  e o painel estava conservador à toa. A troca não é só custo: devolve sinal.
+- 18,9% das linhas ficam marcadas como retificação, o que permite treinar com e sem
+  elas e medir o efeito.
+- Testes: `npm run test:directional:py` (8 casos novos em
+  `python/tests/test_directional_knowledge_date.py`).
+
+**Pendente:** retreinar e comparar o IC com e sem as linhas retificadas. O dado e a
+marcação existem; a medição do efeito ainda não foi feita.
 
 ### Dados locais do projeto
 
