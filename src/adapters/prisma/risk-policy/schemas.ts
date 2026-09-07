@@ -41,6 +41,21 @@ export const RiskLimitsSchema = z
     maxPositionConcentrationPct: z.number().finite().gt(0).lte(100),
     maxProposalsPerRun: z.number().int().min(1),
     instrumentAllowlist: z.array(z.string().min(1).max(64)),
+    // Gate de significância. Omitido = `null` = gate DESLIGADO, para os
+    // chamadores HTTP existentes não quebrarem no dia do deploy.
+    maxPValue: z.number().finite().gt(0).lte(1).nullable().default(null),
+    evidenceMaxAgeDays: z.number().int().min(0).nullable().default(null),
+  })
+  .strict();
+
+export const RiskEvidenceSchema = z
+  .object({
+    sessionId: z.string().min(1).max(64),
+    kind: z.string().min(1).max(32),
+    status: z.string().min(1).max(32),
+    pValue: z.number().finite().min(0).max(1).nullable(),
+    insufficientData: z.boolean(),
+    ageDays: z.number().finite().min(0),
   })
   .strict();
 
@@ -51,12 +66,17 @@ export const RiskEvaluationContextSchema = z
     currentPositionQty: z.number().finite().min(0),
     portfolioNav: z.number().finite().gt(0),
     limits: RiskLimitsSchema,
+    evidence: RiskEvidenceSchema.nullable().default(null),
   })
   .strict();
 
 export const RiskDecisionOutcomeSchema = z.enum(['APPROVED', 'REJECTED']);
 
 export const RiskDecisionReasonCodeSchema = z.enum([
+  'EVIDENCE_MISSING',
+  'EVIDENCE_INCONCLUSIVE',
+  'EVIDENCE_PVALUE_ABOVE_MAX',
+  'EVIDENCE_STALE',
   'KILL_SWITCH_DISABLED',
   'INSTRUMENT_NOT_ALLOWED',
   'NO_ACTIONABLE_DIRECTION',

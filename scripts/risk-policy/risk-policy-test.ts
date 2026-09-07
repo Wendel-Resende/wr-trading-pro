@@ -6,7 +6,8 @@ import { createRiskPolicyService } from '../../src/application/risk-policy';
 import { ReadModelError } from '../../src/application/read-models-v1/errors';
 import { jsonError } from '../../src/app/api/v1/_shared/http';
 import { RiskEvaluateBodySchema } from '../../src/adapters/prisma/risk-policy';
-import type { RiskEvaluationContext, RiskPolicyConfig, TradeProposal } from '../../src/domain/v1/models/risk-policy';
+import { evaluatePolicy } from '../../src/domain/v1/models/risk-policy';
+import type { RiskEvaluationContext, RiskEvidence, RiskPolicyConfig, TradeProposal } from '../../src/domain/v1/models/risk-policy';
 
 async function expectReadModelError(promise: Promise<unknown>, code: string, label: string): Promise<void> {
   try {
@@ -49,11 +50,16 @@ const BASE_CONTEXT: RiskEvaluationContext = {
   proposedQuantity: 100,
   currentPositionQty: 0,
   portfolioNav: 1_000_000,
+  evidence: null,
   limits: {
     maxNotional: 100_000,
     maxPositionConcentrationPct: 50,
     maxProposalsPerRun: 10,
     instrumentAllowlist: ['PETR4', 'VALE3'],
+    // Gate desligado no contexto base: os testes que o exercitam o ligam
+    // explicitamente, e os demais provam que nada mudou sem ele.
+    maxPValue: null,
+    evidenceMaxAgeDays: null,
   },
 };
 
@@ -260,10 +266,198 @@ async function noLookaheadTests(prisma: PrismaClient): Promise<void> {
   console.log('no-lookahead: OK (knowledgeTime derivado não pode exceder decisionTime)');
 }
 
+// ---------------------------------------------------------------------------
+// Gate de significância estatística (2026-09-06). A proposta só passa se
+// APONTAR uma sessão de teste de significância que sustente a regra. A
+// decisão é PURA: o serviço busca a sessão e reduz a um fato
+// (`RiskEvidence`); quem decide é `evaluatePolicy`, junto das outras regras.
+// ---------------------------------------------------------------------------
+
+/** Contexto com o gate LIGADO (limiar clássico de 5%, validade de 30 dias). */
+function contextWithGate(evidence: RiskEvidence | null): RiskEvaluationContext {
+  return {
+    ...BASE_CONTEXT,
+    evidence,
+    limits: { ...BASE_CONTEXT.limits, maxPValue: 0.05, evidenceMaxAgeDays: 30 },
+  };
+}
+
+/** Evidência válida por padrão; cada teste degrada um campo. */
+function goodEvidence(overrides: Partial<RiskEvidence> = {}): RiskEvidence {
+  return {
+    sessionId: 'sess-1',
+    kind: 'SIGNIFICANCE',
+    status: 'DONE',
+    pValue: 0.01,
+    insufficientData: false,
+    ageDays: 1,
+    ...overrides,
+  };
+}
+
+function evidenceGateOffLetsProposalThrough(): void {
+  // Sem `maxPValue`, o gate não roda: nem exige evidência, nem a examina.
+  // É isso que mantém as chamadas atuais do Hermes funcionando no dia do
+  // deploy, antes de a env var ser setada.
+  const context: RiskEvaluationContext = {
+    ...BASE_CONTEXT,
+    evidence: null,
+    limits: { ...BASE_CONTEXT.limits, maxPValue: null, evidenceMaxAgeDays: 30 },
+  };
+  const result = evaluatePolicy(BASE_PROPOSAL, context, ENABLED_CONFIG, 0);
+  assert.equal(result.outcome, 'APPROVED');
+  assert.deepEqual(result.reasons, ['OK'], 'gate desligado não pode rejeitar por evidência');
+  console.log('evidência: gate desligado deixa passar sem sessão citada: OK');
+}
+
+function evidenceMissingIsRejectedWhenGateOn(): void {
+  const result = evaluatePolicy(BASE_PROPOSAL, contextWithGate(null), ENABLED_CONFIG, 0);
+  assert.equal(result.outcome, 'REJECTED');
+  assert.deepEqual(result.reasons, ['EVIDENCE_MISSING']);
+  console.log('evidência: ausente com gate ligado: OK (REJECTED [\'EVIDENCE_MISSING\'])');
+}
+
+function evidenceFromWrongKindIsRejected(): void {
+  // Uma sessão de Monte Carlo mede dispersão de drawdown; ela não diz nada
+  // sobre a regra ter poder preditivo. Aceitá-la seria trocar a evidência
+  // por outra coisa com o mesmo formato.
+  const result = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ kind: 'MONTE_CARLO' })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(result.outcome, 'REJECTED');
+  assert.deepEqual(result.reasons, ['EVIDENCE_MISSING'], 'kind errado é o mesmo que não ter evidência');
+  console.log('evidência: sessão MONTE_CARLO não serve de gate: OK');
+}
+
+function evidenceNotDoneIsRejected(): void {
+  for (const status of ['DRAFT', 'RUNNING', 'FAILED', 'CANCELLED'] as const) {
+    const result = evaluatePolicy(
+      BASE_PROPOSAL,
+      contextWithGate(goodEvidence({ status })),
+      ENABLED_CONFIG,
+      0,
+    );
+    assert.equal(result.outcome, 'REJECTED', `status ${status} não pode aprovar`);
+    assert.deepEqual(result.reasons, ['EVIDENCE_MISSING'], `status ${status}`);
+  }
+  console.log('evidência: sessão não concluída não serve de gate: OK');
+}
+
+function evidenceInconclusiveIsRejected(): void {
+  // `pValue: null` com `insufficientData` é o caso que o motor devolve
+  // abaixo do piso de 30 observações. Dado insuficiente não é evidência —
+  // e tratá-lo como "sem restrição" inverteria o sentido do gate.
+  const result = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ pValue: null, insufficientData: true })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(result.outcome, 'REJECTED');
+  assert.deepEqual(result.reasons, ['EVIDENCE_INCONCLUSIVE']);
+  console.log('evidência: pValue null (dado insuficiente) rejeitado: OK');
+}
+
+function evidencePValueBoundaryIsInclusive(): void {
+  // Fronteira exata: p == limiar PASSA; o menor incremento acima REJEITA.
+  const atThreshold = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ pValue: 0.05 })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(atThreshold.outcome, 'APPROVED', 'p igual ao limiar deve passar');
+  assert.deepEqual(atThreshold.reasons, ['OK']);
+
+  const aboveThreshold = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ pValue: 0.051 })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(aboveThreshold.outcome, 'REJECTED');
+  assert.deepEqual(aboveThreshold.reasons, ['EVIDENCE_PVALUE_ABOVE_MAX']);
+  console.log('evidência: fronteira do p-valor (0,05 passa / 0,051 não): OK');
+}
+
+function evidenceStaleIsRejected(): void {
+  const withinWindow = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ ageDays: 30 })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(withinWindow.outcome, 'APPROVED', 'idade igual ao limite ainda vale');
+
+  const expired = evaluatePolicy(
+    BASE_PROPOSAL,
+    contextWithGate(goodEvidence({ ageDays: 31 })),
+    ENABLED_CONFIG,
+    0,
+  );
+  assert.equal(expired.outcome, 'REJECTED');
+  assert.deepEqual(expired.reasons, ['EVIDENCE_STALE']);
+  console.log('evidência: fronteira da validade (30 dias passa / 31 não): OK');
+}
+
+function evidenceWithoutAgeLimitNeverExpires(): void {
+  // `evidenceMaxAgeDays: null` = sem validade, escolha explícita do operador.
+  const context: RiskEvaluationContext = {
+    ...BASE_CONTEXT,
+    evidence: goodEvidence({ ageDays: 3650 }),
+    limits: { ...BASE_CONTEXT.limits, maxPValue: 0.05, evidenceMaxAgeDays: null },
+  };
+  const result = evaluatePolicy(BASE_PROPOSAL, context, ENABLED_CONFIG, 0);
+  assert.equal(result.outcome, 'APPROVED');
+  console.log('evidência: sem validade configurada, sessão antiga vale: OK');
+}
+
+function evidenceGateRunsAfterCheaperRules(): void {
+  // Ordem importa para a mensagem: uma proposta que viola o kill switch E
+  // não tem evidência deve reportar o kill switch, que é a causa mais
+  // fundamental. O gate de evidência nunca mascara uma rejeição anterior.
+  const killSwitchOff: RiskPolicyConfig = { ...ENABLED_CONFIG, tradingEnabled: false };
+  const result = evaluatePolicy(BASE_PROPOSAL, contextWithGate(null), killSwitchOff, 0);
+  assert.deepEqual(result.reasons, ['KILL_SWITCH_DISABLED'], 'kill switch precede o gate de evidência');
+
+  // E uma proposta com evidência boa mas notional estourado reporta o
+  // notional — o gate não "aprova por evidência" o que outra regra barra.
+  const oversized: RiskEvaluationContext = {
+    ...contextWithGate(goodEvidence()),
+    proposedQuantity: 1_000_000,
+  };
+  const notional = evaluatePolicy(BASE_PROPOSAL, oversized, ENABLED_CONFIG, 0);
+  assert.deepEqual(notional.reasons, ['NOTIONAL_EXCEEDS_MAX']);
+  console.log('evidência: gate não mascara nem sobrepõe as outras regras: OK');
+}
+
+function evidenceGateSkippedForHoldDirection(): void {
+  // HOLD não é aposta: não há o que sustentar estatisticamente. Exigir
+  // evidência para não operar seria atrito sem propósito.
+  const hold: TradeProposal = { ...BASE_PROPOSAL, direction: 'HOLD' };
+  const result = evaluatePolicy(hold, contextWithGate(null), ENABLED_CONFIG, 0);
+  assert.equal(result.outcome, 'APPROVED');
+  assert.deepEqual(result.reasons, ['NO_ACTIONABLE_DIRECTION']);
+  console.log('evidência: HOLD não exige evidência: OK');
+}
+
 async function main(): Promise<void> {
   migrationAdditivityTests();
   await internalErrorSanitizationTests();
   strictBodyRejectsExtraFieldTests();
+  evidenceGateOffLetsProposalThrough();
+  evidenceMissingIsRejectedWhenGateOn();
+  evidenceFromWrongKindIsRejected();
+  evidenceNotDoneIsRejected();
+  evidenceInconclusiveIsRejected();
+  evidencePValueBoundaryIsInclusive();
+  evidenceStaleIsRejected();
+  evidenceWithoutAgeLimitNeverExpires();
+  evidenceGateRunsAfterCheaperRules();
+  evidenceGateSkippedForHoldDirection();
 
   const prisma = new PrismaClient();
   try {

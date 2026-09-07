@@ -292,8 +292,28 @@ src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
   e `ResearchSessionDraftPatchSchema` agora são de fato aplicados no
   `PrismaResearchSessionRepository` (antes eram exportados e nunca chamados, então o
   teto de `configJson ≤ 2 MB` não valia em lugar nenhum).
-- **Nada torna o gate obrigatório ainda:** as tools existem, mas `trade.propose` não
-  exige p-valor mínimo. É decisão de governança em aberto, não esquecimento.
+- **O gate PASSOU a valer (2026-09-06):** `trade.propose` aceita `evidenceSessionId`
+  opcional e a política de risco pura ganhou a regra de evidência, com quatro códigos
+  próprios (`EVIDENCE_MISSING`, `EVIDENCE_INCONCLUSIVE`, `EVIDENCE_PVALUE_ABOVE_MAX`,
+  `EVIDENCE_STALE`) — quatro e não um porque "recusado por evidência" tem quatro causas
+  e juntá-las esconderia qual o agente precisa corrigir.
+  - A decisão é PURA: o serviço busca a `ResearchSession` e a achata num fato
+    (`RiskEvidence`); quem decide é `evaluatePolicy`, junto de notional e concentração.
+    Sessão inexistente, de `kind` errado ou não concluída são tratadas como AUSENTE —
+    não são medição fraca, não são medição. `resultJson` corrompido vira
+    `EVIDENCE_INCONCLUSIVE`, nunca licença para operar.
+  - Roda ANTES das regras de tamanho: sem evidência de poder preditivo, o tamanho da
+    posição é irrelevante, e `EVIDENCE_MISSING` é a mensagem acionável.
+  - `WR_MCP_TRADE_MAX_PVALUE=0.05` liga o gate; vazia = DESLIGADO, e é isso que mantém
+    chamadas existentes do Hermes funcionando em quem atualizar sem configurar.
+    `WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS=30` dá validade à evidência — sem prazo, uma
+    sessão de meses atrás autorizaria o trade de hoje.
+  - **Achado operacional:** o `.env` do projeto CHEGA aos processos de teste (verificado).
+    Por isso `buildMcpTradeService` em `scripts/mcp-pilot/mcp-pilot-test.ts` neutraliza
+    as duas env vars, no mesmo padrão que `WR_TRADING_ENABLED` já usava — sem isso as
+    suítes mediriam o mundo que o `.env` descreve, não o que cada teste declara.
+  - Testes: `npm run test:risk-policy` (10 casos puros, fronteiras exatas) e
+    `npm run test:mcp-pilot` (9 casos de integração provando a fiação até o banco).
 - Testes: `npm run test:research-session`
 - Spec: `docs/superpowers/specs/2026-09-06-ferramentas-pesquisa-jesse-design.md`
 - Plano: `docs/superpowers/plans/2026-09-06-ferramentas-pesquisa-jesse.md`

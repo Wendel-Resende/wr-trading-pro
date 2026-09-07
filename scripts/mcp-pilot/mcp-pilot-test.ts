@@ -345,7 +345,19 @@ function buildMcpTradeService(
     execution,
     snapshot: FAKE_SNAPSHOT,
     clock,
-    env: { ...process.env, WR_TRADING_ENABLED: undefined, ...env },
+    // `.env` do projeto CHEGA a este processo de teste (verificado
+    // empiricamente). Sem neutralizar aqui, ligar o gate de significância
+    // no .env faria estas suítes medirem o mundo que o .env descreve, e não
+    // o que cada teste declara — foi assim que WR_TRADING_ENABLED já tinha
+    // sido neutralizado. Quem exercita o gate o liga explicitamente via
+    // `env`, que sobrescreve estes defaults.
+    env: {
+      ...process.env,
+      WR_TRADING_ENABLED: undefined,
+      WR_MCP_TRADE_MAX_PVALUE: undefined,
+      WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS: undefined,
+      ...env,
+    },
   });
 }
 
@@ -401,6 +413,124 @@ async function mcpTradeAllowlistRejectionTests(prisma: PrismaClient): Promise<vo
  * ninguém perceber. O que continua barrando aqui é o RESTO da governança
  * (notional, concentração, kill switch, aprovação humana) — não o instrumento.
  */
+/**
+ * Gate de significância, caminho de INTEGRAÇÃO (2026-09-06). Os testes
+ * puros em `test:risk-policy` provam a regra; este prova a fiação — que o
+ * serviço realmente busca a `ResearchSession` no banco, lê o `resultJson`
+ * e reduz ao fato que a política avalia. Sem ele, um erro de leitura do
+ * banco passaria despercebido com todas as regras puras verdes.
+ */
+async function mcpTradeSignificanceGateTests(prisma: PrismaClient): Promise<void> {
+  const clock = mkClock(Date.UTC(2099, 0, 12));
+  // Sem limite de validade nos casos 1-8: o relógio destes testes é falso e
+  // fica em 2099, enquanto a linha nasce no banco com `updatedAt` real, o
+  // que tornaria QUALQUER evidência vencida e mascararia o que cada caso
+  // quer medir. A validade ganha um caso próprio, com relógio compatível.
+  const gateOn = { WR_MCP_TRADE_MAX_PVALUE: '0.05', WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS: '' };
+
+  const seedSession = async (result: unknown, status = 'DONE', kind = 'SIGNIFICANCE'): Promise<string> => {
+    const row = await prisma.researchSession.create({
+      data: {
+        kind,
+        status,
+        label: 'gate de teste',
+        notes: null,
+        configJson: '{}',
+        resultJson: result === null ? null : JSON.stringify(result),
+        createdBy: 'test',
+      },
+    });
+    return row.sessionId;
+  };
+
+  const propose = async (evidenceSessionId: string | undefined, requestedBy: string) =>
+    buildMcpTradeService(prisma, new FakeExecutionPort(), clock.now, gateOn).propose({
+      requestedBy,
+      symbol: 'PETR4',
+      direction: 'BUY',
+      volume: 1,
+      rationale: 'proposta para exercitar o gate de significância',
+      ...(evidenceSessionId === undefined ? {} : { evidenceSessionId }),
+    });
+
+  // 1. Sem citar sessão, com o gate ligado.
+  const missing = await propose(undefined, 'gate-missing');
+  assert.equal(missing.status, 'RISK_REJECTED');
+  assert.deepEqual(missing.riskReasons, ['EVIDENCE_MISSING']);
+
+  // 2. Citando um id que não existe — indistinguível de não citar, e não
+  // pode virar exceção: precisa virar razão de rejeição registrada.
+  const ghost = await propose('nao-existe', 'gate-ghost');
+  assert.equal(ghost.status, 'RISK_REJECTED');
+  assert.deepEqual(ghost.riskReasons, ['EVIDENCE_MISSING']);
+
+  // 3. Sessão real e aprovada: a proposta passa e segue para aprovação humana.
+  const goodId = await seedSession({ pValue: 0.01, insufficientData: false, nObservations: 400 });
+  const approved = await propose(goodId, 'gate-approved');
+  assert.equal(approved.status, 'PENDING_HUMAN', 'evidência boa não pode ser barrada pelo gate');
+  assert.equal(approved.riskOutcome, 'APPROVED');
+
+  // 4. Sessão real com p-valor acima do limite.
+  const weakId = await seedSession({ pValue: 0.4, insufficientData: false, nObservations: 400 });
+  const weak = await propose(weakId, 'gate-weak');
+  assert.equal(weak.status, 'RISK_REJECTED');
+  assert.deepEqual(weak.riskReasons, ['EVIDENCE_PVALUE_ABOVE_MAX']);
+
+  // 5. Sessão que rodou mas não teve dado suficiente — o caso que o motor
+  // devolve abaixo do piso de 30 observações. Não é evidência fraca: não é
+  // evidência.
+  const thinId = await seedSession({ pValue: null, insufficientData: true, nObservations: 12 });
+  const thin = await propose(thinId, 'gate-thin');
+  assert.equal(thin.status, 'RISK_REJECTED');
+  assert.deepEqual(thin.riskReasons, ['EVIDENCE_INCONCLUSIVE']);
+
+  // 6. Sessão de Monte Carlo: mede dispersão de drawdown, não poder
+  // preditivo. Não serve de gate, mesmo concluída.
+  const mcId = await seedSession({ nScenarios: 1000 }, 'DONE', 'MONTE_CARLO');
+  const mc = await propose(mcId, 'gate-montecarlo');
+  assert.equal(mc.status, 'RISK_REJECTED');
+  assert.deepEqual(mc.riskReasons, ['EVIDENCE_MISSING']);
+
+  // 7. `resultJson` corrompido nunca vira licença para operar.
+  const corruptRow = await prisma.researchSession.create({
+    data: { kind: 'SIGNIFICANCE', status: 'DONE', label: 'json quebrado', notes: null, configJson: '{}', resultJson: '{nao é json', createdBy: 'test' },
+  });
+  const corrupt = await propose(corruptRow.sessionId, 'gate-corrupt');
+  assert.equal(corrupt.status, 'RISK_REJECTED');
+  assert.deepEqual(corrupt.riskReasons, ['EVIDENCE_INCONCLUSIVE']);
+
+  // 8. Com o gate DESLIGADO, nada disso se aplica — é o estado de quem
+  // atualiza sem configurar a env var.
+  const gateOff = await buildMcpTradeService(prisma, new FakeExecutionPort(), clock.now, {}).propose({
+    requestedBy: 'gate-off',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 1,
+    rationale: 'gate desligado, sem citar evidência alguma',
+  });
+  assert.equal(gateOff.status, 'PENDING_HUMAN', 'gate desligado não pode exigir evidência');
+
+  // 9. Validade, com relógio ancorado no tempo real da linha: 40 dias
+  // depois de agora, contra um limite de 30.
+  const staleId = await seedSession({ pValue: 0.01, insufficientData: false, nObservations: 400 });
+  const futureClock = mkClock(Date.now() + 40 * 86_400_000);
+  const stale = await buildMcpTradeService(prisma, new FakeExecutionPort(), futureClock.now, {
+    WR_MCP_TRADE_MAX_PVALUE: '0.05',
+    WR_MCP_TRADE_EVIDENCE_MAX_AGE_DAYS: '30',
+  }).propose({
+    requestedBy: 'gate-stale',
+    symbol: 'PETR4',
+    direction: 'BUY',
+    volume: 1,
+    rationale: 'evidência boa, porém fora do prazo de validade',
+    evidenceSessionId: staleId,
+  });
+  assert.equal(stale.status, 'RISK_REJECTED');
+  assert.deepEqual(stale.riskReasons, ['EVIDENCE_STALE']);
+
+  console.log('gate de significância: OK (ausente/inexistente/fraca/inconclusiva/kind errado/json quebrado/vencida rejeitados; boa aprovada; desligado inerte)');
+}
+
 async function mcpTradeEmptyAllowlistAllowsAnyMarketTests(prisma: PrismaClient): Promise<void> {
   const clock = mkClock(Date.UTC(2099, 0, 11));
   const execution = new FakeExecutionPort();
@@ -712,6 +842,7 @@ async function mcpTradeServiceTests(prisma: PrismaClient): Promise<void> {
   await mcpTradeBrokerThrowsTests(prisma);
   await mcpTradeReplaySuppressedTests(prisma);
   await mcpTradeInvalidVolumeTests(prisma);
+  await mcpTradeSignificanceGateTests(prisma);
 }
 
 /** Service fake — grava toda chamada e devolve fixtures; nunca toca Prisma/broker real. */
