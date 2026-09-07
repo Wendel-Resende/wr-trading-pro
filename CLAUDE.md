@@ -318,6 +318,59 @@ src/mcp/pilot/tools/research.ts               12 tools research.* (todas 'free')
 - Spec: `docs/superpowers/specs/2026-09-06-ferramentas-pesquisa-jesse-design.md`
 - Plano: `docs/superpowers/plans/2026-09-06-ferramentas-pesquisa-jesse.md`
 
+### Ingestão point-in-time da CVM (2026-09-06)
+
+Os modelos canônicos `CvmFiling`/`Issuer` existiam no schema desde a Fase 2, com
+unit-of-work e testes, e estavam VAZIOS — o `data/cvm/README.md` já registrava
+"sem protocolo de documento, sem data de publicação, sem versionamento de
+retificação". Agora estão preenchidos.
+
+```
+src/lib/server/cvm-header-parser.ts   PURO: CSV de cabeçalho -> issuers + filings
+scripts/cvm-ingest/                   script (npm run cvm:ingest) + testes
+```
+
+- **Só o cabeçalho, não os valores.** Cada pacote anual traz `itr_cia_aberta_YYYY.csv`
+  (~500 KB) com `CD_CVM`, `ID_DOC`, `DT_REFER`, `DT_RECEB`, `VERSAO` e `LINK_DOC`.
+  Os arquivos de valores (DRE/BPA/BPP/DFC, centenas de MB) NÃO são baixados —
+  `CvmFact` segue vazio de propósito.
+- **A defasagem legal presumida VAZA, e não é pouco.** `directional_features.py`
+  carimba `knowledge_date = data_ref + 45d (ITR) / 90d (DFP)`. Medido sobre os 48.593
+  filings de 2011 a 2026: a mediana confirma o proxy (ITR 44d, DFP 83d), mas o p90 já
+  o estoura (ITR 65d, DFP 132d) e **21,3% dos ITR e 19,4% das DFP são entregues DEPOIS
+  do prazo presumido**. Para uma em cada cinco linhas, o painel trata o fundamento como
+  conhecido antes de existir. É look-ahead real, não hipótese.
+- **A retificação é o segundo vazamento, e é irrecuperável para trás.** Os pacotes da
+  CVM publicam APENAS a versão corrente nos arquivos de valores — verificado: zero
+  documentos com duas versões presentes. O cabeçalho guarda o histórico (uma linha por
+  versão, com `DT_RECEB` própria), então sabemos QUEM foi retificado e QUANDO, nunca o
+  que mudou. 10,9% dos filings são retificação.
+- **`VERSAO` não é ordinal confiável** — dado real: a DIBENS LEASING tem dois
+  documentos do mesmo ITR ambos marcados `VERSAO=1`, e há emissor com v1, v2 e um
+  SEGUNDO v1 entregue meses depois da v2. A cadeia é ordenada por `DT_RECEB`, com
+  versão e protocolo só como desempate.
+- **Exercício social não-calendário existe e quebra a derivação por mês:** CAMIL fecha
+  em fevereiro (ITR em mai/ago/nov); JALLES MACHADO, BRASILAGRO e CTC fecham em março
+  (ITR em jun/set/dez). O trimestre sai do ORDINAL do ITR no pacote, não do mês — isso
+  devolve 03→1, 06→2, 09→3 no caso calendário e acerta os demais.
+- **`publishedAt` leva desempate de milissegundos.** 24% dos documentos multiversão têm
+  duas versões no MESMO DIA (ENERGISA, ITR do 1T2023, v1 e v2 em 2023-05-11) e o domínio
+  exige retificação estritamente posterior. A data continua exata nos 10 primeiros
+  caracteres; o milissegundo codifica uma ordem que já é dado da CVM.
+- **Estado atual:** 1.225 emissores e 48.593 filings (2011-03-31 a 2026-06-30), 7.102
+  retificações com cadeia 100% ligada, zero protocolos duplicados.
+- **Idempotente:** reexecutar não duplica (verificado — contagem idêntica antes e depois).
+- **Três anomalias de identidade que o dado real impõe** (todas tratadas e reportadas na
+  saída, nunca em silêncio): ITR de 4º trimestre que o schema não representa (23 casos,
+  descartados e nomeados); empresas que mudaram de nome em 15 anos — o lote repete a
+  identidade JÁ GRAVADA em vez de sobrescrever, porque SCD-1 destrutivo é proibido; e 5
+  emissores cujo CNPJ é compartilhado entre códigos CVM distintos, gravados com CNPJ
+  nulo, porque escolher um dono seria inventar.
+- Testes: `npm run test:cvm-ingest` (16 casos, parser puro, sem rede nem banco).
+
+**Pendente:** trocar o prazo legal pela `DT_RECEB` real em `directional_features.py` e
+marcar as linhas retificadas. Este trabalho só coletou o dado; o ML ainda não o usa.
+
 ### Dados locais do projeto
 
 O banco de opções oficial é `data/options/options_data.db` (gerado em runtime; ignorado pelo Git).
