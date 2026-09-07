@@ -220,7 +220,22 @@ function fakeTrainResult(metrics: typeof STRONG_METRICS) {
     features: ['roe', 'roic'],
     metrics,
     artifactPath: 'unused/model.pkl',
+    // Regressão (2026-09-07): o worker passou a emitir `knowledgeProvenance`
+    // e o schema `.strict()` recusou o resultado inteiro — treino publicado
+    // como FAILED/INTERNAL_ERROR com o modelo já treinado no disco. É o
+    // mesmo modo de falha do campo `orphan` em 2026-07-25. Fica no caminho
+    // feliz para que o campo seja exercitado pelo schema real.
+    knowledgeProvenance: { rows: 7085, fromFiling: 7080, fromLegalDeadline: 5, filingCoverage: 0.9993, restatements: 1342 },
   };
+}
+
+/**
+ * Um resultado gravado ANTES de 2026-09-07 não tem `knowledgeProvenance`.
+ * O campo é opcional justamente para que um replay desses não quebre.
+ */
+function fakeTrainResultSemProveniencia(metrics: typeof STRONG_METRICS) {
+  const { knowledgeProvenance: _ignored, ...resto } = fakeTrainResult(metrics);
+  return resto;
 }
 
 async function createCostProfile(prisma: PrismaClient, label: string): Promise<string> {
@@ -331,7 +346,11 @@ async function rejectedTrainingPersistsResearchRunWithoutModelVersion(prisma: Pr
   await withFakeEngine(
     [
       { state: 'RUNNING', phase: 'TRAINING', progress: 60 },
-      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResult(WEAK_METRICS) },
+      // Formato LEGADO de propósito (sem `knowledgeProvenance`): assim os
+      // dois formatos atravessam o schema real na suíte — o cenário
+      // aprovado exercita o campo novo, este exercita a compatibilidade
+      // com resultados gravados antes de 2026-09-07.
+      { state: 'SUCCEEDED', phase: 'TRAINING', progress: 100, result: fakeTrainResultSemProveniencia(WEAK_METRICS) },
     ],
     async () => {
       const postRes = await trainingRunsPOST(

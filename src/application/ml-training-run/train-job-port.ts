@@ -92,6 +92,28 @@ const DirectionalTrainResultSchema = z
     selectedFeatures: z.array(z.string().max(200)).max(500).optional(),
     metrics: DirectionalMetricsSchema,
     artifactPath: z.string().min(1).max(1_000),
+    /**
+     * Proveniência do carimbo de conhecimento (2026-09-07). Existe porque a
+     * degradação silenciosa é o pior modo de falha do painel: se o worker
+     * não alcançar `CvmFiling`, ele cai no prazo legal presumido, treina,
+     * publica e devolve métricas plausíveis — foi o que aconteceu no
+     * primeiro retreino depois da troca do carimbo, e só a comparação com
+     * uma medição anterior pegou. `filingCoverage` perto de 0 significa que
+     * o modelo foi treinado com o carimbo antigo.
+     *
+     * OPCIONAL de propósito: resultados gravados antes desta versão não têm
+     * o campo, e um replay deles não pode quebrar.
+     */
+    knowledgeProvenance: z
+      .object({
+        rows: z.number().int().min(0),
+        fromFiling: z.number().int().min(0),
+        fromLegalDeadline: z.number().int().min(0),
+        filingCoverage: finiteNumber.min(0).max(1),
+        restatements: z.number().int().min(0),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
