@@ -390,8 +390,22 @@ pelo prazo legal:
 - Testes: `npm run test:directional:py` (8 casos novos em
   `python/tests/test_directional_knowledge_date.py`).
 
-**Pendente:** retreinar e comparar o IC com e sem as linhas retificadas. O dado e a
-marcação existem; a medição do efeito ainda não foi feita.
+**Armadilha corrigida em 2026-09-07 — o primeiro retreino não pegou a mudança.** O worker
+de treino é lançado pelo `ml_api` Flask com CWD próprio; o default de `DEFAULT_FILINGS_DB`
+era relativo (`prisma/dev.db`) e não resolvia, `load_directional_panel` nem aceitava o
+parâmetro, e **nada no resultado do treino denunciava a queda para o prazo legal**. O
+retreino rodou, publicou e reproduziu EXATAMENTE as métricas antigas (IC 0,1020, t 4,575,
+spread 0,0261, n=5256) — só a comparação com uma medição anterior pegou. Três correções:
+default ancorado na raiz via `__file__`; `filings_db_path` repassado explicitamente pelo
+worker a partir de `cfg['dbPath']` (que o `ml_api` já montava absoluto); e
+`knowledge_provenance()` viajando no resultado (`knowledgeProvenance`), para cobertura
+zero nunca mais parecer sucesso.
+
+**Medições (rodadas, não publicadas):** a troca do carimbo derruba o IC de 0,1020 para
+0,0915 (−10,3%) e melhora t-stat (+11,7%), spread topo-base (+39,2%) e anos positivos
+(+10,0%) — o IC anterior vinha em parte de olhar adiante. Excluir as linhas retificadas
+NÃO compensa: IC 0,0915 → 0,0905 (−1,1%) com perda de 19% da amostra. `is_restatement`
+serve de diagnóstico, não de filtro.
 
 ### Dados locais do projeto
 

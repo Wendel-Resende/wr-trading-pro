@@ -29,6 +29,7 @@ from python.ml.directional_features import (  # noqa: E402
     SOURCE_LEGAL_DEADLINE,
     apply_real_knowledge_dates,
     knowledge_date,
+    knowledge_provenance,
     load_filing_dates,
 )
 
@@ -169,6 +170,58 @@ class RealKnowledgeDateTests(unittest.TestCase):
         self.assertEqual(LAG_ITR_DAYS, 45)
         self.assertEqual(LAG_DFP_DAYS, 90)
         self.assertTrue(DEFAULT_FILINGS_DB.endswith('dev.db'))
+
+
+class ProvenanceAndPathTests(unittest.TestCase):
+    """Os três defeitos do primeiro retreino, todos meus.
+
+    Depois de trocar o carimbo, o retreino pelo app reproduziu EXATAMENTE as
+    métricas antigas (IC 0,1020, t 4,575, spread 0,0261). Causa: o worker roda
+    com CWD próprio, o default era relativo, `load_directional_panel` não
+    aceitava o caminho, e nada no resultado denunciava a queda para o prazo
+    legal. Só a comparação com uma medição anterior pegou.
+    """
+
+    def test_default_path_is_anchored_to_the_repo_not_the_cwd(self) -> None:
+        self.assertTrue(os.path.isabs(DEFAULT_FILINGS_DB), 'default relativo quebra quando o CWD muda')
+        self.assertTrue(DEFAULT_FILINGS_DB.endswith(os.path.join('prisma', 'dev.db')))
+
+    def test_panel_shortcut_forwards_the_filings_path(self) -> None:
+        import inspect
+
+        from python.ml.directional_features import load_directional_panel
+
+        params = inspect.signature(load_directional_panel).parameters
+        self.assertIn('filings_db_path', params, 'sem repassar, o worker nunca alcança os filings')
+
+    def test_provenance_reports_full_coverage(self) -> None:
+        panel = pd.DataFrame({
+            'knowledge_source': [SOURCE_FILING] * 9 + [SOURCE_LEGAL_DEADLINE],
+            'is_restatement': [True] * 2 + [False] * 8,
+        })
+        p = knowledge_provenance(panel)
+        self.assertEqual(p['rows'], 10)
+        self.assertEqual(p['fromFiling'], 9)
+        self.assertEqual(p['fromLegalDeadline'], 1)
+        self.assertEqual(p['filingCoverage'], 0.9)
+        self.assertEqual(p['restatements'], 2)
+
+    def test_provenance_makes_total_fallback_loud(self) -> None:
+        # O caso que passou despercebido: NENHUMA linha veio de filing. A
+        # cobertura zero tem que aparecer no resultado do treino.
+        panel = pd.DataFrame({
+            'knowledge_source': [SOURCE_LEGAL_DEADLINE] * 5,
+            'is_restatement': [False] * 5,
+        })
+        p = knowledge_provenance(panel)
+        self.assertEqual(p['filingCoverage'], 0.0)
+        self.assertEqual(p['fromFiling'], 0)
+        self.assertEqual(p['fromLegalDeadline'], 5)
+
+    def test_provenance_survives_a_panel_without_the_columns(self) -> None:
+        p = knowledge_provenance(pd.DataFrame({'x': [1, 2]}))
+        self.assertEqual(p['rows'], 2)
+        self.assertEqual(p['filingCoverage'], 0.0)
 
 
 if __name__ == '__main__':

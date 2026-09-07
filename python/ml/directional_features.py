@@ -40,7 +40,18 @@ LAG_DFP_DAYS = 90
 #: Caminho default do banco que guarda `CvmFiling` (o banco do app, não o
 #: snapshot da CVM). Escrever a data dentro de `cvm_fundamentos.db` seria
 #: inútil: ele é recopiado do WSL e a coluna se perderia.
-DEFAULT_FILINGS_DB = os.path.join('prisma', 'dev.db')
+#:
+#: ANCORADO NA RAIZ DO REPOSITÓRIO, nunca relativo ao CWD. A primeira versão
+#: usava `os.path.join('prisma', 'dev.db')` e o worker de treino — lançado
+#: pelo `ml_api` Flask, com CWD próprio — nunca encontrava o arquivo: caía
+#: no prazo legal em silêncio e o retreino reproduziu exatamente as métricas
+#: antigas. Quem chama de dentro do app deve passar `filings_db_path`
+#: explicitamente mesmo assim (o `ml_api` já monta o caminho absoluto).
+DEFAULT_FILINGS_DB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'prisma',
+    'dev.db',
+)
 
 #: Origem do carimbo de conhecimento, exposta no painel para que o fallback
 #: nunca passe despercebido.
@@ -248,6 +259,35 @@ def build_feature_panel(raw: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(['knowledge_date', 'ticker']).reset_index(drop=True)
 
 
-def load_directional_panel(cvm_db_path: str, tickers: list[str] | None = None) -> pd.DataFrame:
-    """Atalho: painel cru + features derivadas, pronto para o rotulador."""
-    return build_feature_panel(load_quarterly_panel(cvm_db_path, tickers))
+def knowledge_provenance(panel: pd.DataFrame) -> dict:
+    """Resumo da origem do carimbo, para viajar junto do resultado do treino.
+
+    Existe porque a degradação silenciosa é o pior modo de falha aqui: o
+    painel cai no prazo legal, o treino roda, as métricas voltam plausíveis
+    e nada denuncia que o dado é o antigo. Só a comparação com uma medição
+    anterior pegou isso da primeira vez.
+    """
+    if 'knowledge_source' not in panel or len(panel) == 0:
+        return {'rows': int(len(panel)), 'fromFiling': 0, 'fromLegalDeadline': int(len(panel)),
+                'filingCoverage': 0.0, 'restatements': 0}
+    from_filing = int((panel['knowledge_source'] == SOURCE_FILING).sum())
+    total = int(len(panel))
+    return {
+        'rows': total,
+        'fromFiling': from_filing,
+        'fromLegalDeadline': total - from_filing,
+        'filingCoverage': round(from_filing / total, 4),
+        'restatements': int(panel['is_restatement'].sum()) if 'is_restatement' in panel else 0,
+    }
+
+
+def load_directional_panel(cvm_db_path: str, tickers: list[str] | None = None,
+                           filings_db_path: str | None = None) -> pd.DataFrame:
+    """Atalho: painel cru + features derivadas, pronto para o rotulador.
+
+    `filings_db_path` PRECISA ser repassado por quem chama de dentro do app:
+    sem ele, o default é usado, e se o processo tiver outro CWD o painel cai
+    no prazo legal sem ninguém perceber. Foi exatamente o que aconteceu no
+    primeiro retreino depois da troca do carimbo.
+    """
+    return build_feature_panel(load_quarterly_panel(cvm_db_path, tickers, filings_db_path))

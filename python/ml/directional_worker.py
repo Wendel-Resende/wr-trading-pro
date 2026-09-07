@@ -53,14 +53,20 @@ def main() -> int:
 
         from ml.bars_snapshot import SnapshotNotFoundError, load_snapshot_bars, write_universe_snapshot
         from ml.directional_classifier import run_directional_training
-        from ml.directional_features import load_directional_panel
+        from ml.directional_features import knowledge_provenance, load_directional_panel
 
         # Fase mais cara em I/O: congela as barras D1 de todo o universo.
         progress('SNAPSHOT', 10)
         snapshot = write_universe_snapshot(cfg['dbPath'], symbols, cfg['barsSnapshotDir'])
 
         progress('DATASET', 35)
-        panel = load_directional_panel(cfg['cvmDbPath'], symbols)
+        # `dbPath` é o banco do app, onde vivem os `CvmFiling` com a data de
+        # publicação real. Passar EXPLICITAMENTE: o worker roda com CWD
+        # próprio (lançado pelo `ml_api` Flask), e sem isto o painel cairia
+        # no prazo legal presumido sem nada denunciar.
+        panel = load_directional_panel(cfg['cvmDbPath'], symbols, filings_db_path=cfg.get('dbPath'))
+        proveniencia = knowledge_provenance(panel)
+        print(f'[directional_worker] carimbo de conhecimento: {proveniencia}', flush=True)
 
         def bars_for(ticker: str):
             try:
@@ -77,6 +83,7 @@ def main() -> int:
         )
 
         progress('TRAINING', 95)
+        result['knowledgeProvenance'] = proveniencia
         _write_json_atomic(result_path, result)
         return 0
     except ValueError as exc:
