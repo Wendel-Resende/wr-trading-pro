@@ -1,7 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { pct, num, QUANTILE_STYLES, type RankingEntry } from './types';
+import TableSortButton from '@/components/TableSortButton';
+import { nextSortDirection, sortRows, type SortDirection } from '@/lib/table-sort';
 
 /**
  * A lista do ranking. Componente puro: recebe tudo por props, não faz rede.
@@ -27,11 +29,23 @@ function barWidth(score: number | null | undefined, maxAbs: number): number {
 }
 
 export default function RankingTable({ entries, loading, emptyMessage }: Props): React.ReactElement {
+  const [sortKey, setSortKey] = useState<'ticker' | 'quantile' | 'score' | 'percentil' | 'knowledgeDate' | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
+  const sortedEntries = useMemo(
+    () => sortRows(entries, (entry) => (sortKey === null ? null : entry[sortKey]), sortDirection),
+    [entries, sortKey, sortDirection],
+  );
+  const activateSort = (key: NonNullable<typeof sortKey>): void => {
+    const next = key === sortKey ? nextSortDirection(sortDirection) : 'asc';
+    setSortKey(next === null ? null : key);
+    setSortDirection(next);
+  };
+
   if (loading) return <p className="text-xs text-gray-500">Carregando ranking…</p>;
   if (entries.length === 0) return <p className="text-xs text-gray-500">{emptyMessage}</p>;
 
   const maxAbs = Math.max(
-    ...entries.map((e) => (typeof e.score === 'number' && Number.isFinite(e.score) ? Math.abs(e.score) : 0)),
+    ...sortedEntries.map((e) => (typeof e.score === 'number' && Number.isFinite(e.score) ? Math.abs(e.score) : 0)),
     0.0001,
   );
 
@@ -40,16 +54,16 @@ export default function RankingTable({ entries, loading, emptyMessage }: Props):
       <table className="w-full text-xs">
         <thead>
           <tr className="text-gray-500 border-b border-gray-800">
-            <th className="text-left py-2 px-2">Ticker</th>
-            <th className="text-center py-2 px-2">Posição</th>
-            <th className="text-right py-2 px-2">Escore</th>
-            <th className="text-right py-2 px-2">Percentil</th>
-            <th className="text-left py-2 px-2">Conhecido em</th>
+            <th className="text-left py-2 px-2"><TableSortButton label="Ticker" direction={sortKey === 'ticker' ? sortDirection : null} onClick={() => activateSort('ticker')} /></th>
+            <th className="text-center py-2 px-2"><TableSortButton label="Posição" direction={sortKey === 'quantile' ? sortDirection : null} onClick={() => activateSort('quantile')} /></th>
+            <th className="text-right py-2 px-2"><TableSortButton label="Escore" direction={sortKey === 'score' ? sortDirection : null} onClick={() => activateSort('score')} /></th>
+            <th className="text-right py-2 px-2"><TableSortButton label="Percentil" direction={sortKey === 'percentil' ? sortDirection : null} onClick={() => activateSort('percentil')} /></th>
+            <th className="text-left py-2 px-2"><TableSortButton label="Conhecido em" direction={sortKey === 'knowledgeDate' ? sortDirection : null} onClick={() => activateSort('knowledgeDate')} /></th>
             <th className="text-left py-2 px-2">Principais fatores</th>
           </tr>
         </thead>
         <tbody>
-          {entries.map((e) => {
+          {sortedEntries.map((e) => {
             const positivo = (e.score ?? 0) >= 0;
             return (
               <tr key={`${e.ticker}-${e.generatedAt}`} className="border-b border-gray-900 hover:bg-gray-900/40">

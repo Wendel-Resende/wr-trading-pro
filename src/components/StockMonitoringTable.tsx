@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { StockMonitoring } from '@/types/stock-monitoring';
 import { AlertCircle } from 'lucide-react';
+import TableSortButton from '@/components/TableSortButton';
+import { nextSortDirection, sortRows, type SortDirection } from '@/lib/table-sort';
 
 interface StockMonitoringTableProps {
   statusFilter?: 'COMPRA' | 'VENDA' | 'NEUTRO' | 'ATENCAO';
@@ -14,6 +16,17 @@ export default function StockMonitoringTable({ statusFilter, onViewDetails, mt5C
   const [stocks, setStocks] = useState<StockMonitoring[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<'precoAtual' | 'precoTeto' | 'resultado' | 'yieldOnCost' | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
+  const sortedStocks = useMemo(
+    () => sortRows(stocks, (stock) => (sortKey === null ? null : stock[sortKey]), sortDirection),
+    [stocks, sortKey, sortDirection],
+  );
+  const activateSort = (key: NonNullable<typeof sortKey>): void => {
+    const next = key === sortKey ? nextSortDirection(sortDirection) : 'asc';
+    setSortKey(next === null ? null : key);
+    setSortDirection(next);
+  };
 
   useEffect(() => {
     // Só carregar dados se o MT5 estiver conectado
@@ -122,12 +135,8 @@ export default function StockMonitoringTable({ statusFilter, onViewDetails, mt5C
             <th className="px-6 py-3 text-left text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
               Status
             </th>
-            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
-              Preço Atual
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
-              Preço Teto
-            </th>
+            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider"><TableSortButton label="Preço Atual" direction={sortKey === 'precoAtual' ? sortDirection : null} onClick={() => activateSort('precoAtual')} /></th>
+            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider"><TableSortButton label="Preço Teto" direction={sortKey === 'precoTeto' ? sortDirection : null} onClick={() => activateSort('precoTeto')} /></th>
             <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-pink uppercase tracking-wider">
               Teto Reajustado
             </th>
@@ -158,19 +167,15 @@ export default function StockMonitoringTable({ statusFilter, onViewDetails, mt5C
             <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
               Invest. Necessário
             </th>
-            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
-              Resultado
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
-              Yield on Cost
-            </th>
+            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider"><TableSortButton label="Resultado" direction={sortKey === 'resultado' ? sortDirection : null} onClick={() => activateSort('resultado')} /></th>
+            <th className="px-6 py-3 text-right text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider"><TableSortButton label="Yield on Cost" direction={sortKey === 'yieldOnCost' ? sortDirection : null} onClick={() => activateSort('yieldOnCost')} /></th>
             <th className="px-6 py-3 text-center text-xs font-bold font-orbitron text-cyber-cyan uppercase tracking-wider">
               Ações
             </th>
           </tr>
         </thead>
         <tbody className="bg-cyber-dark/30 divide-y divide-cyber-border">
-          {stocks.map((stock) => (
+          {sortedStocks.map((stock) => (
             <tr key={stock.id} className="hover:bg-cyber-cyan/5 transition-colors">
               <td className="px-6 py-4 whitespace-nowrap">
                 <div className="flex flex-col">
