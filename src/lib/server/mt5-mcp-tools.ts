@@ -302,9 +302,19 @@ export async function getTick(symbol: string): Promise<unknown> {
   });
   const redacted = redactSensitiveFields(extractToolValue(result));
   const ticks = normalizeRatesPayload(redacted); // mesmo formato de envelope (array/'ticks'/'result')
-  // Sem ticks nos últimos 5min (fora do pregão, símbolo sem negociação nessa conta/corretora,
-  // ou watchlist ainda não populada) — nunca fabricar um tick com bid/ask/time zerados.
-  return ticks.length > 0 ? ticks[ticks.length - 1] : null;
+  if (ticks.length > 0) return ticks[ticks.length - 1];
+
+  // Fora do pregão é normal não haver tick nos últimos 5 minutos. Quando o
+  // símbolo existe no Market Watch, preserve a última cotação positiva que o
+  // terminal expõe no próprio Market Watch, mas a marque explicitamente como stale.
+  // Nunca inventar preço zero nem chamar isso de cotação ao vivo.
+  const quote = await getMarketWatchQuote(symbol);
+  if (!quote) return null;
+  const bid = typeof quote.bid === 'number' ? quote.bid : 0;
+  const ask = typeof quote.ask === 'number' ? quote.ask : 0;
+  const last = typeof quote.last === 'number' ? quote.last : 0;
+  if (bid <= 0 && ask <= 0 && last <= 0) return null;
+  return { ...quote, symbol: typeof quote.symbol === 'string' ? quote.symbol : symbol, stale: true, quote_source: 'market_watch' };
 }
 
 /**
@@ -315,10 +325,15 @@ export async function getTick(symbol: string): Promise<unknown> {
 function normalizeRatesPayload(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') {
-    for (const key of ['rates', 'candles', 'bars', 'ticks', 'history', 'result'] as const) {
-      const candidate = (value as Record<string, unknown>)[key];
+    const obj = value as Record<string, unknown>;
+    for (const key of ['rates', 'candles', 'bars', 'ticks', 'tick', 'history', 'result'] as const) {
+      const candidate = obj[key];
       if (Array.isArray(candidate)) return candidate;
+      if (candidate && typeof candidate === 'object') return [candidate];
     }
+    // Alguns builds retornam um tick/candle único, sem envelope. Preservar o
+    // objeto evita transformar uma cotação válida em "sem dados".
+    if ('bid' in obj || 'ask' in obj || 'last' in obj || 'open' in obj) return [obj];
   }
   return [];
 }
@@ -426,6 +441,19 @@ export async function getSymbols(): Promise<unknown[]> {
   const result = await callMt5Tool(toolName, {});
   const redacted = redactSensitiveFields(extractToolValue(result));
   return normalizeSymbolsPayload(redacted);
+}
+
+/** Última cotação conhecida do símbolo no Market Watch; não é um tick ao vivo. */
+async function getMarketWatchQuote(symbol: string): Promise<Record<string, unknown> | null> {
+  const toolName = await resolveMt5ToolName('symbols');
+  const result = await callMt5Tool(toolName, { symbol });
+  const rows = normalizeSymbolsPayload(redactSensitiveFields(extractToolValue(result)));
+  const normalized = symbol.trim().toUpperCase();
+  const row = rows.find((value) => {
+    const candidate = value as Record<string, unknown>;
+    return typeof candidate?.symbol === 'string' && candidate.symbol.toUpperCase() === normalized;
+  });
+  return row && typeof row === 'object' ? (row as Record<string, unknown>) : null;
 }
 
 /**

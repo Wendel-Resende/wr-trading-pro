@@ -73,6 +73,7 @@ export default function AgentPanel() {
   const [error, setError] = useState<string | null>(null);
   const [mt5Connected, setMt5Connected] = useState(false);
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
+  const [quoteIsStale, setQuoteIsStale] = useState(false);
 
   // Settings — chaves de API e endpoints locais vivem SOMENTE no servidor
   // (.env ou Configurações de IA > Provedores de LLM). Nada disto é
@@ -163,6 +164,7 @@ export default function AgentPanel() {
 
     if (!normalizedTicker) {
       setMarketData(null);
+      setQuoteIsStale(false);
       setError(null);
       return;
     }
@@ -176,6 +178,7 @@ export default function AgentPanel() {
     setIsLoadingMarket(true);
     setError(null);
     setMarketData(null);
+    setQuoteIsStale(false);
 
     // Timeout - if no tick in 5 seconds, show error
     const timeoutId = setTimeout(() => {
@@ -195,6 +198,7 @@ export default function AgentPanel() {
           change: tick.change,
           changePercent: tick.changePercent,
         });
+        setQuoteIsStale(tick.stale === true);
         setIsLoadingMarket(false);
         setError(null);
         clearTimeout(timeoutId);
@@ -431,9 +435,15 @@ export default function AgentPanel() {
                 <Loader2 className="w-3 h-3 animate-spin" /> Carregando...
               </span>
             ) : marketData && marketData.price > 0 ? (
-              <span className="flex items-center gap-1 text-xs text-green-400">
-                <Wifi className="w-3 h-3" /> Live
-              </span>
+              quoteIsStale ? (
+                <span className="flex items-center gap-1 text-xs text-yellow-400">
+                  <AlertCircle className="w-3 h-3" /> Última cotação
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-xs text-green-400">
+                  <Wifi className="w-3 h-3" /> Live
+                </span>
+              )
             ) : (
               <span className="text-xs text-yellow-400">Aguardando dados...</span>
             )}
@@ -461,6 +471,11 @@ export default function AgentPanel() {
                   </span>
                 </div>
               </div>
+              {quoteIsStale && (
+                <p className="mb-3 text-xs text-yellow-300/90">
+                  Sem tick nos últimos 5 minutos; exibindo a última cotação disponível no Market Watch. Não é dado ao vivo.
+                </p>
+              )}
 
               {/* Action Button */}
               <button
