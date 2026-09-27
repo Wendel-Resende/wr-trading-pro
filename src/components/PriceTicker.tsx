@@ -5,6 +5,7 @@ import { TickerData } from '@/types';
 import { TrendingUp, TrendingDown, Plus, X, ChevronLeft, ChevronRight, Play, Pause } from 'lucide-react';
 import { mt5Service } from '@/services/mt5Service';
 import { MT5Tick } from '@/types/mt5';
+import { dedupeTickerSymbols, getTickerScrollLimit } from '@/lib/ticker-tape';
 
 interface PriceTickerProps {
   symbols?: string[];
@@ -31,7 +32,7 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
       try {
         const parsed = JSON.parse(savedSymbols);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setUserSymbols(parsed);
+          setUserSymbols(dedupeTickerSymbols(parsed));
         }
       } catch (e) {
         console.error('Erro ao carregar símbolos:', e);
@@ -62,13 +63,13 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
       const container = containerRef.current;
       const ticker = tickerRef.current;
       if (container && ticker) {
-        const maxOffset = ticker.scrollWidth / 2; // Permite rolar até a metade (primeira cópia)
+        const maxOffset = getTickerScrollLimit(ticker.scrollWidth, container.clientWidth);
         if (maxOffset > 0) {
           setOffset(prev => {
             if (prev >= maxOffset) {
-              return 0; // Voltar ao início sem interrupção visível
+              return 0;
             }
-            return prev + 1; // Scroll suave
+            return Math.min(prev + 1, maxOffset);
           });
         }
       }
@@ -187,10 +188,15 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
     setTickers(newTickers);
   }, [tickData, userSymbols]);
 
+  // A lista pode encolher ao remover um ativo; evita deixar a faixa fora da área visível.
+  useEffect(() => {
+    setOffset(0);
+  }, [userSymbols]);
+
   const handleAddSymbol = () => {
     const symbol = newSymbol.toUpperCase().trim();
-    if (symbol && !userSymbols.includes(symbol)) {
-      setUserSymbols([...userSymbols, symbol]);
+    if (symbol) {
+      setUserSymbols((previous) => dedupeTickerSymbols([...previous, symbol]));
       setNewSymbol('');
       setShowAddSymbol(false);
     }
@@ -213,9 +219,6 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
   const toggleAutoPlay = () => {
     setIsAutoPlay(!isAutoPlay);
   };
-
-  // Duplicar tickers para criar loop contínuo
-  const loopedTickers = tickers.length > 0 ? [...tickers, ...tickers] : [];
 
   return (
     <div className="overflow-hidden bg-cyber-card/50 border-y border-cyber-border relative">
@@ -297,9 +300,9 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
           className="flex items-center gap-8 py-2 transition-transform duration-75"
           style={{ transform: `translateX(-${offset}px)` }}
         >
-          {mounted && loopedTickers.map((ticker, index) => (
+          {mounted && tickers.map((ticker) => (
             <div 
-              key={`${ticker.symbol}-${index}`} 
+              key={ticker.symbol}
               className="flex items-center gap-2 whitespace-nowrap px-4 border-r border-cyber-border/50 group relative"
             >
               <span className="font-orbitron font-bold text-white">{ticker.symbol}</span>
@@ -317,16 +320,14 @@ export default function PriceTicker({ symbols = [] }: PriceTickerProps) {
                 </span>
               </div>
               
-              {/* Botão para remover ativo (apenas na primeira metade) */}
-              {index < tickers.length && (
-                <button
-                  onClick={() => handleRemoveSymbol(ticker.symbol)}
-                  className="absolute -top-1 -right-1 p-0.5 bg-red-500/80 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
-                  title={`Remover ${ticker.symbol}`}
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
+              {/* Cada ativo aparece uma vez; remoção disponível na lista real. */}
+              <button
+                onClick={() => handleRemoveSymbol(ticker.symbol)}
+                className="absolute -top-1 -right-1 p-0.5 bg-red-500/80 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                title={`Remover ${ticker.symbol}`}
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           ))}
           
