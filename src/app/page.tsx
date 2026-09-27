@@ -11,6 +11,8 @@ import Modal from "@/components/Modal";
 import PriceTicker from "@/components/PriceTicker";
 import { MT5ServiceSingleton } from "@/services/mt5Service";
 import { MT5AccountInfo, MT5Tick } from "@/types/mt5";
+import { InstrumentProvider, useInstrumentContext } from "@/contexts/InstrumentContext";
+import InstrumentContextBar from "@/components/workspace/InstrumentContextBar";
 
 const DashboardTab = lazy(() => import("@/components/tabs/DashboardTab"));
 const OrdersTab = lazy(() => import("@/components/tabs/OrdersTab"));
@@ -43,6 +45,15 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
 const mt5Service = MT5ServiceSingleton.getInstance();
 
 export default function Dashboard() {
+  return (
+    <InstrumentProvider>
+      <DashboardShell />
+    </InstrumentProvider>
+  );
+}
+
+function DashboardShell() {
+  const { activeSymbol, setActiveSymbol } = useInstrumentContext();
   const router = useRouter();
 
   const [mounted, setMounted] = useState(false);
@@ -186,6 +197,11 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <InstrumentContextBar
+        onOpenDashboard={() => handleTabChange("dashboard")}
+        onOpenFundamentals={() => handleTabChange("fundamentos")}
+      />
+
       {/* Tab navigation */}
       <div className="border-b border-cyber-border bg-cyber-card/30">
         <div className="px-4 flex gap-1 flex-wrap">
@@ -221,7 +237,12 @@ export default function Dashboard() {
         {mountedTabs.has("dashboard") && (
           <div style={{ display: activeTab === "dashboard" ? "block" : "none" }}>
             <Suspense fallback={<TabLoader />}>
-              <DashboardTab accountInfo={accountInfo} tickData={tickData} />
+              <DashboardTab
+                accountInfo={accountInfo}
+                tickData={tickData}
+                activeSymbol={activeSymbol}
+                onSelectSymbol={setActiveSymbol}
+              />
             </Suspense>
           </div>
         )}
@@ -262,7 +283,7 @@ export default function Dashboard() {
         )}
         {mountedTabs.has("fundamentos") && (
           <div style={{ display: activeTab === "fundamentos" ? "block" : "none" }}>
-            <Suspense fallback={<TabLoader />}><CvmFundamentalsTab /></Suspense>
+            <Suspense fallback={<TabLoader />}><CvmFundamentalsTab activeTicker={activeSymbol} /></Suspense>
           </div>
         )}
         {mountedTabs.has("admin") && (

@@ -231,7 +231,11 @@ function InfoTooltip({ formula }: { formula: string }) {
   );
 }
 
-export default function CvmFundamentalsTab() {
+interface CvmFundamentalsTabProps {
+  activeTicker?: string;
+}
+
+export default function CvmFundamentalsTab({ activeTicker }: CvmFundamentalsTabProps) {
   const [view, setView] = useState<"empresas" | "dividendos" | "setorial">("empresas");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
@@ -263,6 +267,14 @@ export default function CvmFundamentalsTab() {
       .catch(() => setError("Não foi possível carregar a lista de empresas CVM."))
       .finally(() => setLoadingList(false));
   }, []);
+
+  // O workspace fornece só o ticker: a ponte ticker → cdCvm continua sendo a
+  // lista certificada da própria API CVM. Sem cobertura, não altera a seleção.
+  useEffect(() => {
+    if (!activeTicker || companies.length === 0) return;
+    const company = companies.find((item) => item.ticker.toUpperCase() === activeTicker.toUpperCase());
+    if (company && company.cdCvm !== selected) setSelected(company.cdCvm);
+  }, [activeTicker, companies, selected]);
 
   useEffect(() => {
     if (!selected) return;

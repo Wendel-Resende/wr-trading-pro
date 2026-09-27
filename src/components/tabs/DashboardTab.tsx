@@ -31,15 +31,16 @@ function mt5CandlesToChartData(candles: MT5Candle[]): CandlestickData[] {
 interface DashboardTabProps {
   accountInfo: MT5AccountInfo | null;
   tickData: Map<string, MT5Tick>;
+  activeSymbol: string;
+  onSelectSymbol: (symbol: string) => void;
 }
 
-export default function DashboardTab({ accountInfo, tickData }: DashboardTabProps) {
+export default function DashboardTab({ accountInfo, tickData, activeSymbol: selectedSymbol, onSelectSymbol }: DashboardTabProps) {
   const toast = useToast();
 
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [showVolume, setShowVolume] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState("1H");
-  const [selectedSymbol, setSelectedSymbol] = useState("PETR4");
   const [customSymbol, setCustomSymbol] = useState("");
   const [isLoadingChart, setIsLoadingChart] = useState(false);
   const [selectedIndicators, setSelectedIndicators] = useState([
@@ -98,11 +99,11 @@ export default function DashboardTab({ accountInfo, tickData }: DashboardTabProp
     };
   }, [selectedSymbol, selectedTimeframe, loadChartData]);
 
-  // Subscribe to ticks whenever symbol or connection changes
+  // Assina somente o instrumento ativo e libera a assinatura anterior ao trocar.
   useEffect(() => {
-    if (isConnected) {
-      mt5Service.subscribeTicks(selectedSymbol);
-    }
+    if (!isConnected) return;
+    mt5Service.subscribeTicks(selectedSymbol);
+    return () => mt5Service.unsubscribeTicks(selectedSymbol);
   }, [selectedSymbol, isConnected]);
 
   // Update last candle in real-time with tick data
@@ -133,7 +134,7 @@ export default function DashboardTab({ accountInfo, tickData }: DashboardTabProp
     e.preventDefault();
     const sym = customSymbol.trim().toUpperCase();
     if (sym) {
-      setSelectedSymbol(sym);
+      onSelectSymbol(sym);
       setCustomSymbol("");
     }
   };
@@ -202,7 +203,7 @@ export default function DashboardTab({ accountInfo, tickData }: DashboardTabProp
             {SYMBOL_PRESETS.map((sym) => (
               <button
                 key={sym}
-                onClick={() => setSelectedSymbol(sym)}
+                onClick={() => onSelectSymbol(sym)}
                 className={`px-3 py-1 rounded text-xs font-space font-semibold transition-colors border ${
                   selectedSymbol === sym
                     ? "bg-cyber-cyan text-black border-cyber-cyan"
