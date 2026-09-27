@@ -88,9 +88,17 @@ export default function MonitoringTab({ mt5Connected = false }: MonitoringTabPro
   // Sincronizar preços via MT5 ticks com debounce de 5s
   useEffect(() => {
     const handleTick = (tick: MT5Tick) => {
-      if (!tick.symbol || typeof tick.bid !== 'number') return;
+      if (!tick.symbol) return;
+      // Preço de referência: bid quando disponível; senão o último negócio
+      // (last) ou o ask. Ações B3 fora do leilão contínuo costumam trazer
+      // bid=0 com last preenchido — usar só bid gravaria 0 e zeraria a
+      // carteira. Nunca acumular um preço não-positivo.
+      const price = [tick.bid, tick.last, tick.ask].find(
+        (p): p is number => typeof p === 'number' && p > 0
+      );
+      if (price === undefined) return;
       // Acumula preços recebidos
-      pendingPriceUpdate.current.set(tick.symbol, tick.bid);
+      pendingPriceUpdate.current.set(tick.symbol, price);
 
       // Debounce: só sincroniza com o banco após 5s de inatividade
       if (debounceTimer.current) clearTimeout(debounceTimer.current);

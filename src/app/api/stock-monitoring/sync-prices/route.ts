@@ -88,6 +88,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           const valorInvestido = stock.valorInvestido || 0;
           const quantidade = stock.quantidadeAdquirida || 0;
 
+          // Nunca sobrescrever com preço não-positivo: um 0 vindo de tick
+          // sem negociação (fora do pregão / bid vazio) zeraria valor e
+          // resultado da carteira. Preserva o último preço válido.
+          if (typeof newPrice !== 'number' || !(newPrice > 0)) {
+            continue;
+          }
+
           // Atualizar preço atual
           await stockMonitoringService.update(stock.id, {
             precoAtual: newPrice,
