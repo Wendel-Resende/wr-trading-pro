@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Search, Landmark, AlertTriangle } from "lucide-react";
+import { Search, Landmark, AlertTriangle, ChevronDown } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, Tooltip, Legend, CartesianGrid, ReferenceLine,
@@ -256,6 +256,7 @@ export default function CvmFundamentalsTab({ activeTicker }: CvmFundamentalsTabP
   const [loadingList, setLoadingList] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/cvm/companies")
@@ -432,15 +433,26 @@ export default function CvmFundamentalsTab({ activeTicker }: CvmFundamentalsTabP
 
   return (
     <div className="space-y-6">
-      {/* Proveniência — sempre visível */}
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-4 py-3 flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-        <p className="text-yellow-400 text-sm font-space">
-          <span className="font-bold">Fonte:</span>{" "}
-          {detail?.provenance.source ?? "CVM (derivado — pipeline do lab, snapshot 2026-07-14)"}.
-          Indicadores do pipeline são derivados/normalizados sem point-in-time.
-          Indicadores com <span className="text-cyber-cyan">derivado no WR</span> usam point-in-time (knowledgeDate CVM + fechamento de mercado MT5/Yahoo).
-        </p>
+      {/* Proveniência — recolhida por padrão, sem ocultar a disponibilidade do aviso. */}
+      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+        <button
+          type="button"
+          onClick={() => setProvenanceOpen((open) => !open)}
+          className="w-full px-4 py-3 flex items-center gap-3 text-left"
+          aria-expanded={provenanceOpen}
+        >
+          <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+          <span className="text-yellow-400 text-sm font-space font-bold">Fonte e proveniência dos dados CVM</span>
+          <ChevronDown className={`w-4 h-4 text-yellow-400 ml-auto transition-transform ${provenanceOpen ? 'rotate-180' : ''}`} />
+        </button>
+        {provenanceOpen && (
+          <p className="px-4 pb-3 text-yellow-400 text-sm font-space">
+            <span className="font-bold">Fonte:</span>{" "}
+            {detail?.provenance.source ?? "CVM (derivado — pipeline do lab, snapshot 2026-07-14)"}.
+            Indicadores do pipeline são derivados/normalizados sem point-in-time.
+            Indicadores com <span className="text-cyber-cyan">derivado no WR</span> usam point-in-time (knowledgeDate CVM + fechamento de mercado MT5/Yahoo).
+          </p>
+        )}
       </div>
 
       {/* Sub-navegação */}

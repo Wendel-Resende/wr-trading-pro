@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { TrendingUp, AlertCircle, History } from "lucide-react";
+import { AlertCircle, History } from "lucide-react";
 import SpreadOrderForm from "@/components/SpreadOrderForm";
 import SpreadSummary from "@/components/SpreadSummary";
 import SpreadPendingOrders from "@/components/SpreadPendingOrders";
@@ -46,15 +46,7 @@ export default function SpreadTab() {
         {/* Coluna Central - Dashboard */}
         <div className="lg:col-span-2 space-y-4">
           {/* Resumo */}
-          <div className="cyber-card p-4 hud-corner">
-            <div className="flex items-center gap-2 mb-3">
-              <TrendingUp className="w-5 h-5 text-cyan-400" />
-              <h2 className="text-lg font-bold font-orbitron text-white neon-text-cyan">
-                Resumo do Dia
-              </h2>
-            </div>
-            <SpreadSummary />
-          </div>
+          <SpreadSummary />
 
           {/* Ordens Pendentes */}
           <div className="cyber-card p-4 hud-corner">

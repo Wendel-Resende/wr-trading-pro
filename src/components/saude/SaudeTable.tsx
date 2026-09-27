@@ -1,7 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { pct, emDeclinio, PILLAR_ORDER, PILLAR_LABELS, type HealthRow } from './types';
+import TableSortButton from '@/components/TableSortButton';
+import { nextSortDirection, sortRows, type SortDirection } from '@/lib/table-sort';
 
 /**
  * Lista do ranking. Componente puro: recebe tudo por props, não faz rede.
@@ -29,6 +31,17 @@ function barra(v: number | null): React.ReactElement {
 }
 
 export default function SaudeTable({ rows, loading, emptyMessage }: Props): React.ReactElement {
+  const [sortKey, setSortKey] = useState<'ticker' | 'score' | 'recente' | 'trimestres' | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
+  const sortedRows = useMemo(() => {
+    if (!sortKey) return rows;
+    return sortRows(rows, (row) => sortKey === 'ticker' ? row.ticker : sortKey === 'score' ? row.score : sortKey === 'recente' ? row.recente.score : row.trimestres, sortDirection);
+  }, [rows, sortKey, sortDirection]);
+  const activateSort = (key: NonNullable<typeof sortKey>) => {
+    if (sortKey === key) setSortDirection(nextSortDirection(sortDirection));
+    else { setSortKey(key); setSortDirection('asc'); }
+  };
+
   if (loading) return <p className="text-xs text-gray-500">Carregando ranking…</p>;
   if (rows.length === 0) return <p className="text-xs text-gray-500">{emptyMessage}</p>;
 
@@ -38,10 +51,10 @@ export default function SaudeTable({ rows, loading, emptyMessage }: Props): Reac
         <thead>
           <tr className="text-gray-500 border-b border-gray-800">
             <th className="text-left py-2 px-2">#</th>
-            <th className="text-left py-2 px-2">Ticker</th>
-            <th className="text-right py-2 px-2">Escore histórico</th>
-            <th className="text-right py-2 px-2">Recente</th>
-            <th className="text-right py-2 px-2">Trimestres</th>
+            <th className="text-left py-2 px-2"><TableSortButton label="Ticker" direction={sortKey === 'ticker' ? sortDirection : null} onClick={() => activateSort('ticker')} /></th>
+            <th className="text-right py-2 px-2"><TableSortButton label="Escore histórico" align="right" direction={sortKey === 'score' ? sortDirection : null} onClick={() => activateSort('score')} /></th>
+            <th className="text-right py-2 px-2"><TableSortButton label="Recente" align="right" direction={sortKey === 'recente' ? sortDirection : null} onClick={() => activateSort('recente')} /></th>
+            <th className="text-right py-2 px-2"><TableSortButton label="Trimestres" align="right" direction={sortKey === 'trimestres' ? sortDirection : null} onClick={() => activateSort('trimestres')} /></th>
             {PILLAR_ORDER.map((k) => (
               <th key={k} className="text-right py-2 px-2">
                 {PILLAR_LABELS[k]}
@@ -50,7 +63,7 @@ export default function SaudeTable({ rows, loading, emptyMessage }: Props): Reac
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
+          {sortedRows.map((r, i) => (
             <tr key={r.ticker} className="border-b border-gray-900 hover:bg-gray-900/40">
               <td className="py-2 px-2 text-gray-600 tabular-nums">{i + 1}</td>
               <td className="py-2 px-2">
