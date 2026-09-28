@@ -37,6 +37,7 @@
     "test:reconciliation": "node scripts/reconciliation/run-reconciliation-tests.cjs",
     "test:agent-run": "node scripts/agent-run/run-agent-run-tests.cjs",
     "test:llm": "node scripts/llm/run-llm-tests.cjs",
+    "test:agent-response-parser": "tsx scripts/agents/agent-response-parser-test.ts",
     "test:risk-policy": "node scripts/risk-policy/run-risk-policy-tests.cjs",
     "test:order-intent": "node scripts/order-intent/run-order-intent-tests.cjs",
     "test:mcp": "node scripts/mcp/run-mcp-tests.cjs",

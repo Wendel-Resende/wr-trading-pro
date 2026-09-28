@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { z } from 'zod';
 import { serverLlmService } from '@/lib/server/llm-providers';
+import { parseAgentOperationJson } from '@/lib/server/agent-operation-parser';
 import { LLM_MODEL_ID_PATTERN, type LLMProvider } from '@/types/llm';
 
 const agentState = {
@@ -217,11 +218,7 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
       config: { provider, model, temperature: 0.3, maxTokens: 1200 },
     });
 
-    const raw = completion.content || '{}';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    const jsonText = jsonMatch ? jsonMatch[0] : raw;
-
-    const parsed = JSON.parse(jsonText);
+    const parsed = parseAgentOperationJson(completion.content || '');
     return {
       ...parsed,
       ticker,
