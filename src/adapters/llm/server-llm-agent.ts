@@ -31,6 +31,22 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
+/**
+ * Modelos LM Studio "thinking" (Gemma, Qwen3.x, LFM etc.) podem gastar todo o
+ * orçamento de tokens em raciocínio interno e devolver `content` vazio —
+ * mesma causa raiz já corrigida no painel de Agentes (commits f1e7388/481091b),
+ * mas o runtime de Runs Governados usa este adapter separado, que nunca
+ * recebeu o mesmo tratamento. Sem isso, os 4 nós do comitê terminam
+ * `simulated:false` com `parecer:""` (tokens gastos, texto final vazio).
+ * LFM precisa de ALGUM orçamento de raciocínio ('low'); os demais desligam
+ * completamente ('none'). Ineficaz/ignorado por provedores que não suportam
+ * o campo (OpenAI, Anthropic etc. não recebem `reasoningEffort`).
+ */
+function reasoningEffortFor(provider: LLMProvider | undefined, model: string | undefined): 'none' | 'low' | undefined {
+  if (provider !== 'LM_STUDIO') return undefined;
+  return model && /^lfm/i.test(model) ? 'low' : 'none';
+}
+
 export class ServerLlmAgentAdapter implements AgentLlmPort {
   async complete(messages: readonly AgentLlmMessage[], opts?: AgentLlmOptions): Promise<AgentLlmCompletion> {
     const provider = normalizeProvider(opts?.provider);
@@ -50,6 +66,7 @@ export class ServerLlmAgentAdapter implements AgentLlmPort {
         model,
         timeoutMs: opts?.timeoutMs,
         noFallback: !!provider,
+        reasoningEffort: reasoningEffortFor(provider, model),
       },
     });
 
