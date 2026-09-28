@@ -233,9 +233,10 @@ function InfoTooltip({ formula }: { formula: string }) {
 
 interface CvmFundamentalsTabProps {
   activeTicker?: string;
+  onSelectTicker?: (ticker: string) => void;
 }
 
-export default function CvmFundamentalsTab({ activeTicker }: CvmFundamentalsTabProps) {
+export default function CvmFundamentalsTab({ activeTicker, onSelectTicker }: CvmFundamentalsTabProps) {
   const [view, setView] = useState<"empresas" | "dividendos" | "setorial">("empresas");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
@@ -290,6 +291,16 @@ export default function CvmFundamentalsTab({ activeTicker }: CvmFundamentalsTabP
       .catch(() => setError("Não foi possível carregar os fundamentos desta empresa."))
       .finally(() => setLoadingDetail(false));
   }, [selected]);
+
+  // Propaga a empresa efetivamente carregada de volta ao contexto global do
+  // workspace (barra "Ativo"), que só sincronizava numa direção — sem isso,
+  // trocar de empresa aqui atualizava os dados mas deixava o badge preso no
+  // ticker anterior (ex.: RENT3).
+  useEffect(() => {
+    if (!detail?.company.ticker || !onSelectTicker) return;
+    if (detail.company.ticker.toUpperCase() === (activeTicker ?? "").toUpperCase()) return;
+    onSelectTicker(detail.company.ticker);
+  }, [detail, activeTicker, onSelectTicker]);
 
   // Ficha fundamentalista: série do pipeline CVM + conversão de caixa derivada
   useEffect(() => {

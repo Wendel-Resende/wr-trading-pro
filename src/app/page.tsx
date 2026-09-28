@@ -283,7 +283,7 @@ function DashboardShell() {
         )}
         {mountedTabs.has("fundamentos") && (
           <div style={{ display: activeTab === "fundamentos" ? "block" : "none" }}>
-            <Suspense fallback={<TabLoader />}><CvmFundamentalsTab activeTicker={activeSymbol} /></Suspense>
+            <Suspense fallback={<TabLoader />}><CvmFundamentalsTab activeTicker={activeSymbol} onSelectTicker={setActiveSymbol} /></Suspense>
           </div>
         )}
         {mountedTabs.has("admin") && (
