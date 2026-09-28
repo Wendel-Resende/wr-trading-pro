@@ -209,20 +209,42 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
   // da descoberta em /api/llm/providers; modos remotos usam o modelo opcional
   // informado (validado pelo schema) ou o default configurado no servidor.
   const model = provider === 'OLLAMA' || provider === 'LM_STUDIO' ? localModel || undefined : remoteModel || undefined;
+  const isLfmModel = provider === 'LM_STUDIO' && /^lfm/i.test(model ?? '');
+  const effectivePrompt = isLfmModel
+    ? `Ativo ${ticker}: preco=${price.toFixed(2)}, bid=${bid.toFixed(2)}, ask=${ask.toFixed(2)}, variacao=${change.toFixed(2)}%. Retorne SOMENTE JSON valido: {"action":"BUY" ou "SELL" ou "HOLD","entry_price":numero,"stop_loss":numero,"take_profit":numero,"quantity":numero,"risk_score":numero entre 0 e 1,"confidence":numero entre 0 e 1,"rationale":"justificativa curta em portugues"}.`
+    : prompt;
 
   // Toda credencial/endpoint vem do serverLlmService (persistência segura + .env)
   // — nada é lido diretamente de process.env aqui, e nenhum segredo passa pelo cliente.
   try {
-    const completion = await serverLlmService.chat({
-      messages: [{ role: 'user', content: prompt }],
+    const baseConfig = {
+      provider,
+      model,
+      temperature: isLfmModel ? 0.1 : 0.3,
+      // LFM usa raciocínio interno, mas o prompt compacto limita esse custo e
+      // mantém a resposta estruturada dentro do mesmo orçamento.
+      maxTokens: 1200,
+    };
+    let completion = await serverLlmService.chat({
+      messages: [{ role: 'user', content: effectivePrompt }],
       config: {
-        provider,
-        model,
-        temperature: 0.3,
-        maxTokens: 1200,
-        ...(provider === 'LM_STUDIO' ? { reasoningEffort: 'none' as const } : {}),
+        ...baseConfig,
+        ...(provider === 'LM_STUDIO'
+          ? { reasoningEffort: isLfmModel ? 'low' as const : 'none' as const }
+          : {}),
       },
     });
+
+    // Modelos LM Studio não são homogêneos: Gemma pode gastar todo o orçamento
+    // em reasoning, enquanto LFM retorna content vazio quando esse parâmetro é
+    // aplicado. Se o primeiro caso retornar vazio, refaz UMA vez com o mesmo
+    // provider/modelo sem alterar a escolha do usuário.
+    if (provider === 'LM_STUDIO' && !completion.content.trim()) {
+      completion = await serverLlmService.chat({
+        messages: [{ role: 'user', content: effectivePrompt }],
+        config: baseConfig,
+      });
+    }
 
     const parsed = parseAgentOperationJson(completion.content || '');
     return {
