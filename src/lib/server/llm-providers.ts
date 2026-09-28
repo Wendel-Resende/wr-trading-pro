@@ -113,6 +113,7 @@ export class OpenAICompatibleProvider implements ILLMProvider {
           messages,
           temperature,
           max_tokens: maxTokens,
+          ...(config?.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
         }),
         signal: AbortSignal.timeout(timeoutMs),
       });

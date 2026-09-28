@@ -215,7 +215,13 @@ Responda APENAS com JSON valido neste formato exato, sem nenhum texto adicional:
   try {
     const completion = await serverLlmService.chat({
       messages: [{ role: 'user', content: prompt }],
-      config: { provider, model, temperature: 0.3, maxTokens: 1200 },
+      config: {
+        provider,
+        model,
+        temperature: 0.3,
+        maxTokens: 1200,
+        ...(provider === 'LM_STUDIO' ? { reasoningEffort: 'none' as const } : {}),
+      },
     });
 
     const parsed = parseAgentOperationJson(completion.content || '');

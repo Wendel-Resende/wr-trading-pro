@@ -48,6 +48,8 @@ export interface LLMConfig {
   maxTokens?: number;
   /** Limite da chamada em ms; clampado server-side (default 120s, teto 600s). */
   timeoutMs?: number;
+  /** Campo interno: desativa tokens de raciocínio para uma resposta estruturada. */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
   /**
    * Campo INTERNO — nunca aceito no schema estrito do proxy HTTP (client
    * jamais pode setá-lo). Quando true, exige `provider` explícito e nunca
