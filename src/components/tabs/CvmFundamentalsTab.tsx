@@ -292,16 +292,6 @@ export default function CvmFundamentalsTab({ activeTicker, onSelectTicker }: Cvm
       .finally(() => setLoadingDetail(false));
   }, [selected]);
 
-  // Propaga a empresa efetivamente carregada de volta ao contexto global do
-  // workspace (barra "Ativo"), que só sincronizava numa direção — sem isso,
-  // trocar de empresa aqui atualizava os dados mas deixava o badge preso no
-  // ticker anterior (ex.: RENT3).
-  useEffect(() => {
-    if (!detail?.company.ticker || !onSelectTicker) return;
-    if (detail.company.ticker.toUpperCase() === (activeTicker ?? "").toUpperCase()) return;
-    onSelectTicker(detail.company.ticker);
-  }, [detail, activeTicker, onSelectTicker]);
-
   // Ficha fundamentalista: série do pipeline CVM + conversão de caixa derivada
   useEffect(() => {
     if (!selected) {
@@ -734,7 +724,14 @@ export default function CvmFundamentalsTab({ activeTicker, onSelectTicker }: Cvm
               filtered.map((c) => (
                 <button
                   key={c.cdCvm}
-                  onClick={() => setSelected(c.cdCvm)}
+                  onClick={() => {
+                    // Atualização direta e única no clique — nunca via efeito
+                    // reativo a `detail`/fetch, que podia entrar em loop
+                    // (ping-pong) por corrida entre requisições assíncronas
+                    // quando o usuário trocava de empresa rapidamente.
+                    setSelected(c.cdCvm);
+                    onSelectTicker?.(c.ticker);
+                  }}
                   className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
                     selected === c.cdCvm
                       ? "bg-cyber-pink/20 border border-cyber-pink/50"
